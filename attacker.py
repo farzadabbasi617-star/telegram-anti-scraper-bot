@@ -102,6 +102,31 @@ class AdvancedScraper:
         print("="*50, flush=True)
         print("🚀 شروع حمله کامل", flush=True)
         print("="*50, flush=True)
+
+        # FIX: اول کل لیست دیالوگ های اکانت را میخوانیم تا peer در کش قرار بگیرد
+        target_found = None
+        print("🔍 اسکن لیست چت های اکانت برای پیدا کردن گروه هدف...", flush=True)
+        try:
+            async for dialog in self.app.get_dialogs():
+                if dialog.chat.id == chat_id:
+                    target_found = dialog.chat
+                    print(f"✅ گروه پیدا شد: {target_found.title}", flush=True)
+                    break
+        except Exception as e:
+            print(f"خطا در اسکن دیالوگ ها: {e}", flush=True)
+        if not target_found:
+            # آخرین تلاش با get_chat
+            try:
+                target_found = await self.app.get_chat(chat_id)
+            except Exception as e:
+                raise Exception(
+                    f"❌ گروه در لیست چت اکانت پیدا نشد!\n"
+                    f"لطفا یک بار با اکانت تست خود تلگرام را باز کنید، وارد گروه شوید، چند ثانیه صبر کنید، بعد دوباره حمله را تکرار کنید.\n"
+                    f"خطای اصلی: {str(e)}"
+                )
+        chat_id = target_found.id
+        print(f"🎯 هدف نهایی: {target_found.title} | آیدی: {chat_id}", flush=True)
+
         direct_ok = await self.scrape_direct(chat_id)
         if not direct_ok:
             await self.scrape_messages(chat_id)
