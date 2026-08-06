@@ -1493,13 +1493,34 @@ async def mon(c, m):
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
         self.end_headers()
-        self.wfile.write(b"OK")
+        status = "OK"
+        if atk_state:
+            status += f" | task={atk_state.get('step','idle')}"
+        self.wfile.write(f"OK - {time.ctime()} | {status}".encode())
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
     def log_message(self, *a): pass
 
 def run_health():
     HTTPServer(("0.0.0.0", PORT), Health).serve_forever()
 
+# ضدخواب: هر ۵ دقیقه خودش به خودش درخواست میزنه که رندر متوجه فعال بودن سرویس بشه
+PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
+def keep_awake_loop():
+    import urllib.request
+    while True:
+        time.sleep(280)  # ~4.7 دقیقه، زودتر از ۱۵ دقیقه
+        try:
+            req = urllib.request.Request(PUBLIC_URL + "/", headers={"User-Agent": "KeepAlive/1.0"})
+            urllib.request.urlopen(req, timeout=15).read()
+            print("💓 کیپ الایو پینگ شد - سرویس بیدار میماند", flush=True)
+        except Exception as e:
+            print(f"⚠️ کیپ الایو ناموفق: {e}", flush=True)
+
 if __name__ == "__main__":
     Thread(target=run_health, daemon=True).start()
+    Thread(target=keep_awake_loop, daemon=True).start()
     app.run()
