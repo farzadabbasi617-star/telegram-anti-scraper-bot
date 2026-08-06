@@ -1,3 +1,6 @@
+# =================================================================
+# 🚨 ماژول حمله پیشرفته نسخه MAX - برای تست حداکثری
+# =================================================================
 import asyncio
 import time
 import random
@@ -6,7 +9,7 @@ import csv
 import string
 import os
 from pyrogram import Client
-from pyrogram.errors import FloodWait, ChatAdminRequired, SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
+from pyrogram.errors import FloodWait, ChatAdminRequired, SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired, AuthKeyDuplicated, AuthKeyUnregistered
 from pyrogram.raw import functions, types
 
 # فینگرپرینت دستگاه های مختلف برای دور زدن تشخیص
@@ -24,8 +27,11 @@ def safe_phone_filename(phone):
     return ''.join(c for c in str(phone) if c.isdigit() or c == '+').strip('+')
 
 class AdvancedScraper:
-    def __init__(self, session_name, api_id, api_hash, phone=None, in_memory=False):
-        fp = random.choice(DEVICE_FP)
+    def __init__(self, session_name, api_id, api_hash, phone=None, in_memory=False, device_fp=None):
+        if device_fp:
+            fp = device_fp
+        else:
+            fp = random.choice(DEVICE_FP)
         # اگر شماره تلفن داده شد از فایل سشن دائمی استفاده کن
         if phone and not in_memory:
             fname = safe_phone_filename(phone)
@@ -33,6 +39,7 @@ class AdvancedScraper:
         else:
             session_path = session_name
         self.phone = phone
+        self.fp_used = fp
         self.app = Client(
             session_path,
             api_id=api_id,
@@ -42,16 +49,24 @@ class AdvancedScraper:
             system_version=fp["system_version"],
             app_version=fp["app_version"],
             lang_code=fp["lang_code"],
-            in_memory=False,  # سشن ها دائمی روی دیسک ذخیره شوند
-            sleep_threshold=10,
-            workdir="."
+            in_memory=False,
+            sleep_threshold=30,
+            workdir=".",
+            no_updates=True
         )
         self.found_users = {}
         self.total_api_calls = 0
         self.start_time = None
 
+    def get_fp_dict(self):
+        return self.fp_used
+
     async def connect(self):
-        await self.app.connect()
+        try:
+            await self.app.connect()
+        except (AuthKeyDuplicated, AuthKeyUnregistered):
+            # سشن خراب است
+            raise
         self.start_time = time.time()
 
     async def human_sleep(self, min_t=0.3, max_t=1.2):
@@ -82,7 +97,6 @@ class AdvancedScraper:
         """تکنیک صفحه بندی حروف الفبا - استخراج حداکثری از لیست مستقیم"""
         print("\n🔍 روش 1: استخراج مستقیم لیست با صفحه بندی الفبایی...", flush=True)
         count_added = 0
-        # اول لیست معمولی
         try:
             async for member in self.app.get_chat_members(chat_id, limit=10000):
                 self.total_api_calls +=1
@@ -99,38 +113,31 @@ class AdvancedScraper:
             print(f"خطا در لیست اولیه: {e}", flush=True)
             return False
 
-        # صفحه بندی با پیشوند الفبای فارسی و انگلیسی
         search_prefixes = list(string.ascii_lowercase) + list("ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی") + ["1","2","3","4","5","6","7","8","9","0"]
         print(f"🔍 شروع صفحه بندی با {len(search_prefixes)} پیشوند...", flush=True)
-        peer = await self.app.resolve_peer(chat_id)
         for prefix in search_prefixes:
             try:
-                offset = 0
                 while True:
                     self.total_api_calls +=1
                     res = await self.app.invoke(
                         functions.contacts.Search(q=prefix, limit=200)
                     )
-                    found_in_page = 0
                     for u in res.users:
-                        # چک کن که در این گروه عضو هست
                         try:
                             mem = await self.app.get_chat_member(chat_id, u.id)
                             if mem:
                                 if u.id not in self.found_users:
                                     await self.add_user(u, f"search_prefix_{prefix}")
                                     count_added +=1
-                                    found_in_page +=1
                         except:
                             pass
                     if len(res.users) < 200:
                         break
-                    offset +=200
                     await self.human_sleep(0.4, 0.9)
                 await self.human_sleep(0.2, 0.5)
             except FloodWait as e:
                 await self.handle_flood(e)
-            except Exception as e:
+            except Exception:
                 continue
         print(f"✅ صفحه بندی الفبایی تمام شد، مجموع تا کنون {len(self.found_users)}", flush=True)
         return True
@@ -142,21 +149,16 @@ class AdvancedScraper:
         async for msg in self.app.get_chat_history(chat_id, limit=limit):
             self.total_api_calls +=1
             msg_count +=1
-            # نویسنده پیام
             if msg.from_user:
                 await self.add_user(msg.from_user, "message_author")
-            # کاربر فوروارد شده
             if msg.forward_from:
                 await self.add_user(msg.forward_from, "forwarded_from")
-            # کسی که بهش پاسخ داده شده
             if msg.reply_to_message and msg.reply_to_message.from_user:
                 await self.add_user(msg.reply_to_message.from_user, "reply_to")
-            # کاربران تگ شده در متن
             if msg.entities:
                 for ent in msg.entities:
                     if ent.type in ("mention", "text_mention") and ent.user:
                         await self.add_user(ent.user, "mentioned_user")
-            # بررسی واکنش ها
             if msg.reactions:
                 for react in msg.reactions.reactions:
                     try:
@@ -176,7 +178,7 @@ class AdvancedScraper:
         print(f"✅ اسکن پیام تمام شد، {msg_count} پیام بررسی، مجموع {len(self.found_users)}", flush=True)
 
     async def scrape_join_events(self, chat_id):
-        """اسکن تمام پیام های ورود اعضا حتی افرادی که پیام ندادند"""
+        """اسکن تمام پیام های ورود اعضا"""
         print("\n🔍 روش 3: اسکن پیام های ورود اعضا...", flush=True)
         async for msg in self.app.get_chat_history(chat_id, limit=100000):
             self.total_api_calls +=1
@@ -191,8 +193,7 @@ class AdvancedScraper:
         print("🚀 شروع حمله MAX MODE", flush=True)
         print("="*60, flush=True)
 
-        # گرم کردن کش دیالوگ ها - دو بار با تاخیر
-        print("🔄 در حال بارگذاری لیست چت ها برای گرم کردن کش تلگرام...", flush=True)
+        print("🔄 در حال بارگذاری لیست چت ها...", flush=True)
         all_chats = {}
         try:
             for _pass in range(2):
@@ -205,42 +206,37 @@ class AdvancedScraper:
                 await asyncio.sleep(2)
         except Exception as e:
             print(f"توجه: خطا در بارگذاری چت ها: {e}", flush=True)
-        await asyncio.sleep(3)  # فرصت به تلگرام برای سینک کامل
+        await asyncio.sleep(3)
 
-        # پیدا کردن گروه هدف
         target_found = None
         target_id_resolved = None
         try:
-            # اول مستقیم resolve کن
             peer = await self.app.resolve_peer(chat_id)
             target_found = await self.app.get_chat(chat_id)
             target_id_resolved = target_found.id
             print(f"🎯 هدف: {target_found.title} | {target_found.id}", flush=True)
         except Exception as e:
-            print(f"🔍 رزول مستقیم ناموفق بود: {e}، در حال جستجو در لیست دیالوگ...", flush=True)
+            print(f"🔍 رزول مستقیم ناموفق بود: {e}، جستجو در لیست...", flush=True)
             if chat_id in all_chats:
                 target_found = all_chats[chat_id]
                 target_id_resolved = target_found.id
             else:
-                # دوباره سخت تر بگرد
                 async for d in self.app.get_dialogs(limit=2000):
-                    if d.chat.id == chat_id or (hasattr(chat_id, 'lower') and str(d.chat.username or '').lower() == str(chat_id).lower().replace('@','')):
+                    if d.chat.id == chat_id:
                         target_found = d.chat
                         target_id_resolved = d.chat.id
                         break
                 await asyncio.sleep(1)
             if not target_found:
-                # آخرین تلاش: get_chat بعد از تاخیر
                 try:
                     await asyncio.sleep(3)
                     target_found = await self.app.get_chat(chat_id)
                     target_id_resolved = target_found.id
                 except:
-                    raise Exception("❌ گروه به هیچ وجه پیدا نشد! لطفا یک بار با اکانت خود آن گروه را در تلگرام باز کنید (یک پیام هم بفرستید یا اسکرول کنید) و دوباره امتحان کنید.")
+                    raise Exception("❌ گروه به هیچ وجه پیدا نشد! یک بار گروه را در تلگرام باز و اسکرول کنید.")
         chat_id = target_id_resolved
-        print(f"✅ نهایتا هدف شناسایی شد: {target_found.title} | {chat_id}", flush=True)
+        print(f"✅ هدف: {target_found.title} | {chat_id}", flush=True)
 
-        # چک عضویت - نرم، سخت گیرانه نیست
         is_member = None
         for attempt in range(5):
             try:
@@ -251,45 +247,37 @@ class AdvancedScraper:
                 else:
                     is_member = False
             except Exception as e:
-                print(f"⏱️ تلاش {attempt+1} برای چک عضویت: {e}، ۲ ثانیه صبر...", flush=True)
+                print(f"⏱️ تلاش {attempt+1} چک عضویت: {e}", flush=True)
                 await asyncio.sleep(2.5)
                 try:
-                    # در هر تلاش یک بار دیگه resolve کن
                     await self.app.resolve_peer(chat_id)
                 except:
                     pass
-                # یک بار دیگه یک صفحه دیالوگ رو بالا بیار
                 try:
                     async for _ in self.app.get_dialogs(limit=200):
                         pass
                 except:
                     pass
         if is_member is not True:
-            print("⚠️ چک خودکار عضویت موفق نبود، اما اسکن را ادامه می‌دهم...", flush=True)
-            # raise نمیکنیم! فقط هشدار میده و ادامه میده، خیلی مواقع خود اسکن درست کار میکنه
+            print("⚠️ چک عضویت ناموفق بود، اما ادامه می‌دهم...", flush=True)
         else:
-            print("✅ تایید شد که در گروه عضو هستم", flush=True)
+            print("✅ عضویت تایید شد", flush=True)
 
-        # مرحله ۱: لیست مستقیم با صفحه بندی الفبایی
         direct_ok = await self.scrape_direct_paginated(chat_id)
-
-        # اگر لیست اعضا مخفی بود روش های جایگزین
         if not direct_ok:
             await self.scrape_full_history(chat_id)
             await self.scrape_join_events(chat_id)
         else:
-            # در هر حال هم اسکن پیام و هم اسکن ورود رو انجام بده برای اطمینان
             await self.scrape_full_history(chat_id, limit=5000)
             await self.scrape_join_events(chat_id)
 
-        # خروج از گروه بعد از تاخیر
         await asyncio.sleep(random.randint(5,12))
         try:
             await self.app.leave_chat(chat_id)
             print("🚪 از گروه خارج شدم", flush=True)
         except: pass
         total = time.time() - self.start_time
-        print(f"\n🏁 تمام شد در {int(total)} ثانیه. مجموع استخراج: {len(self.found_users)} کاربر", flush=True)
+        print(f"\n🏁 تمام شد در {int(total)} ثانیه. مجموع: {len(self.found_users)} کاربر", flush=True)
         return self.found_users
 
     def export_csv(self):
@@ -302,4 +290,10 @@ class AdvancedScraper:
         return out.getvalue().encode("utf-8-sig")
 
     async def disconnect(self):
-        await self.app.disconnect()
+        """قطع اتصال به صورت امن بدون خراب کردن سشن"""
+        try:
+            # به آرامی بدون ارسال دستور logout قطع کن
+            await asyncio.sleep(0.5)
+            await self.app.disconnect()
+        except Exception as e:
+            print(f"هنگام قطع اتصال: {e}", flush=True)
