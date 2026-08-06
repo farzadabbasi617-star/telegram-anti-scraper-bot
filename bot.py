@@ -94,7 +94,7 @@ async def cb(c, q):
     if d == "select_group":
         groups = []
         async for dialog in app.get_dialogs():
-            if dialog.chat.type in ["supergroup", "group"]:
+            if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
                 try:
                     mem = await app.get_chat_member(dialog.chat.id, "me")
                     if mem.status in ["administrator", "creator"]:
@@ -233,8 +233,10 @@ async def steps(c, m):
         groups = []
         try:
             async for dialog in atk.app.get_dialogs():
-                if dialog.chat.type in ["group", "supergroup"]:
-                    groups.append((dialog.chat.title, dialog.chat.id))
+                # سوپرگروپ ها و گروه های معمولی و همچنین مگاگروپ ها (نوع channel ولی گروه هستند)
+                chat = dialog.chat
+                if chat.type in ["group", "supergroup"] or (chat.type == "channel" and getattr(chat, 'is_group', False) or getattr(chat, 'megagroup', False)):
+                    groups.append((chat.title, chat.id))
         except Exception as e:
             await st.edit_text(f"❌ خطا در دریافت لیست: {str(e)}")
             atk_state.clear()
