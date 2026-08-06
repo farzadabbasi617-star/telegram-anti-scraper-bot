@@ -14,7 +14,9 @@ def _patched_get_event_loop():
 asyncio.get_event_loop = _patched_get_event_loop
 
 import io
+import csv
 import time
+import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
@@ -64,6 +66,7 @@ def main_menu():
     else:
         buttons.append([InlineKeyboardButton("🔍 انتخاب گروه برای محافظت", callback_data="select_group")])
     buttons.append([InlineKeyboardButton("🚀 تست حمله پیشرفته", callback_data="attack")])
+    buttons.append([InlineKeyboardButton("➕ تست اضافه کردن اعضا به گروه", callback_data="add_members")])
     return InlineKeyboardMarkup(buttons)
 
 @app.on_message(filters.command("start") & filters.private & filters.user(ADMIN_ID))
@@ -153,7 +156,14 @@ async def cb(c, q):
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="home")]]))
         return
 
-@app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command("start"))
+    if d == "add_members":
+        atk_state.clear()
+        atk_state["step"] = "adder_phone"
+        await q.message.edit_text("➕ **اضافه کردن اعضا از فایل CSV**\n\n⚠️ از اکانت تست استفاده کنید.\nشماره اکانت را با فرمت +98 بفرستید:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="home")]]))
+        return
+
+@app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.text | filters.document) & ~filters.command("start"))
 async def steps(c, m):
     step = atk_state.get("step")
     if not step: return
@@ -235,6 +245,86 @@ async def steps(c, m):
             atk_state.clear()
             await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
         asyncio.create_task(run())
+
+    # ==================== مراحل اضافه کردن اعضا ====================
+    elif step == "adder_phone":
+        phone = m.text.strip()
+        atk_state["phone"] = phone
+        st = await m.reply_text("📡 در حال اتصال به اکانت اد کننده...")
+        try:
+            add_client = AdvancedScraper("adder_session", API_ID, API_HASH, phone=phone)
+            await add_client.connect()
+            sent = await add_client.app.send_code(phone)
+            atk_state["add_client"] = add_client
+            atk_state["hash"] = sent.phone_code_hash
+            atk_state["st"] = st
+            atk_state["step"] = "adder_code"
+            await st.edit_text("✅ کد تایید به اکانت ارسال شد، کد ۵ رقمی را بفرست:")
+        except Exception as e:
+            await st.edit_text(f"❌ خطا: {str(e)}")
+            atk_state.clear()
+
+    elif step == "adder_code":
+        code = m.text.strip()
+        add_client = atk_state.get("add_client")
+        phone = atk_state["phone"]
+        h = atk_state["hash"]
+        st = atk_state["st"]
+        try:
+            await add_client.app.sign_in(phone, h, code)
+        except Exception as e:
+            await m.reply_text(f"❌ خطا در کد: {str(e)}")
+            return
+        atk_state["step"] = "adder_target"
+        await st.edit_text("✅ ورود موفق!\nآیدی عددی گروه مقصد (که میخواهید افراد را به آن اضافه کنید) را بفرستید:\n(با -100 شروع میشود)")
+
+    elif step == "adder_target":
+        raw = m.text.strip()
+        add_client = atk_state["add_client"]
+        st = atk_state["st"]
+        try:
+            target_gid = int(raw)
+            target = await add_client.app.get_chat(target_gid)
+        except Exception as e:
+            await st.edit_text(f"❌ گروه پیدا نشد: {str(e)}")
+            return
+        atk_state["target_add_gid"] = target_gid
+        atk_state["step"] = "adder_file"
+        await st.edit_text(f"✅ گروه مقصد: {target.title}\nحالا **فایل CSV** که از استخراج دارید را همینجا آپلود کنید.")
+
+    elif step == "adder_file" and m.document:
+        add_client = atk_state.get("add_client")
+        target_gid = atk_state.get("target_add_gid")
+        st = atk_state["st"]
+        await st.edit_text("📥 فایل دریافت شد، در حال پردازش و اضافه کردن اعضا...")
+        # دانلود فایل
+        try:
+            file = await app.download_media(m.document, in_memory=True)
+            content = file.getvalue().decode("utf-8-sig")
+            reader = csv.DictReader(io.StringIO(content))
+            user_ids = []
+            for row in reader:
+                if "user_id" in row and row["user_id"].isdigit():
+                    user_ids.append(int(row["user_id"]))
+            added = 0
+            errors = 0
+            prog = await app.send_message(ADMIN_ID, f"شروع اضافه کردن {len(user_ids)} نفر به گروه...")
+            for uid in user_ids:
+                try:
+                    await add_client.app.add_chat_members(target_gid, uid)
+                    added +=1
+                    await asyncio.sleep(random.randint(8,15))  # تاخیر زیاد برای جلوگیری از بن
+                    if added %5 ==0:
+                        await prog.edit_text(f"در حال اضافه کردن...\nموفق: {added}\nناموفق: {errors}\nباقیمانده: {len(user_ids) - added - errors}")
+                except Exception as e:
+                    errors +=1
+                    await asyncio.sleep(2)
+            await prog.edit_text(f"✅ اضافه کردن تمام شد!\nموفق: {added} نفر\nناموفق: {errors} نفر")
+            await add_client.disconnect()
+        except Exception as e:
+            await st.edit_text(f"❌ خطا در اضافه کردن: {str(e)}")
+        atk_state.clear()
+        await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
 
 @app.on_message(filters.new_chat_members)
 async def new_mem(c, m):
