@@ -1,9 +1,11 @@
 # =================================================================
-# ربات ضد اسکریپت - نسخه نهایی با انتخاب گروه داینامیک
+# ربات ضد اسکریپت - نسخه نهایی با ذخیره تنظیمات دائمی
 # =================================================================
 import asyncio
 import sys
 import os
+import json
+
 loop = asyncio.new_event_loop()
 asyncio.set_event_loop(loop)
 _original_get_event_loop = asyncio.get_event_loop
@@ -24,53 +26,69 @@ from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from attacker import AdvancedScraper
 from defender import AdvancedDefender
 
-# ========== کانفیگ ==========
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8790569799:AAFZuVDuVg62v87yQqmaQy3LS_w71-Q6yz0")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 564234793))
 PORT = int(os.environ.get("PORT", 10000))
+CONFIG_FILE = "config.json"
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
 
-CURRENT_GROUP_ID = None
+# لود تنظیمات دائمی از فایل
+def load_config():
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"defend_group": None, "defense_enabled": True}
+
+def save_config(cfg):
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f)
+
+config = load_config()
+CURRENT_GROUP_ID = config.get("defend_group")
 defender = None
+if CURRENT_GROUP_ID:
+    defender = AdvancedDefender(app, CURRENT_GROUP_ID, ADMIN_ID)
+    defender.MIN_ACCOUNT_AGE_DAYS = 25 if config.get("defense_enabled", True) else 0
 atk_state = {}
 bg_started = False
 
 def main_menu():
+    buttons = []
     if not CURRENT_GROUP_ID:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔍 انتخاب گروه جهت محافظت و تست", callback_data="select_group")]
-        ])
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 وضعیت سیستم دفاع", callback_data="status")],
-        [InlineKeyboardButton("🚀 شروع تست حمله پیشرفته", callback_data="attack")],
-        [InlineKeyboardButton("⚙️ فعال/غیرفعال دفاع", callback_data="toggledef")],
-        [InlineKeyboardButton("🔄 تغییر گروه", callback_data="select_group")]
-    ])
+        buttons.append([InlineKeyboardButton("🔍 انتخاب گروه برای محافظت", callback_data="select_group")])
+    else:
+        buttons.append([InlineKeyboardButton("📊 وضعیت سیستم دفاع", callback_data="status")])
+        buttons.append([InlineKeyboardButton("⚙️ فعال/غیرفعال کردن دفاع", callback_data="toggledef")])
+        buttons.append([InlineKeyboardButton("🔄 تغییر گروه محافظت شده", callback_data="select_group")])
+    # دکمه حمله همیشه وجود دارد
+    buttons.append([InlineKeyboardButton("🚀 شروع تست حمله پیشرفته", callback_data="attack")])
+    return InlineKeyboardMarkup(buttons)
 
-# ===== دستور استارت =====
 @app.on_message(filters.command("start") & filters.private & filters.user(ADMIN_ID))
 async def start_cmd(c, m):
     global bg_started
-    if not bg_started:
-        asyncio.create_task(defender.bg_scan() if defender else asyncio.sleep(0))
+    if defender and not bg_started:
+        asyncio.create_task(defender.bg_scan())
         bg_started = True
     try:
         await app.set_bot_commands([])
     except:
         pass
-    await m.reply_text(
-        "✅ ربات ضد اسکریپت 2026 با موفقیت فعال شد!\n\n"
-        "لطفا یکی از گزینه ها را انتخاب کنید:",
-        reply_markup=main_menu()
-    )
+    welcome = "✅ ربات ضد اسکریپت 2026 فعال شد!\n\n"
+    if CURRENT_GROUP_ID:
+        welcome += f"🛡️ گروه محافظت شده در حال حاضر فعال است.\n"
+    else:
+        welcome += "⚠️ هنوز گروهی برای محافظت انتخاب نشده است.\n"
+    welcome += "\nلطفا یکی از گزینه ها را انتخاب کنید:"
+    await m.reply_text(welcome, reply_markup=main_menu())
 
-# ===== هندلر کلیه دکمه ها =====
 @app.on_callback_query(filters.user(ADMIN_ID))
 async def cb(c, q):
-    global CURRENT_GROUP_ID, defender, bg_started
+    global CURRENT_GROUP_ID, defender, bg_started, config
     d = q.data
 
     if d == "select_group":
@@ -85,46 +103,46 @@ async def cb(c, q):
                     pass
         if not groups:
             await q.answer("ربات در هیچ گروهی ادمین نیست!", show_alert=True)
-            await q.message.edit_text(
-                "❌ ابتدا مرا به گروهی که میخواهید محافظت کنید اضافه کنید، تمام دسترسی های ادمین را به من بدهید، سپس دوباره به اینجا بیایید.",
-                reply_markup=main_menu()
-            )
+            await q.message.edit_text("❌ ابتدا مرا به گروه خود اضافه و ادمین کنید.", reply_markup=main_menu())
             return
         buttons = []
         for name, gid in groups:
             buttons.append([InlineKeyboardButton(f"👥 {name}", callback_data=f"setg_{gid}")])
-        buttons.append([InlineKeyboardButton("بازگشت", callback_data="home")])
-        await q.message.edit_text("گروه مورد نظر را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+        buttons.append([InlineKeyboardButton("بازگشت به منو", callback_data="home")])
+        await q.message.edit_text("گروه مورد نظر برای محافظت را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
         return
 
     if d.startswith("setg_"):
         gid = int(d.split("_")[1])
         CURRENT_GROUP_ID = gid
+        config["defend_group"] = gid
+        config["defense_enabled"] = True
+        save_config(config)
         defender = AdvancedDefender(app, CURRENT_GROUP_ID, ADMIN_ID)
+        defender.MIN_ACCOUNT_AGE_DAYS = 25
         if not bg_started:
             asyncio.create_task(defender.bg_scan())
             bg_started = True
-        await q.answer("گروه با موفقیت انتخاب شد!", show_alert=True)
-        await q.message.edit_text(f"✅ گروه انتخاب و سیستم دفاع فعال شد.", reply_markup=main_menu())
+        await q.answer("گروه انتخاب و سیستم دفاع فعال شد!", show_alert=True)
+        await q.message.edit_text("✅ گروه با موفقیت برای محافظت انتخاب شد.", reply_markup=main_menu())
         return
 
     if d == "home":
         await q.message.edit_text("منوی اصلی:", reply_markup=main_menu())
         return
 
-    if not CURRENT_GROUP_ID:
-        await q.answer("اول یک گروه انتخاب کنید", show_alert=True)
-        return
-
     if d == "status":
+        if not CURRENT_GROUP_ID:
+            await q.answer("اول گروهی انتخاب کن", show_alert=True)
+            return
         try:
             chat = await app.get_chat(CURRENT_GROUP_ID)
             bot_mem = await app.get_chat_member(CURRENT_GROUP_ID, "me")
             is_adm = bot_mem.status in ["administrator", "creator"]
-            text = "📊 وضعیت دفاع:\n\n"
+            text = "📊 گزارش وضعیت دفاع:\n\n"
             text += f"🛡️ دفاع: {'✅ فعال' if defender.MIN_ACCOUNT_AGE_DAYS>0 else '❌ خاموش'}\n"
-            text += f"👑 ادمین: {'✅' if is_adm else '❌ دسترسی بدهید'}\n"
-            text += f"🙈 لیست اعضا مخفی: {'✅' if chat.has_hidden_members else '❌ فعال کنید'}\n"
+            text += f"👑 ادمین: {'✅' if is_adm else '❌ دسترسی لازم را بدهید'}\n"
+            text += f"🙈 لیست اعضا مخفی: {'✅' if chat.has_hidden_members else '❌ در تنظیمات گروه فعال کنید'}\n"
             text += f"👥 تعداد اعضا: {chat.members_count}\n"
             text += f"🚫 اسکریپت مسدود شده: {len(defender.banned_scrapers)}"
         except Exception as e:
@@ -132,8 +150,13 @@ async def cb(c, q):
         await q.message.edit_text(text, reply_markup=main_menu())
 
     elif d == "toggledef":
+        if not defender:
+            await q.answer("اول گروه انتخاب کنید", show_alert=True)
+            return
         defender.MIN_ACCOUNT_AGE_DAYS = 0 if defender.MIN_ACCOUNT_AGE_DAYS>0 else 25
-        await q.answer("وضعیت تغییر کرد", show_alert=True)
+        config["defense_enabled"] = defender.MIN_ACCOUNT_AGE_DAYS > 0
+        save_config(config)
+        await q.answer("وضعیت دفاع تغییر کرد", show_alert=True)
         await q.message.edit_text("✅ وضعیت دفاع تغییر کرد", reply_markup=main_menu())
 
     elif d == "attack":
@@ -141,23 +164,20 @@ async def cb(c, q):
         atk_state["step"] = "attack_phone"
         await q.message.edit_text(
             "🚀 **شبیه ساز حمله پیشرفته**\n\n"
-            "⚠️ نکته: برای حمله نیازی به ادمین بودن ربات در گروه هدف نیست.\n"
-            "فقط اکانت تست که وارد میشوید باید عضو گروه هدف باشد.\n\n"
-            "لطفا شماره اکانت تست را با فرمت +989xxxxxxxxx بفرستید:",
+            "⚠️ برای حمله نیازی به ادمین بودن ربات نیست، فقط اکانت تست باید عضو گروه هدف باشد.\n\n"
+            "شماره اکانت تست را با فرمت +989xxxxxxxxx بفرستید:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="home")]])
         )
 
-# ===== مراحل تست حمله =====
 @app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command("start"))
 async def steps(c, m):
     step = atk_state.get("step")
     if not step:
         return
-
     if step == "attack_phone":
         phone = m.text.strip()
         atk_state["phone"] = phone
-        st = await m.reply_text("📡 در حال اتصال و ارسال کد تایید به اکانت تست...")
+        st = await m.reply_text("📡 در حال ارسال کد تایید به اکانت تست...")
         try:
             atk = AdvancedScraper("atk_session", API_ID, API_HASH, phone=phone)
             await atk.connect()
@@ -166,11 +186,10 @@ async def steps(c, m):
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "attack_code"
-            await st.edit_text("✅ کد به اکانت تست ارسال شد.\nلطفا کد ۵ رقمی را بفرستید:")
+            await st.edit_text("✅ کد ارسال شد، لطفا کد ۵ رقمی را بفرستید.")
         except Exception as e:
             await st.edit_text(f"❌ خطا: {str(e)}")
             atk_state.clear()
-
     elif step == "attack_code":
         code = m.text.strip()
         atk = atk_state["atk"]
@@ -180,38 +199,32 @@ async def steps(c, m):
         try:
             await atk.app.sign_in(phone, h, code)
         except Exception as e:
-            await m.reply_text(f"❌ کد اشتباه یا خطا: {str(e)}")
+            await m.reply_text(f"❌ خطا: {str(e)}")
             return
         atk_state["step"] = "attack_groupid"
-        await st.edit_text("✅ ورود به اکانت موفقیت آمیز بود!\nحالا لطفا **آیدی عددی گروه هدف** را بفرستید (با -100 شروع میشود):")
-
+        await st.edit_text("✅ ورود موفق!\nلطفا آیدی عددی گروه هدف را بفرستید (با -100 شروع میشود):")
     elif step == "attack_groupid":
         try:
             target_gid = int(m.text.strip())
         except:
-            await m.reply_text("❌ لطفا آیدی عددی معتبر وارد کنید که با -100 شروع میشود.")
+            await m.reply_text("❌ لطفا آیدی عددی صحیح وارد کنید.")
             return
         st = atk_state["st"]
         atk = atk_state["atk"]
-        await st.edit_text(f"✅ آیدی گروه دریافت شد: `{target_gid}`\n🚀 در حال شروع حمله و استخراج اعضا...")
-        prog = await app.send_message(ADMIN_ID, f"🚀 حمله به گروه `{target_gid}` شروع شد...")
+        await st.edit_text(f"✅ آیدی دریافت شد، حمله به گروه `{target_gid}` در حال انجام...")
+        prog = await app.send_message(ADMIN_ID, "🚀 عملیات حمله شروع شد...")
         async def run():
             try:
                 users = await atk.run_full_scrape(target_gid)
                 csv_bytes = atk.export_csv()
-                await prog.edit_text(
-                    f"✅ حمله به اتمام رسید!\n"
-                    f"تعداد کاربر استخراج شده: {len(users)} نفر\n"
-                    f"فایل نتیجه در زیر ارسال میشود:"
-                )
-                await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"attack_{int(time.time())}.csv")
+                await prog.edit_text(f"✅ حمله تمام شد!\nتعداد کاربر استخراج شده: {len(users)} نفر\nفایل نتیجه زیر ارسال میشود:")
+                await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"attack_result_{int(time.time())}.csv")
                 await atk.disconnect()
             except Exception as e:
-                await prog.edit_text(f"❌ خطا در طول حمله:\n{str(e)}\n\nدقت کنید اکانت تست باید عضو گروه باشد.")
+                await prog.edit_text(f"❌ خطا در حمله:\n{str(e)}\nدقت کنید اکانت تست حتما عضو گروه هدف باشد.")
             atk_state.clear()
         asyncio.create_task(run())
 
-# ===== هندلرهای گروه =====
 @app.on_message(filters.new_chat_members)
 async def new_mem(c, m):
     if not CURRENT_GROUP_ID or m.chat.id != CURRENT_GROUP_ID or not defender or defender.MIN_ACCOUNT_AGE_DAYS <=0:
@@ -233,17 +246,17 @@ async def mon_msg(c, m):
         return
     await defender.monitor_message(m)
 
-# ===== سرور سلامت برای رندر =====
 class Health(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"OK")
-    def log_message(self, *a): pass
+    def log_message(self, *a):
+        pass
 
-def health_srv():
+def run_health():
     HTTPServer(("0.0.0.0", PORT), Health).serve_forever()
 
 if __name__ == "__main__":
-    Thread(target=health_srv, daemon=True).start()
+    Thread(target=run_health, daemon=True).start()
     app.run()
