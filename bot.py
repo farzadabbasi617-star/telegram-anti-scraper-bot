@@ -495,12 +495,85 @@ async def cb(c, q):
                 save_scraped(users, target.title, target.id)
                 await app.send_message(ADMIN_ID, f"✅ حمله تمام شد!\nگروه: {target.title}\nتعداد استخراج: {len(users)} نفر\n\n📋 از دکمه «لیست مخاطبان استخراج شده» در منو می‌توانید ببینید.")
                 await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"result_{int(time.time())}.csv")
-                await atk.disconnect()
+                try:
+                    await atk.disconnect()
+                except:
+                    pass
             except Exception as e:
-                await app.send_message(ADMIN_ID, f"❌ خطا در حمله:\n{str(e)}")
-            atk_state.clear()
+                err_text = str(e)
+                fail_msg = f"❌ خطا در حمله:\n{err_text}"
+                low_err = err_text.lower()
+                if "عضو" in err_text or "پیدا نشد" in err_text or "chat_invalid" in low_err or "peer" in low_err or "not found" in low_err:
+                    fail_msg += "\n\n💡 لطفا الان در تلگرام دستی آن گروه را **باز کنید و یک بار اسکرول کنید** تا اطلاعات گروه لود شود، سپس روی دکمه پایین بزنید:"
+                    retry_btns = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 گروه را باز کردم، دوباره امتحان کن", callback_data=f"retry_attack_{gid}")],
+                        [InlineKeyboardButton("🔙 بازگشت به منو", callback_data="home")]
+                    ])
+                    await app.send_message(ADMIN_ID, fail_msg, reply_markup=retry_btns)
+                else:
+                    await app.send_message(ADMIN_ID, fail_msg)
+            try:
+                atk_state.clear()
+            except:
+                pass
             await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
         asyncio.create_task(run())
+        return
+
+    # رتری کردن حمله بعد از اینکه کاربر دستی به گروه رفت
+    if d.startswith("retry_attack_"):
+        gid = int(d.split("_")[2])
+        atk = atk_state.get("atk")
+        phone = atk_state.get("phone")
+        if not atk and not phone:
+            await q.answer("وضعیت از دست رفت، لطفا دوباره از منو شروع کنید.", show_alert=True)
+            await q.message.edit_text("به منو باز می‌گردیم...", reply_markup=main_menu())
+            return
+        await q.answer("در حال تلاش مجدد، لطفا صبر کنید...", show_alert=False)
+        await q.message.edit_text("🔄 در حال تلاش مجدد برای اسکن...")
+        if not atk:
+            try:
+                atk = AdvancedScraper("atk_retry", API_ID, API_HASH, phone=phone)
+                await atk.connect()
+                atk_state["atk"] = atk
+            except Exception as e:
+                await q.message.edit_text(f"❌ خطا در اتصال مجدد: {str(e)}", reply_markup=main_menu())
+                return
+        async def run_retry():
+            try:
+                # قبل از شروع کش را دو بار گرم کن
+                for _ in range(2):
+                    async for _ in atk.app.get_dialogs(limit=2000):
+                        pass
+                    await asyncio.sleep(3)
+                users = await atk.run_full_scrape(gid)
+                csv_bytes = atk.export_csv()
+                try:
+                    target = await atk.app.get_chat(gid)
+                    tname = target.title
+                except:
+                    tname = "گروه هدف"
+                save_scraped(users, tname, gid)
+                await app.send_message(ADMIN_ID, f"✅ تلاش مجدد موفق!\nگروه: {tname}\nتعداد استخراج: {len(users)} نفر")
+                await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"result_{int(time.time())}.csv")
+                try:
+                    await atk.disconnect()
+                except:
+                    pass
+            except Exception as e:
+                err_text = str(e)
+                fail_msg = f"❌ هنوز خطا وجود دارد:\n{err_text}\n\n🔹 نکته: مطمئن شوید واقعا در گروه عضو هستید و در تلگرام اجازه دیدن لیست اعضا را دارید."
+                await app.send_message(ADMIN_ID, fail_msg,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔄 دوباره امتحان", callback_data=f"retry_attack_{gid}")],
+                        [InlineKeyboardButton("🔙 منوی اصلی", callback_data="home")]
+                    ]))
+            try:
+                atk_state.clear()
+            except:
+                pass
+            await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
+        asyncio.create_task(run_retry())
         return
 
     if d == "atk_target_manual":

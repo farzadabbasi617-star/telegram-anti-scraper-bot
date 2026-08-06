@@ -191,51 +191,84 @@ class AdvancedScraper:
         print("🚀 شروع حمله MAX MODE", flush=True)
         print("="*60, flush=True)
 
-        # گرم کردن کش دیالوگ ها - این کار مانع ارور CHAT_INVALID و عضو نبودن میشه
+        # گرم کردن کش دیالوگ ها - دو بار با تاخیر
         print("🔄 در حال بارگذاری لیست چت ها برای گرم کردن کش تلگرام...", flush=True)
+        all_chats = {}
         try:
-            cnt = 0
-            async for _ in self.app.get_dialogs(limit=2000):
-                cnt +=1
-                if cnt % 200 == 0:
-                    await self.human_sleep(0.1, 0.3)
-            print(f"✅ {cnt} چت بارگذاری شد", flush=True)
+            for _pass in range(2):
+                cnt = 0
+                async for d in self.app.get_dialogs(limit=2000):
+                    all_chats[d.chat.id] = d.chat
+                    cnt +=1
+                    await asyncio.sleep(0.01)
+                print(f"🔄 پاس {_pass+1}: {cnt} چت بارگذاری شد", flush=True)
+                await asyncio.sleep(2)
         except Exception as e:
             print(f"توجه: خطا در بارگذاری چت ها: {e}", flush=True)
+        await asyncio.sleep(3)  # فرصت به تلگرام برای سینک کامل
 
-        # پیدا کردن گروه هدف با کش کامل
+        # پیدا کردن گروه هدف
         target_found = None
+        target_id_resolved = None
         try:
+            # اول مستقیم resolve کن
+            peer = await self.app.resolve_peer(chat_id)
             target_found = await self.app.get_chat(chat_id)
+            target_id_resolved = target_found.id
             print(f"🎯 هدف: {target_found.title} | {target_found.id}", flush=True)
         except Exception as e:
-            # اگر مستقیم پیدا نشد تمام دیالوگ ها رو بگرد
-            print(f"🔍 هدف مستقیم پیدا نشد، در حال جستجو در لیست دیالوگ...", flush=True)
-            async for d in self.app.get_dialogs(limit=2000):
-                if d.chat.id == chat_id:
-                    target_found = d.chat
-                    break
+            print(f"🔍 رزول مستقیم ناموفق بود: {e}، در حال جستجو در لیست دیالوگ...", flush=True)
+            if chat_id in all_chats:
+                target_found = all_chats[chat_id]
+                target_id_resolved = target_found.id
+            else:
+                # دوباره سخت تر بگرد
+                async for d in self.app.get_dialogs(limit=2000):
+                    if d.chat.id == chat_id or (hasattr(chat_id, 'lower') and str(d.chat.username or '').lower() == str(chat_id).lower().replace('@','')):
+                        target_found = d.chat
+                        target_id_resolved = d.chat.id
+                        break
+                await asyncio.sleep(1)
             if not target_found:
-                raise Exception("گروه پیدا نشد، لطفا یک بار با اکانت وارد گروه شوید.")
-        chat_id = target_found.id
+                # آخرین تلاش: get_chat بعد از تاخیر
+                try:
+                    await asyncio.sleep(3)
+                    target_found = await self.app.get_chat(chat_id)
+                    target_id_resolved = target_found.id
+                except:
+                    raise Exception("❌ گروه به هیچ وجه پیدا نشد! لطفا یک بار با اکانت خود آن گروه را در تلگرام باز کنید (یک پیام هم بفرستید یا اسکرول کنید) و دوباره امتحان کنید.")
+        chat_id = target_id_resolved
+        print(f"✅ نهایتا هدف شناسایی شد: {target_found.title} | {chat_id}", flush=True)
 
-        # چک عضویت با چند بار تلاش برای اطمینان
-        is_member = False
-        for attempt in range(3):
+        # چک عضویت - نرم، سخت گیرانه نیست
+        is_member = None
+        for attempt in range(5):
             try:
                 me = await self.app.get_chat_member(chat_id, "me")
                 if me and me.status in ["administrator", "creator", "member", "restricted"]:
                     is_member = True
                     break
+                else:
+                    is_member = False
             except Exception as e:
-                print(f"⏱️ تلاش {attempt+1} برای چک عضویت ناموفق بود، ۲ ثانیه صبر...", flush=True)
-                await asyncio.sleep(2)
-                # یک بار دیگه لیست رو رفرش کن
-                async for _ in self.app.get_dialogs(limit=500):
+                print(f"⏱️ تلاش {attempt+1} برای چک عضویت: {e}، ۲ ثانیه صبر...", flush=True)
+                await asyncio.sleep(2.5)
+                try:
+                    # در هر تلاش یک بار دیگه resolve کن
+                    await self.app.resolve_peer(chat_id)
+                except:
                     pass
-        if not is_member:
-            raise Exception("❌ اکانت تست عضو این گروه نیست! لطفا ابتدا خودتان دستی با اکانت وارد گروه شوید (یک بار چت را باز کنید) و دوباره امتحان کنید.")
-        print("✅ تایید شد که در گروه عضو هستم", flush=True)
+                # یک بار دیگه یک صفحه دیالوگ رو بالا بیار
+                try:
+                    async for _ in self.app.get_dialogs(limit=200):
+                        pass
+                except:
+                    pass
+        if is_member is not True:
+            print("⚠️ چک خودکار عضویت موفق نبود، اما اسکن را ادامه می‌دهم...", flush=True)
+            # raise نمیکنیم! فقط هشدار میده و ادامه میده، خیلی مواقع خود اسکن درست کار میکنه
+        else:
+            print("✅ تایید شد که در گروه عضو هستم", flush=True)
 
         # مرحله ۱: لیست مستقیم با صفحه بندی الفبایی
         direct_ok = await self.scrape_direct_paginated(chat_id)
