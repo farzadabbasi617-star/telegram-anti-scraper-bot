@@ -30,10 +30,18 @@ from pyrogram.errors import SessionPasswordNeeded, AuthKeyDuplicated, AuthKeyUnr
 
 from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename, DEVICE_FP
 from defender import AdvancedDefender
+# hunter kept for backward compat (existing data still accessible)
 from hunter import (
     scan_text, check_balance_of_findings, load_found, save_found,
     load_hunter_state, save_hunter_state, export_found_csv,
     start_auto_scanner
+)
+# new project finder module
+from project_finder import (
+    CATEGORIES as PF_CATS, scan_category, scan_trending, search_trending_github,
+    merge_new, to_jalali_age,
+    load_found as pf_load, load_state as pf_state, save_state as pf_save_state,
+    projects_by_category, export_csv as pf_export, clear_all as pf_clear,
 )
 
 API_ID = int(os.environ.get("API_ID", 6))
@@ -156,6 +164,7 @@ if CURRENT_GROUP_ID:
 atk_state = {}
 bg_started = False
 hunter_bg_started = False
+pf_scanning = False  # project finder progress lock
 
 def main_menu():
     buttons = []
@@ -174,11 +183,10 @@ def main_menu():
     add_hist = load_added_history()
     total_added = sum(len(g.get("added_user_ids", [])) for g in add_hist.values())
     buttons.append([InlineKeyboardButton(f"✅ تاریخچه اعضای اضافه شده ({total_added})", callback_data="added_history_menu")])
-    # --- شکارچی گنج ---
-    found_list = load_found()
-    hstate = load_hunter_state()
-    hunter_status = "🟢" if hstate.get("running") else "🔴"
-    buttons.append([InlineKeyboardButton(f"{hunter_status} 🕵️ شکارچی کیف پول ({len(found_list)})", callback_data="hunter_menu")])
+    # --- پروژه یاب اوپن‌سورس ---
+    pf_all = pf_load()
+    pf_total = len(pf_all)
+    buttons.append([InlineKeyboardButton(f"🔭 پروژه‌یاب اوپن‌سورس ({pf_total})", callback_data="pf_menu")])
     buttons.append([InlineKeyboardButton(f"📱 مدیریت اکانت‌های من ({acc_count})", callback_data="manage_accounts")])
     return InlineKeyboardMarkup(buttons)
 
@@ -188,10 +196,7 @@ async def start_cmd(c, m):
     if defender and not bg_started:
         asyncio.create_task(defender.bg_scan())
         bg_started = True
-    # Start the crypto hunter 24/7 scanner once
-    if not hunter_bg_started:
-        start_auto_scanner(app, ADMIN_ID)
-        hunter_bg_started = True
+    # Note: crypto-hunter auto scanner disabled (replaced by project finder)
     try:
         await app.set_bot_commands([])
     except:
@@ -202,9 +207,9 @@ async def start_cmd(c, m):
     users, gname, _ = load_scraped()
     if users:
         welcome += f"📋 {len(users)} مخاطب استخراج شده در حافظه ذخیره شده.\n"
-    found_list = load_found()
-    if found_list:
-        welcome += f"💰 شکارچی: {len(found_list)} مورد پیدا شده.\n"
+    pf_all = pf_load()
+    if pf_all:
+        welcome += f"🔭 پروژه‌یاب: {len(pf_all)} پروژه در بایگانی.\n"
     await m.reply_text(welcome, reply_markup=main_menu())
 
 @app.on_callback_query(filters.user(ADMIN_ID))
@@ -490,106 +495,248 @@ async def cb(c, q):
         await q.message.edit_text("✅ تمام آمار اضافه کردن پاک شد.", reply_markup=main_menu())
         return
 
-    # ==================== شکارچی گنج ====================
-    if d == "hunter_menu":
-        found = load_found()
-        hs = load_hunter_state()
-        total_with_balance = sum(1 for f in found if (f.get("balance",0) or 0) > 0.0001)
-        total_val = sum((f.get("balance",0) or 0) for f in found)
-        total_games = sum(1 for f in found if f.get("type") == "game_account")
-        text = f"🕵️ <b>شکارچی حرفه‌ای کیف پول</b>\n\n"
-        text += f"🟢 وضعیت: {'روشن و در حال کار' if hs.get('running') else 'خاموش'}\n"
-        text += f"🔄 تعداد بررسی: {hs.get('checked',0)} دور\n"
-        text += f"📂 گیست اسکن شده: {hs.get('scanned_gists',0)}\n"
-        text += f"💎 کیف پول با موجودی پیدا شده: {total_with_balance}\n"
-        text += f"🎮 کمبو اکانت/بازی پیدا شده: {total_games}\n\n"
-        text += "⚙️ تنظیمات:\n"
-        text += "• فقط داده‌های آخر ۲ سال اسکن میشوند\n"
-        text += "• فقط seed و کلید خصوصی WIF بررسی میشوند (آدرس‌های عمومی نادیده گرفته میشوند)\n"
-        text += "• موجودی کمتر از ۰.۰۰۰۱ کوین گزارش نمی‌شود\n"
-        text += "• کمبوهای اکانت/بازی با نام سرویس برچسب‌گذاری میشوند\n"
-        text += "• در صورت پیدا شدن فورا به شما اطلاع داده میشود"
+    # ==================== پروژه یاب اوپن‌سورس ====================
+    if d == "pf_menu":
+        cats = projects_by_category()
+        st = pf_state()
+        total = sum(len(v) for v in cats.values())
+        text = f"🔭 <b>پروژه‌یاب اوپن‌سورس</b>\n\n"
+        text += f"🌐 در <b>گیت‌هاب</b> + <b>گیت‌لب</b> + <b>کدبرگ</b> می‌گردد\n"
+        text += f"📦 لایسنس‌های آزاد و بدون‌لایسنس\n"
+        text += f"📂 مجموع پروژه‌های بایگانی شده: <b>{total}</b>\n"
+        if st.get("last_scan"):
+            from datetime import datetime, timezone
+            dt = datetime.fromtimestamp(st["last_scan"], tz=timezone.utc)
+            text += f"⏱️ آخرین اسکن: {dt.strftime('%Y-%m-%d %H:%M')} UTC\n"
+        text += "\n<b>🗂️ دسته‌بندی‌ها:</b>"
         buttons = [
-            [InlineKeyboardButton("💰 لیست کیف پول‌های با موجودی", callback_data="hunter_list")],
-            [InlineKeyboardButton(f"🎮 لیست اکانت‌های بازی/کمبو ({total_games})", callback_data="hunter_games")],
-            [InlineKeyboardButton("🔍 اسکن متن/فایل دلخواه", callback_data="hunter_scan_text")],
-            [InlineKeyboardButton("🗑️ پاک کردن لیست پیدا شده", callback_data="hunter_clear")],
-            [InlineKeyboardButton("🔙 بازگشت", callback_data="home")]
+            [InlineKeyboardButton("🔥 ترند روز گیت‌هاب", callback_data="pf_scan_trending")],
         ]
+        for cid, info in PF_CATS.items():
+            cnt = len(cats.get(cid, []))
+            buttons.append([InlineKeyboardButton(f"{info['emoji']} {info['name']} ({cnt})", callback_data=f"pf_cat_{cid}")])
+        buttons.append([InlineKeyboardButton("🚀 اسکن همه دسته‌ها", callback_data="pf_scan_all")])
+        buttons.append([InlineKeyboardButton("📥 دانلود CSV کامل", callback_data="pf_export")])
+        buttons.append([InlineKeyboardButton("🗑️ پاک کردن بایگانی", callback_data="pf_clear")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
 
-    if d == "hunter_list":
-        found = load_found()
-        found_with_money = [f for f in found if (f.get("balance",0) or 0) > 0.0001]
-        if not found_with_money:
-            await q.answer("هنوز هیچ کیف پولی با موجودی واقعی پیدا نشده است. اسکن در حال اجراست...", show_alert=True)
+    if d == "pf_scan_trending":
+        global pf_scanning
+        if pf_scanning:
+            await q.answer("اسکن دیگری هنوز در حال اجراست، چند ثانیه صبر کن.", show_alert=True)
             return
-        text = f"💰 <b>{len(found_with_money)} کیف پول با موجودی واقعی:</b>\n\n"
-        for i, item in enumerate(found_with_money[:20], 1):
-            bal = item.get("balance",0) or 0
-            coin = item.get("coin","")
-            t = item["type"]
-            val = item["value"][:50] + ("..." if len(item["value"])>50 else "")
-            text += f"{i}. 💎 <b>{bal:.8f} {coin}</b>\n"
-            text += f"   └ {t}\n"
-            text += f"   └ <code>{val}</code>\n\n"
-        if len(found_with_money) > 20:
-            text += f"... و {len(found_with_money)-20} مورد دیگر"
-        buttons = [[InlineKeyboardButton("🔙 بازگشت", callback_data="hunter_menu")]]
-        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-        # CSV
-        csv_bytes = export_found_csv(found)
-        await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"wallets_with_balance_{int(time.time())}.csv", caption=f"📥 لیست کامل {len(found)} مورد (فقط {len(found_with_money)} مورد موجودی دارند)")
+        pf_scanning = True
+        status = await q.message.reply_text("🔥 در حال کشیدن لیست ترند روز گیت‌هاب...")
+        try:
+            loop = asyncio.get_running_loop()
+            items = await loop.run_in_executor(None, search_trending_github)
+            new_items = merge_new(items)
+            text = f"🔥 <b>ترند روز گیت‌هاب</b>\n"
+            text += f"✅ مجموع {len(items)} پروژه ترند، {len(new_items)} مورد جدید:\n\n"
+            for i, it in enumerate(items[:15], 1):
+                today = it.get("stars_today", 0)
+                desc = it.get("description","").strip()
+                if len(desc) > 80: desc = desc[:80] + "…"
+                text += f"{i}. <a href=\"{it['url']}\"><b>{it['full_name']}</b></a>\n"
+                text += f"   ⭐ {it['stars']:,} (+{today:,} امروز) · {it['language']}\n"
+                if desc:
+                    text += f"   └ {desc}\n"
+                text += "\n"
+            await status.edit_text(text, disable_web_page_preview=True,
+                                   reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به منوی پروژه‌ها", callback_data="pf_menu")]]))
+        except Exception as e:
+            await status.edit_text(f"❌ خطا: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")]]))
+        finally:
+            pf_scanning = False
         return
 
-    if d == "hunter_games":
-        found = load_found()
-        games = [f for f in found if f.get("type") == "game_account"]
-        # Aggregate by service
-        svc_counter = {}
-        for f in games:
-            s = f.get("service", "❓نامشخص") or "❓نامشخص"
-            svc_counter[s] = svc_counter.get(s, 0) + 1
-        if not games:
-            await q.answer("هنوز هیچ کمبوی بازی/سرویسی پیدا نشده است.", show_alert=True)
+    if d.startswith("pf_cat_"):
+        cat_id = d[len("pf_cat_"):]
+        cats = projects_by_category()
+        items = cats.get(cat_id, [])
+        info = PF_CATS.get(cat_id, {})
+        page_key = f"pf_page_{cat_id}"
+        page = atk_state.get(page_key, 0)
+        per_page = 8
+        total_pages = max(1, (len(items)+per_page-1)//per_page)
+        start = page*per_page
+        chunk = items[start:start+per_page]
+        text = f"{info.get('emoji','')} <b>{info.get('name','')}</b> — صفحه {page+1}/{total_pages}\n\n"
+        if not chunk:
+            text += "⚠️ هنوز اسکن نشده. اول دکمه «🔄 اسکن این دسته» رو بزن.\n"
+        else:
+            for i, it in enumerate(chunk, start+1):
+                plat = {"github":"🐙","gitlab":"🦊","codeberg":"🌿"}.get(it["platform"],"")
+                desc = (it.get("description") or "").strip()
+                if len(desc) > 90: desc = desc[:90] + "…"
+                age = to_jalali_age(it.get("updated_at","")) if it.get("updated_at") else ""
+                text += f"{i}. {plat} <a href=\"{it['url']}\"><b>{it['full_name']}</b></a>\n"
+                text += f"   ⭐ {it['stars']:,} · 🍴 {it['forks']:,} · {it['language']}\n"
+                if it.get("license") and it["license"] != "—":
+                    text += f"   📜 {it['license']} · "
+                if age:
+                    text += f"🕒 {age}\n"
+                if desc:
+                    text += f"   └ {desc}\n"
+                text += "\n"
+        buttons = []
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"pf_prev_{cat_id}"))
+        if page < total_pages-1:
+            nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"pf_next_{cat_id}"))
+        if nav: buttons.append(nav)
+        buttons.append([InlineKeyboardButton("🔄 اسکن این دسته", callback_data=f"pf_scan_{cat_id}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")])
+        await q.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("pf_next_") or d.startswith("pf_prev_"):
+        cat_id = d.split("_", 2)[2]
+        key = f"pf_page_{cat_id}"
+        cur = atk_state.get(key, 0)
+        if d.startswith("pf_next_"):
+            atk_state[key] = cur + 1
+        else:
+            atk_state[key] = max(0, cur - 1)
+        # re-render the cat page inline
+        cats = projects_by_category()
+        items = cats.get(cat_id, [])
+        info = PF_CATS.get(cat_id, {})
+        page = atk_state[key]
+        per_page = 8
+        total_pages = max(1, (len(items)+per_page-1)//per_page)
+        if page >= total_pages:
+            page = total_pages - 1
+            atk_state[key] = page
+        start = page*per_page
+        chunk = items[start:start+per_page]
+        text = f"{info.get('emoji','')} <b>{info.get('name','')}</b> — صفحه {page+1}/{total_pages}\n\n"
+        if not chunk:
+            text += "⚠️ هنوز اسکن نشده. اول دکمه «🔄 اسکن این دسته» رو بزن.\n"
+        else:
+            for i, it in enumerate(chunk, start+1):
+                plat = {"github":"🐙","gitlab":"🦊","codeberg":"🌿"}.get(it["platform"],"")
+                desc = (it.get("description") or "").strip()
+                if len(desc) > 90: desc = desc[:90] + "…"
+                age = to_jalali_age(it.get("updated_at","")) if it.get("updated_at") else ""
+                text += f"{i}. {plat} <a href=\"{it['url']}\"><b>{it['full_name']}</b></a>\n"
+                text += f"   ⭐ {it['stars']:,} · 🍴 {it['forks']:,} · {it['language']}\n"
+                if it.get("license") and it["license"] != "—":
+                    text += f"   📜 {it['license']} · "
+                if age:
+                    text += f"🕒 {age}\n"
+                if desc:
+                    text += f"   └ {desc}\n"
+                text += "\n"
+        buttons = []
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"pf_prev_{cat_id}"))
+        if page < total_pages-1:
+            nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"pf_next_{cat_id}"))
+        if nav: buttons.append(nav)
+        buttons.append([InlineKeyboardButton("🔄 اسکن این دسته", callback_data=f"pf_scan_{cat_id}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")])
+        await q.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    # handle scan_{cat} and scan_all
+    if d.startswith("pf_scan_") and not d == "pf_scan_all" and not d == "pf_scan_trending":
+        cat_id = d[len("pf_scan_"):]
+        if pf_scanning:
+            await q.answer("اسکن دیگری هنوز در حال اجراست، صبر کن.", show_alert=True)
             return
-        text = f"🎮 <b>{len(games)} کمبو اکانت بازی/سرویس</b>\n\n"
-        text += "<b>📊 آمار به تفکیک سرویس:</b>\n"
-        for svc, cnt in sorted(svc_counter.items(), key=lambda x: -x[1])[:15]:
-            text += f"  • {svc}: <b>{cnt}</b>\n"
-        text += "\n<b>🕐 آخرین ۱۵ مورد:</b>\n"
-        for i, item in enumerate(games[-15:][::-1], 1):
-            svc = item.get("service", "❓")
-            src = item.get("source", "")
-            v = item["value"]
-            if len(v) > 45: v = v[:45] + "…"
-            src_str = f" ({src})" if src else ""
-            text += f"\n{i}. 🏷️ {svc}{src_str}\n   <code>{v}</code>"
-        buttons = [[InlineKeyboardButton("🔙 بازگشت", callback_data="hunter_menu")]]
-        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-        # Also send CSV of just game accounts
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["service","email:password","source","timestamp"])
-        for f in games:
-            w.writerow([f.get("service",""), f.get("value",""), f.get("source",""), f.get("ts","")])
-        await app.send_document(ADMIN_ID, _io.BytesIO(buf.getvalue().encode("utf-8-sig")),
-                                file_name=f"game_accounts_{int(time.time())}.csv",
-                                caption=f"📥 لیست کامل {len(games)} اکانت/کمبو به صورت CSV")
+        pf_scanning = True
+        info = PF_CATS.get(cat_id, {"name": cat_id})
+        status = await q.message.reply_text(f"{info.get('emoji','🔍')} در حال جستجو در {info['name']}...\n(گیت‌هاب + گیت‌لب + کدبرگ)\nچند لحظه صبر کن ⏳")
+        try:
+            loop = asyncio.get_running_loop()
+            items = await loop.run_in_executor(None, lambda: scan_category(cat_id, min_stars=0, per_platform=8))
+            new_items = merge_new(items)
+            # Top 10 new items
+            text = f"✅ <b>اسکن {info['name']} تمام شد</b>\n"
+            text += f"🔍 مجموع پیدا شده: {len(items)}\n"
+            text += f"🆕 مورد جدید: {len(new_items)}\n\n"
+            top = sorted(items, key=lambda x: x.get("stars",0), reverse=True)[:10]
+            for i, it in enumerate(top, 1):
+                plat = {"github":"🐙","gitlab":"🦊","codeberg":"🌿"}.get(it["platform"],"")
+                desc = (it.get("description") or "").strip()
+                if len(desc) > 80: desc = desc[:80] + "…"
+                text += f"{i}. {plat} <a href=\"{it['url']}\"><b>{it['full_name']}</b></a>\n"
+                text += f"   ⭐ {it['stars']:,} · {it['language']}\n"
+                if desc:
+                    text += f"   └ {desc}\n\n"
+            text += "از دکمه دسته‌بندی در منوی اصلی می‌توانی لیست کامل را صفحه‌صفحه ببینی."
+            await status.edit_text(text, disable_web_page_preview=True,
+                                   reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 منوی پروژه‌ها", callback_data="pf_menu")]]))
+        except Exception as e:
+            await status.edit_text(f"❌ خطا در اسکن: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")]]))
+        finally:
+            pf_scanning = False
         return
 
-    if d == "hunter_scan_text":
-        atk_state["hunter_step"] = "await_text"
-        await q.message.edit_text("🔍 لطفا متنی که می‌خواهی در آن دنبال کیف پول یا اکانت بازی بگردی را بفرست.\nهمچنین می‌توانی فایل متنی .txt/.csv را آپلود کنی.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="hunter_menu")]]))
-        await q.answer()
+    if d == "pf_scan_all":
+        if pf_scanning:
+            await q.answer("اسکن دیگری در حال اجراست.", show_alert=True)
+            return
+        pf_scanning = True
+        status = await q.message.reply_text(f"🚀 <b>اسکن کامل همه دسته‌ها آغاز شد</b>\n{len(PF_CATS)} دسته × ۳ پلتفرم\nحدود ۱-۲ دقیقه طول می‌کشه، لطفا صبر کن...\n\n"
+                                            "در حال پردازش: ...")
+        all_items = []
+        total_new = 0
+        try:
+            loop = asyncio.get_running_loop()
+            cids = list(PF_CATS.keys())
+            for idx, cid in enumerate(cids, 1):
+                info = PF_CATS[cid]
+                try:
+                    await status.edit_text(f"🚀 <b>اسکن کامل همه دسته‌ها ({idx}/{len(cids)})</b>\n"
+                                           f"در حال جستجو در: {info['emoji']} {info['name']}\n"
+                                           f"⏳ تا کنون: {len(all_items)} پروژه پیدا شده")
+                except: pass
+                items = await loop.run_in_executor(None, lambda c=cid: scan_category(c, min_stars=0, per_platform=6))
+                new = merge_new(items)
+                all_items.extend(items)
+                total_new += len(new)
+                await asyncio.sleep(1.5)
+            text = f"✅ <b>اسکن کامل تمام شد!</b>\n\n"
+            text += f"📦 مجموع پروژه‌های پیدا شده: {len(all_items)}\n"
+            text += f"🆕 موارد جدید این اسکن: {total_new}\n\n"
+            text += "<b>🔝 برترین‌های این اسکن:</b>\n"
+            top = sorted(all_items, key=lambda x: x.get("stars",0), reverse=True)[:15]
+            for i, it in enumerate(top, 1):
+                plat = {"github":"🐙","gitlab":"🦊","codeberg":"🌿"}.get(it["platform"],"")
+                desc = (it.get("description") or "").strip()
+                if len(desc) > 70: desc = desc[:70] + "…"
+                text += f"{i}. {plat} <a href=\"{it['url']}\"><b>{it['full_name']}</b></a> ⭐{it['stars']:,} · {it['language']}\n"
+                if desc: text += f"   └ {desc}\n"
+            await status.edit_text(text, disable_web_page_preview=True,
+                                   reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 منوی پروژه‌ها", callback_data="pf_menu")]]))
+        except Exception as e:
+            await status.edit_text(f"❌ خطا در اسکن کامل: {e}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")]]))
+        finally:
+            pf_scanning = False
         return
 
-    if d == "hunter_clear":
-        save_found([])
-        await q.answer("لیست پاک شد، اسکن دوباره از نو ادامه پیدا میکند.", show_alert=True)
-        await q.message.edit_text("✅ لیست کیف پول‌ها پاک شد.", reply_markup=main_menu())
+    if d == "pf_export":
+        data = pf_load()
+        if not data:
+            await q.answer("هنوز هیچ پروژه‌ای بایگانی نشده است.", show_alert=True)
+            return
+        buf_bytes = pf_export()
+        await app.send_document(ADMIN_ID, io.BytesIO(buf_bytes),
+                                file_name=f"open_source_projects_{int(time.time())}.csv",
+                                caption=f"📥 لیست کامل {len(data)} پروژه اوپن‌سورس")
+        await q.answer("CSV ارسال شد ✅", show_alert=True)
+        return
+
+    if d == "pf_clear":
+        pf_clear()
+        await q.answer("بایگانی پروژه‌ها پاک شد.", show_alert=True)
+        await q.message.edit_text("✅ بایگانی پروژه‌ها پاک شد.", reply_markup=main_menu())
         return
 
     # ==================== انتخاب هدف حمله از لیست ====================
@@ -1026,70 +1173,10 @@ async def steps(c, m):
     step = atk_state.get("step")
     hstep = atk_state.get("hunter_step")
 
-    # ========== Hunter manual scan ==========
+    # ========== Hunter manual scan (deprecated - hunter replaced by project finder) ==========
     if hstep == "await_text":
-        text = ""
-        if m.document:
-            status = await m.reply_text("📥 در حال دانلود و خواندن فایل...")
-            try:
-                file = await app.download_media(m.document, in_memory=True)
-                text = file.getvalue().decode("utf-8-sig", errors="ignore")
-            except Exception as e:
-                await status.edit_text(f"❌ خطا در خواندن فایل: {str(e)}")
-                atk_state["hunter_step"] = None
-                return
-        else:
-            text = m.text or ""
-            status = await m.reply_text("🔍 در حال اسکن...")
-        if not text.strip():
-            await status.edit_text("❌ متن خالی است.")
-            atk_state["hunter_step"] = None
-            return
-        findings = scan_text(text, source="manual")
-        wallets = [f for f in findings if f["type"] in ("seed_phrase","btc_wif")]
-        games = [f for f in findings if f["type"] == "game_account"]
-        await status.edit_text(f"✅ تشخیص داده شد:\n💰 {len(wallets)} کیف پول/seed\n🎮 {len(games)} اکانت/کمبو\n⏳ در حال بررسی موجودی آنلاین...")
-        wallets_checked = check_balance_of_findings(wallets)
-        # Save new findings
-        existing = load_found()
-        seen = set((f["type"], f["value"]) for f in existing)
-        new_wallets = 0
-        new_games = 0
-        total_money = 0
-        for f in wallets_checked + games:
-            k = (f["type"], f["value"])
-            if k not in seen:
-                existing.append(f)
-                seen.add(k)
-                if f["type"] == "game_account":
-                    new_games += 1
-                else:
-                    new_wallets += 1
-                    total_money += f.get("balance",0) or 0
-        save_found(existing)
-        msg = f"✅ اسکن کامل شد!\n\n💎 کیف پول/seed جدید: {new_wallets}\n🎮 اکانت بازی/کمبو جدید: {new_games}\n💰 مجموع موجودی پیدا شده: {total_money:.8f}"
-        if wallets_checked:
-            msg += "\n\n<b>نمونه کیف پول ها:</b>"
-            for f in wallets_checked[:5]:
-                bal = f.get("balance",0) or 0
-                if bal > 0.0001:
-                    msg += f"\n🚨 {bal:.6f} {f.get('coin','')} - {f['value'][:50]}"
-        if games:
-            # Aggregate by service
-            svc_count = {}
-            for f in games:
-                s = f.get("service", "❓نامشخص")
-                svc_count[s] = svc_count.get(s, 0) + 1
-            top = sorted(svc_count.items(), key=lambda x: -x[1])[:5]
-            msg += f"\n\n🎮 {len(games)} کمبو پیدا شد:\n<b>تقسیم‌بندی:</b> " + " | ".join(f"{s}×{c}" for s,c in top)
-            msg += f"\n\n<b>نمونه:</b>"
-            for f in games[:10]:
-                svc = f.get("service", "❓")
-                v = f["value"]
-                if len(v) > 55: v = v[:55] + "…"
-                msg += f"\n🏷️ {svc}\n   <code>{v}</code>"
         atk_state["hunter_step"] = None
-        await status.edit_text(msg, reply_markup=main_menu())
+        await m.reply_text("⚠️ ماژول شکارچی کیف‌پول/اکانت با «پروژه‌یاب اوپن‌سورس» جایگزین شد. از منوی اصلی استفاده کن.", reply_markup=main_menu())
         return
 
     if not step: return

@@ -9,3 +9,8 @@ saved_accounts.json
 config.json
 saved_sessions/
 added_members_history.json
+found_treasures.json
+hunter_state.json
+pfinder_projects.json
+pfinder_state.json
+antiscraper_bot.session*
