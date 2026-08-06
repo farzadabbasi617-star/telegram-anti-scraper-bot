@@ -39,10 +39,41 @@ PORT = int(os.environ.get("PORT", 10000))
 CONFIG_FILE = "config.json"
 SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
+ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
 MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر اکانت
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
+
+
+def load_added_history():
+    """بارگذاری تاریخچه افرادی که به گروه ها اضافه شده اند"""
+    try:
+        with open(ADDED_MEMBERS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_added_history(hist):
+    with open(ADDED_MEMBERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(hist, f, ensure_ascii=False)
+
+def mark_user_as_added(chat_id, chat_title, user_id):
+    """ثبت کردن این کاربر که به این گروه اضافه شد"""
+    hist = load_added_history()
+    ckey = str(chat_id)
+    if ckey not in hist:
+        hist[ckey] = {"group_title": chat_title, "added_user_ids": [], "last_added_at": 0}
+    if user_id not in hist[ckey]["added_user_ids"]:
+        hist[ckey]["added_user_ids"].append(user_id)
+    hist[ckey]["last_added_at"] = int(time.time())
+    save_added_history(hist)
+
+def is_user_already_added(chat_id, user_id):
+    """چک کنه که این کاربر قبلا به این گروه اضافه شده یا نه"""
+    hist = load_added_history()
+    ckey = str(chat_id)
+    return ckey in hist and user_id in hist[ckey].get("added_user_ids", [])
 
 
 def load_accounts():
@@ -134,6 +165,9 @@ def main_menu():
     buttons.append([InlineKeyboardButton("➕ تست اضافه کردن اعضا به گروه", callback_data="pick_account_add")])
     buttons.append([InlineKeyboardButton("📋 لیست مخاطبان استخراج شده", callback_data="show_list_0")])
     buttons.append([InlineKeyboardButton("📈 آمار اکانت‌های اضافه کننده", callback_data="adder_stats")])
+    add_hist = load_added_history()
+    total_added = sum(len(g.get("added_user_ids", [])) for g in add_hist.values())
+    buttons.append([InlineKeyboardButton(f"✅ تاریخچه اعضای اضافه شده ({total_added})", callback_data="added_history_menu")])
     buttons.append([InlineKeyboardButton(f"📱 مدیریت اکانت‌های من ({acc_count})", callback_data="manage_accounts")])
     return InlineKeyboardMarkup(buttons)
 
@@ -237,10 +271,16 @@ async def cb(c, q):
         start = page * PER_PAGE
         end = min(start + PER_PAGE, total)
         chunk = users[start:end]
+        add_hist = load_added_history()
+        all_added_ids = set()
+        for ginfo in add_hist.values():
+            all_added_ids.update(ginfo.get("added_user_ids", []))
+        added_in_list = sum(1 for u in users if u.get("user_id") in all_added_ids)
         text = f"📋 **لیست مخاطبان استخراج شده**\n"
         if gname:
             text += f"👥 گروه: {gname}\n"
         text += f"🔢 تعداد کل: {total} نفر\n"
+        text += f"✅ تا کنون ادد شده: {added_in_list} نفر\n"
         text += f"📄 صفحه {page+1} از {total_pages}\n\n"
         for i, u in enumerate(chunk, start=start+1):
             name = u.get("first_name","") or "بدون نام"
@@ -249,8 +289,9 @@ async def cb(c, q):
             uname = f"@{u['username']}" if u.get("username") else "(بدون یوزرنیم)"
             uid = u.get("user_id", "?")
             prem = "⭐" if u.get("is_premium") == "بله" else ""
+            added = "✅" if uid in all_added_ids else ""
             src = u.get("source", "")
-            text += f"{i}. {prem}{name}\n   └ {uname} | `{uid}`\n   └ منبع: {src}\n"
+            text += f"{i}. {added}{prem}{name}\n   └ {uname} | `{uid}`\n   └ منبع: {src}\n"
         if len(text) > 3800:
             text = text[:3800] + "\n...(ادامه در صفحه بعد)"
         nav_buttons = []
@@ -264,6 +305,92 @@ async def cb(c, q):
         nav_buttons.append([InlineKeyboardButton("📥 دانلود CSV کامل", callback_data="download_csv")])
         nav_buttons.append([InlineKeyboardButton("🔙 بازگشت به منو", callback_data="home")])
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(nav_buttons), disable_web_page_preview=True)
+        return
+
+    # ==================== تاریخچه اعضای اضافه شده ====================
+    if d == "added_history_menu":
+        hist = load_added_history()
+        text = f"✅ **تاریخچه اعضای اضافه شده**\n\n"
+        total_all = sum(len(g.get("added_user_ids", [])) for g in hist.values())
+        text += f"🔢 مجموع کل ادد شده ها: {total_all} نفر\n\n"
+        if not hist:
+            text += "هنوز هیچ کس به هیچ گروهی اضافه نشده."
+        else:
+            for gid, ginfo in hist.items():
+                cnt = len(ginfo.get("added_user_ids", []))
+                title = ginfo.get("group_title", "گروه ناشناخته")
+                last = ginfo.get("last_added_at", 0)
+                date_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last)) if last else "-"
+                text += f"👥 {title}\n   └ تعداد ادد شده: {cnt} نفر\n   └ آخرین ادد: {date_str}\n\n"
+        buttons = []
+        for gid in hist:
+            buttons.append([InlineKeyboardButton(f"👁️ مشاهده لیست: {hist[gid].get('group_title','?')[:25]}", callback_data=f"view_added_{gid}_0")])
+        buttons.append([InlineKeyboardButton("🗑️ پاک کردن تاریخچه تکراری برای یک گروه", callback_data="clear_added_pick")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت به منو", callback_data="home")])
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("view_added_"):
+        parts = d.split("_")
+        gid_key = parts[2]
+        page = int(parts[3])
+        PER_PAGE = 20
+        hist = load_added_history()
+        ginfo = hist.get(gid_key, {})
+        ids_list = ginfo.get("added_user_ids", [])
+        title = ginfo.get("group_title", "?")
+        total = len(ids_list)
+        total_pages = max(1, (total + PER_PAGE -1) // PER_PAGE)
+        if page >= total_pages:
+            page = total_pages-1
+        start = page * PER_PAGE
+        end = min(start + PER_PAGE, total)
+        chunk_ids = ids_list[start:end]
+        text = f"✅ لیست {total} نفر ادد شده به:\n👥 {title}\n📄 صفحه {page+1} از {total_pages}\n\n"
+        # نام ها را تا حد امکان از لیست استخراج شده بیابیم
+        scraped_users, _, _ = load_scraped()
+        id_to_name = {u.get("user_id"): u for u in scraped_users}
+        for i, uid in enumerate(chunk_ids, start=start+1):
+            info = id_to_name.get(uid, {})
+            name = info.get("first_name", "") or ""
+            if info.get("last_name"):
+                name += " " + info["last_name"]
+            if not name:
+                name = f"کاربر {uid}"
+            uname = f"@{info['username']}" if info.get("username") else ""
+            text += f"{i}. ✅ {name} {uname} (`{uid}`)\n"
+        if len(text) > 3800:
+            text = text[:3800] + "\n..."
+        nav = []
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"view_added_{gid_key}_{page-1}"))
+        nav_row.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages-1:
+            nav_row.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"view_added_{gid_key}_{page+1}"))
+        nav.append(nav_row)
+        nav.append([InlineKeyboardButton("🔙 بازگشت به لیست تاریخچه", callback_data="added_history_menu")])
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(nav))
+        return
+
+    if d == "clear_added_pick":
+        hist = load_added_history()
+        buttons = []
+        for gid in hist:
+            cnt = len(hist[gid].get("added_user_ids", []))
+            buttons.append([InlineKeyboardButton(f"❌ پاک کن: {hist[gid].get('group_title','?')[:20]} ({cnt})", callback_data=f"clr_add_{gid}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="added_history_menu")])
+        await q.message.edit_text("تاریخچه کدام گروه را پاک کنم؟ (پاک کردن باعث میشه دوباره بتونی ان افراد رو ادد کنی)", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("clr_add_"):
+        gid_key = d[len("clr_add_"):]
+        hist = load_added_history()
+        if gid_key in hist:
+            del hist[gid_key]
+            save_added_history(hist)
+        await q.answer("تاریخچه آن گروه پاک شد.", show_alert=True)
+        await q.message.edit_text("✅ تاریخچه تکراری پاک شد.", reply_markup=main_menu())
         return
 
     if d == "download_csv":
@@ -1103,44 +1230,100 @@ async def steps(c, m):
             file = await app.download_media(m.document, in_memory=True)
             content = file.getvalue().decode("utf-8-sig")
             reader = csv.DictReader(io.StringIO(content))
-            user_ids = []
+            raw_user_ids = []
             for row in reader:
                 if "user_id" in row and str(row["user_id"]).lstrip('-').isdigit():
-                    user_ids.append(int(row["user_id"]))
+                    uid = int(row["user_id"])
+                    # فیلتر کردن افرادی که قبلا به این گروه اضافه شده اند
+                    if is_user_already_added(target_gid, uid):
+                        continue
+                    if uid not in raw_user_ids:
+                        raw_user_ids.append(uid)
+            # پیدا کردن نام گروه برای ثبت در تاریخچه
+            try:
+                target_chat = await add_client.app.get_chat(target_gid)
+                target_title = target_chat.title
+            except:
+                target_title = "گروه مقصد"
+            user_ids = raw_user_ids
+            total_in_file = len(user_ids)
             added = 0
             errors = 0
+            already_skipped = len([1 for row in csv.DictReader(io.StringIO(content)) if "user_id" in row and str(row["user_id"]).lstrip('-').isdigit()]) - total_in_file
             skipped_due_to_limit = 0
             remaining_slots = MAX_ADD_PER_ACCOUNT - already
-            prog = await app.send_message(ADMIN_ID, f"شروع اضافه کردن...\nسقف اکانت: {MAX_ADD_PER_ACCOUNT}\nقبلا اضافه شده: {already}\nظرفیت باقیمانده: {remaining_slots}\nتعداد افراد در فایل: {len(user_ids)}")
+            start_msg = f"شروع اضافه کردن...\n"
+            start_msg += f"👥 گروه مقصد: {target_title}\n"
+            start_msg += f"📄 تعداد در فایل: {total_in_file + already_skipped}\n"
+            start_msg += f"⚠️ تکراری (قبلا ادد شده و رد شد): {already_skipped}\n"
+            start_msg += f"🎯 تعداد جدید برای ادد: {total_in_file}\n"
+            start_msg += f"🚀 سقف اکانت: {already}/{MAX_ADD_PER_ACCOUNT} (ظرفیت: {remaining_slots})"
+            prog = await app.send_message(ADMIN_ID, start_msg)
+            async def disconnect_later():
+                try:
+                    await add_client.disconnect()
+                except:
+                    pass
             for uid in user_ids:
-                # چک محدودیت قبل از هر اضافه کردن
                 total_for_account = already + added
                 if total_for_account >= MAX_ADD_PER_ACCOUNT:
                     skipped_due_to_limit = len(user_ids) - (added + errors)
-                    await prog.edit_text(f"⚠️ به سقف {MAX_ADD_PER_ACCOUNT} نفر در این اکانت رسیدیم!\nادامه متوقف شد.\n\nموفق: {added}\nناموفق: {errors}\nباقیمانده در فایل (اضافه نشد): {skipped_due_to_limit}")
+                    await prog.edit_text(
+                        f"⚠️ به سقف {MAX_ADD_PER_ACCOUNT} نفر در این اکانت رسیدیم!\nادامه متوقف شد.\n\n"
+                        f"✅ جدیدا ادد شد: {added} نفر\n"
+                        f"❌ ناموفق: {errors} نفر\n"
+                        f"🔁 تکراری رد شده قبل از شروع: {already_skipped}\n"
+                        f"🚫 به خاطر سقف ادد نشد: {skipped_due_to_limit}"
+                    )
+                    await disconnect_later()
                     break
+                err_msg = ""
                 try:
                     await add_client.app.add_chat_members(target_gid, uid)
-                    added +=1
-                    # ذخیره فوری آمار بعد از هر اضافه کردن موفق
+                    added += 1
+                    # ثبت در تاریخچه تکراری ها
+                    mark_user_as_added(target_gid, target_title, uid)
+                    # ذخیره آمار اکانت
                     limits = load_adder_limits()
-                    limits[phone] = {
-                        "added": already + added,
-                        "last_used": int(time.time())
-                    }
+                    limits[phone] = {"added": already + added, "last_used": int(time.time())}
                     save_adder_limits(limits)
                     await asyncio.sleep(random.randint(8,15))
-                    if added %5 ==0:
-                        await prog.edit_text(f"در حال اضافه کردن...\nموفق: {added}\nناموفق: {errors}\nمحدودیت اکانت: {already+added}/{MAX_ADD_PER_ACCOUNT}\nباقیمانده: {len(user_ids) - added - errors}")
+                    if added % 5 == 0 or errors % 5 == 0:
+                        done = added + errors
+                        await prog.edit_text(
+                            f"⏳ در حال اضافه کردن...\n"
+                            f"✅ موفق: {added}\n"
+                            f"❌ خطا: {errors}\n"
+                            f"🔁 تکراری رد شده: {already_skipped}\n"
+                            f"📊 پیشرفت اکانت: {already+added}/{MAX_ADD_PER_ACCOUNT}\n"
+                            f"📉 باقیمانده: {len(user_ids) - done}"
+                        )
                 except Exception as e:
                     errors +=1
-                    await asyncio.sleep(2)
+                    err_str = str(e).lower()
+                    wait_time = 2
+                    if "flood" in err_str or "too many" in err_str:
+                        wait_time = 15
+                    elif "already" in err_str or "participant" in err_str:
+                        # کاربر الان هم در گروه هست، در لیست تکراری علامت بزن
+                        mark_user_as_added(target_gid, target_title, uid)
+                    await asyncio.sleep(wait_time)
             else:
-                # اگر به انتها رسیدیم بدون break
-                await prog.edit_text(f"✅ اضافه کردن تمام شد!\nموفق: {added} نفر\nناموفق: {errors} نفر\nکل اضافه شده با این اکانت: {already+added}/{MAX_ADD_PER_ACCOUNT}")
-            await add_client.disconnect()
+                await prog.edit_text(
+                    f"✅ عملیات اضافه کردن به پایان رسید!\n\n"
+                    f"👥 گروه: {target_title}\n"
+                    f"✅ جدیدا با موفقیت ادد شد: {added} نفر\n"
+                    f"❌ ناموفق (ارور/بن/خصوصی): {errors} نفر\n"
+                    f"🔁 تکراری (قبلا در گروه بود): {already_skipped} نفر\n"
+                    f"📊 کل ادد شده با این اکانت: {already+added}/{MAX_ADD_PER_ACCOUNT}"
+                )
+                await disconnect_later()
         except Exception as e:
             await st.edit_text(f"❌ خطا در اضافه کردن: {str(e)}")
+            try:
+                await add_client.disconnect()
+            except:
+                pass
         atk_state.clear()
         await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
 
