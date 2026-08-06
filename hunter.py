@@ -350,19 +350,37 @@ async def auto_scanner_loop(bot_app, admin_id):
                     except:
                         pass
                     await asyncio.sleep(1)
-                # Send game accounts batch notification
+                # Send game accounts batch notification (with service tag breakdown)
                 game_new = 0
+                service_counter = {}
                 for f in game_findings:
                     gk = (f["type"], f["value"])
                     if gk not in seen_keys:
                         existing.append(f)
                         seen_keys.add(gk)
                         game_new += 1
+                        svc = f.get("service", "❓نامشخص") or "❓نامشخص"
+                        service_counter[svc] = service_counter.get(svc, 0) + 1
                 if game_new > 0:
                     try:
-                        await bot_app.send_message(admin_id, f"🎮 {game_new} کمبو ایمیل:رمز (اکانت بازی/سرویس) در {src} پیدا شد. در لیست ذخیره شد.")
-                    except:
-                        pass
+                        top = sorted(service_counter.items(), key=lambda x: -x[1])[:5]
+                        breakdown = " | ".join(f"{s}×{c}" for s,c in top)
+                        msg = f"🎮 <b>{game_new} کمبو ایمیل:رمز</b> در {src} پیدا شد.\n"
+                        msg += f"<b>تقسیم‌بندی:</b> {breakdown}\n"
+                        msg += "در لیست ذخیره شد."
+                        # Send first 5 as samples
+                        samples = game_findings[:5]
+                        if samples:
+                            msg += "\n\n<b>نمونه:</b>"
+                            for s in samples:
+                                svc = s.get("service", "")
+                                val = s["value"]
+                                if len(val) > 55:
+                                    val = val[:55] + "…"
+                                msg += f"\n🏷️ {svc}\n   <code>{val}</code>"
+                        await bot_app.send_message(admin_id, msg)
+                    except Exception as e:
+                        print(f"notify game err: {e}", flush=True)
             if reported > 0:
                 save_found(existing)
             # Random wait 2-4 minutes between scans
@@ -387,11 +405,55 @@ RE_SOL_ADDR = re.compile(r'(?<![a-zA-Z0-9])[1-9A-HJ-NP-Za-km-z]{32,44}(?![a-zA-Z
 # Account / credential patterns for games & logins
 RE_EMAIL_PASS = re.compile(r'([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)\s*[:|;,|]\s*([^\s:<>"|]{4,60})')
 RE_USER_PASS = re.compile(r'(?<![a-zA-Z0-9])([A-Za-z0-9_.-]{3,25})\s*:\s*([^\s:<>"|]{4,50})')
+# Game/service keywords with their Persian label and category.
+# Sorted so longer/more specific names match first.
+SERVICE_TAGS = [
+    ("epicgames",  "Epic Games",   "🎮"),
+    ("battlenet",  "Battle.net",   "🎮"),
+    ("rockstar",   "Rockstar",     "🎮"),
+    ("ubisoft",    "Ubisoft",      "🎮"),
+    ("origin",     "Origin (EA)",  "🎮"),
+    ("steam",      "Steam",        "🎮"),
+    ("discord",    "Discord",      "💬"),
+    ("freefire",   "Free Fire",    "🔫"),
+    ("free fire",  "Free Fire",    "🔫"),
+    ("fortnite",   "Fortnite",     "🎮"),
+    ("valorant",   "Valorant",     "🎯"),
+    ("minecraft",  "Minecraft",    "⛏️"),
+    ("genshin",    "Genshin",      "⚔️"),
+    ("pubg",       "PUBG",         "🔫"),
+    ("free_fire",  "Free Fire",    "🔫"),
+    ("clashroyal", "Clash Royale", "👑"),
+    ("clash royal","Clash Royale", "👑"),
+    ("clashofclan","Clash of Clans","🏰"),
+    ("clash of clan","Clash of Clans","🏰"),
+    ("coc",        "Clash of Clans","🏰"),
+    ("roblox",     "Roblox",       "🧱"),
+    ("league",     "LoL",          "⚔️"),
+    ("riot",       "Riot Games",   "🎮"),
+    ("gta",        "GTA",          "🚗"),
+    ("lol",        "LoL",          "⚔️"),
+    ("netflix",    "Netflix",      "🎬"),
+    ("spotify",    "Spotify",      "🎵"),
+    ("hulu",       "Hulu",         "🎬"),
+    ("disney",     "Disney+",      "🎬"),
+    ("amazon",     "Amazon",       "📦"),
+    ("paypal",     "PayPal",       "💳"),
+    ("instagram",  "Instagram",    "📸"),
+    ("facebook",   "Facebook",     "📘"),
+    ("telegram",   "Telegram",     "✈️"),
+    ("tiktok",     "TikTok",       "🎵"),
+    ("gmail",      "Gmail",        "📧"),
+    ("yahoo",      "Yahoo",        "📧"),
+    ("outlook",    "Outlook",      "📧"),
+    ("combo",      "Combo List",   "📋"),
+    ("cracked",    "Cracked",      "📋"),
+    ("account",    "Account List", "📋"),
+    ("email:pass", "Email:Pass",   "📋"),
+    ("user:pass",  "User:Pass",    "📋"),
+]
 # Common game / account keywords to identify combo lists
-GAME_KEYWORDS = ["clash", "royal", "coc", "pubg", "freefire", "ff", "valorant", "steam", "epic",
-                 "minecraft", "lol", "league", "fortnite", "roblox", "genshin", "gta", "rockstar",
-                 "riot", "epicgames", "origin", "ubisoft", "battle", "discord",
-                 "combo", "cracked", "account", "pass", "login", "user:pass", "email:pass"]
+GAME_KEYWORDS = [kw for kw,_,_ in SERVICE_TAGS] + ["login","pass","password"]
 
 # ---------------------- RPC endpoints ----------------------
 BSC_RPC = "https://bsc-dataseed1.binance.org"
@@ -537,30 +599,77 @@ def detect_seed_phrases(text):
             i += 1
     return seeds
 
+def detect_context_tags(text):
+    """Return list of (emoji, label) tags matching the surrounding text context."""
+    low = text.lower()
+    tags = []
+    for kw, label, emo in SERVICE_TAGS:
+        if kw in low:
+            item = (emo, label)
+            if item not in tags:
+                tags.append(item)
+        if len(tags) >= 5:
+            break
+    return tags
+
 def detect_game_accounts(text):
-    """Detect email:pass or user:pass combos in leaked lists"""
+    """Detect email:pass or user:pass combos in leaked lists, and label them by context."""
     results = []
     low_text = text.lower()
+    context_tags = detect_context_tags(text)
+    # Decide whether the surrounding text looks like a combo/list file
     has_game_context = any(k in low_text for k in GAME_KEYWORDS) or len(RE_EMAIL_PASS.findall(text)) > 3
     if not has_game_context:
-        return results
+        return results, context_tags
+    # Build a human-readable label
+    if context_tags:
+        # Take up to 3 labels as tag string
+        labels = [f"{emo}{label}" for emo,label in context_tags[:3]]
+        tag_label = " | ".join(labels)
+    else:
+        tag_label = "❓نامشخص (لیست کمبو)"
     # Email:pass combos
     seen = set()
     for mail, pwd in RE_EMAIL_PASS.findall(text):
         if len(pwd) < 4 or len(pwd) > 50:
             continue
         # Skip fake / common placeholders
-        if pwd.lower() in ("password", "123456", "your_password", "pass"):
+        if pwd.lower() in ("password", "123456", "your_password", "pass", "12345678", "123456789"):
             continue
         key = f"{mail}:{pwd}"
         if key in seen:
             continue
         seen.add(key)
+        # Try to guess tag from the email domain too (e.g. @steampowered.com)
+        domain_tag = None
+        try:
+            dom = mail.split("@")[1].lower()
+            if "steampowered" in dom or "steam" in dom: domain_tag = "🎮Steam"
+            elif "riotgames" in dom or "riot" in dom: domain_tag = "🎮Riot"
+            elif "epicgames" in dom: domain_tag = "🎮Epic Games"
+            elif "ubisoft" in dom: domain_tag = "🎮Ubisoft"
+            elif "rockstar" in dom: domain_tag = "🎮Rockstar"
+            elif "ea.com" in dom or "origin" in dom: domain_tag = "🎮Origin/EA"
+            elif "battle.net" in dom or "blizzard" in dom: domain_tag = "🎮Battle.net"
+            elif "mojang" in dom or "minecraft" in dom: domain_tag = "⛏️Minecraft"
+            elif "roblox" in dom: domain_tag = "🧱Roblox"
+            elif "freefire" in dom or "garena" in dom: domain_tag = "🔫Free Fire"
+            elif "pubg" in dom: domain_tag = "🔫PUBG"
+            elif "discord" in dom: domain_tag = "💬Discord"
+            elif "netflix" in dom: domain_tag = "🎬Netflix"
+            elif "spotify" in dom: domain_tag = "🎵Spotify"
+            elif "gmail.com" in dom: domain_tag = "📧Gmail"
+            elif "yahoo" in dom: domain_tag = "📧Yahoo"
+            elif "outlook" in dom or "hotmail" in dom: domain_tag = "📧Outlook"
+        except:
+            pass
+        final_tag = domain_tag if domain_tag else tag_label
         results.append({
             "type": "game_account", "value": f"{mail}:{pwd}",
-            "source": "", "ts": int(time.time()), "balance": None, "status": "found"
+            "source": "", "ts": int(time.time()), "balance": None,
+            "status": "found", "service": final_tag
         })
-    return results
+    return results, context_tags
 
 # ---------------------- Main scan function ----------------------
 def scan_text(text, source="manual"):
@@ -597,7 +706,10 @@ def scan_text(text, source="manual"):
             "ts": int(time.time()), "balance": None, "status": "found"
         })
     # Game accounts
-    results.extend(detect_game_accounts(text))
+    game_results, _ctx = detect_game_accounts(text)
+    for g in game_results:
+        g["source"] = source
+    results.extend(game_results)
     return results
 
 def check_balance_of_findings(findings):

