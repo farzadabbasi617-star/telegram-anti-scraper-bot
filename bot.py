@@ -493,7 +493,7 @@ async def cb(c, q):
             async def on_progress(text):
                 try:
                     nonlocal progress_msg
-                    progress_msg = await progress_msg.edit_text(f"🎯 هدف: {target.title}\n\n{text}\n\n⏱️ لطفا صبر کنید، بستن صفحه مشکلی ایجاد نمی کند نتیجه در آخر ارسال میشود.")
+                    await progress_msg.edit_text(text, disable_web_page_preview=True)
                 except Exception:
                     pass
             try:
@@ -561,7 +561,7 @@ async def cb(c, q):
                 async def on_progress(text):
                     nonlocal progress_msg
                     try:
-                        progress_msg = await progress_msg.edit_text(f"🔄 تلاش مجدد\n🎯 {tname}\n\n{text}")
+                        await progress_msg.edit_text(f"🔄 تلاش مجدد\n{text}", disable_web_page_preview=True)
                     except: pass
                 users = await atk.run_full_scrape(gid, progress_cb=on_progress)
                 csv_bytes = atk.export_csv()
