@@ -227,17 +227,6 @@ async def steps(c, m):
         try:
             await atk.app.sign_in(phone, h, code)
         except Exception as e:
-            await m.reply_text(f"❌ خطا: {str(e)}")
-            return
-    elif step == "attack_code":
-        code = m.text.strip()
-        atk = atk_state["atk"]
-        phone = atk_state["phone"]
-        h = atk_state["hash"]
-        st = atk_state["st"]
-        try:
-            await atk.app.sign_in(phone, h, code)
-        except Exception as e:
             await m.reply_text(f"❌ خطا در ورود: {str(e)}")
             return
         await st.edit_text("✅ ورود موفق!\nدر حال دریافت لیست گروه های اکانت، لطفا صبر کنید...")
@@ -261,7 +250,6 @@ async def steps(c, m):
         buttons.append([InlineKeyboardButton("انصراف", callback_data="atk_cancel")])
         atk_state["step"] = "attack_selected"
         await st.edit_text("✅ لیست گروه ها آماده شد!\nلطفا گروه هدف را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
-        pass  # مرحله آیدی گروه حذف شد، از دکمه انتخاب استفاده میکنیم
 
 @app.on_message(filters.new_chat_members)
 async def new_mem(c, m):
