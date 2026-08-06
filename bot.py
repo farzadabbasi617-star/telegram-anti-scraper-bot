@@ -6,6 +6,11 @@ import sys
 import asyncio
 import io
 import time
+
+# رفع مشکل event loop در پایتون 3.12+
+loop = asyncio.new_event_loop()
+asyncio.set_event_loop(loop)
+
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
