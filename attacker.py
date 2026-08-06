@@ -103,26 +103,31 @@ class AdvancedScraper:
         print("🚀 شروع حمله کامل", flush=True)
         print("="*50, flush=True)
 
-        # FIX: اول کل لیست دیالوگ های اکانت را میخوانیم تا peer در کش قرار بگیرد
+        # FIX: اول تمام دیالوگ ها را بدون محدودیت بارگذاری میکنیم تا همه پیرهارا کش کنیم
         target_found = None
-        print("🔍 اسکن لیست چت های اکانت برای پیدا کردن گروه هدف...", flush=True)
+        print("🔍 اسکن کامل لیست چت های اکانت (تا 2000 چت)...", flush=True)
+        all_chats = []
         try:
-            async for dialog in self.app.get_dialogs():
+            async for dialog in self.app.get_dialogs(limit=2000):
+                all_chats.append(dialog.chat)
                 if dialog.chat.id == chat_id:
                     target_found = dialog.chat
-                    print(f"✅ گروه پیدا شد: {target_found.title}", flush=True)
-                    break
         except Exception as e:
             print(f"خطا در اسکن دیالوگ ها: {e}", flush=True)
+        print(f"✅ مجموعا {len(all_chats)} چت در اکانت شما پیدا شد", flush=True)
         if not target_found:
-            # آخرین تلاش با get_chat
+            for chat in all_chats:
+                if chat.id == chat_id:
+                    target_found = chat
+                    break
+        if not target_found:
             try:
                 target_found = await self.app.get_chat(chat_id)
             except Exception as e:
+                sample_groups = "\n".join([f"• {c.title}" for c in all_chats if hasattr(c, 'title') and c.title][:10])
                 raise Exception(
-                    f"❌ گروه در لیست چت اکانت پیدا نشد!\n"
-                    f"لطفا یک بار با اکانت تست خود تلگرام را باز کنید، وارد گروه شوید، چند ثانیه صبر کنید، بعد دوباره حمله را تکرار کنید.\n"
-                    f"خطای اصلی: {str(e)}"
+                    f"❌ گروه پیدا نشد! نمونه گروه های پیدا شده در اکانت شما:\n{sample_groups}\n\n"
+                    f"لطفا بعد از ورود به اکانت، یک بار تلگرام را باز کنید و روی نام گروه کلیک کنید تا در لیست بارگذاری شود."
                 )
         chat_id = target_found.id
         print(f"🎯 هدف نهایی: {target_found.title} | آیدی: {chat_id}", flush=True)
