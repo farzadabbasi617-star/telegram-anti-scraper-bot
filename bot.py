@@ -314,6 +314,75 @@ async def cb(c, q):
         await q.message.edit_text("✅ تمام آمار اضافه کردن پاک شد.", reply_markup=main_menu())
         return
 
+    # ==================== انتخاب هدف حمله از لیست ====================
+    if d.startswith("atk_target_") and not d.startswith("atk_target_manual"):
+        gid = int(d.split("_")[2])
+        atk = atk_state.get("atk")
+        if not atk:
+            atk_state.clear()
+            await q.answer("خطا در وضعیت، لطفا دوباره شروع کنید.", show_alert=True)
+            await q.message.edit_text("منوی اصلی:", reply_markup=main_menu())
+            return
+        try:
+            target = await atk.app.get_chat(gid)
+        except Exception as e:
+            await q.answer(f"خطا در بارگذاری گروه: {str(e)}", show_alert=True)
+            return
+        await q.answer()
+        prog = await q.message.edit_text(f"🎯 هدف: {target.title}\n🚀 در حال شروع حمله...")
+        async def run():
+            try:
+                users = await atk.run_full_scrape(target.id)
+                csv_bytes = atk.export_csv()
+                save_scraped(users, target.title, target.id)
+                await app.send_message(ADMIN_ID, f"✅ حمله تمام شد!\nگروه: {target.title}\nتعداد استخراج: {len(users)} نفر\n\n📋 از دکمه «لیست مخاطبان استخراج شده» در منو می‌توانید ببینید.")
+                await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"result_{int(time.time())}.csv")
+                await atk.disconnect()
+            except Exception as e:
+                await app.send_message(ADMIN_ID, f"❌ خطا در حمله:\n{str(e)}")
+            atk_state.clear()
+            await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
+        asyncio.create_task(run())
+        return
+
+    if d == "atk_target_manual":
+        await q.answer()
+        atk_state["step"] = "target"
+        await q.message.edit_text(
+            "✍️ آیدی عددی یا یوزرنیم گروه هدف را بفرستید:\n"
+            "مثال عددی: `-1002790821974`\n"
+            "مثال یوزرنیم: `@MyGroup`"
+        )
+        return
+
+    # ==================== انتخاب هدف اضافه کردن عضو از لیست ====================
+    if d.startswith("add_target_") and not d.startswith("add_target_manual"):
+        gid = int(d.split("_")[2])
+        add_client = atk_state.get("add_client")
+        if not add_client:
+            atk_state.clear()
+            await q.answer("خطا!", show_alert=True)
+            await q.message.edit_text("منوی اصلی:", reply_markup=main_menu())
+            return
+        try:
+            target = await add_client.app.get_chat(gid)
+        except Exception as e:
+            await q.answer(f"خطا: {str(e)}", show_alert=True)
+            return
+        atk_state["target_add_gid"] = gid
+        atk_state["step"] = "adder_file"
+        already = atk_state.get("already_added", 0)
+        remaining = MAX_ADD_PER_ACCOUNT - already
+        await q.answer()
+        await q.message.edit_text(f"✅ گروه مقصد: {target.title}\n⚠️ این اکانت حداکثر می‌تواند {remaining} نفر دیگر اضافه کند.\nحالا **فایل CSV** را همینجا آپلود کنید.")
+        return
+
+    if d == "add_target_manual":
+        await q.answer()
+        atk_state["step"] = "adder_target_manual"
+        await q.message.edit_text("✍️ آیدی عددی گروه مقصد را بفرستید (با -100 شروع می‌شود):")
+        return
+
     if d == "attack":
         atk_state.clear()
         atk_state["step"] = "phone"
@@ -370,21 +439,57 @@ async def steps(c, m):
             return
         atk_state["step"] = "target"
         await st.edit_text(
-            "✅ ورود موفق!\n\n"
-            "حالا **آیدی عددی گروه هدف را بفرستید** (با -100 شروع میشود).\n"
-            "مثال: `-1002790821974`\n\n"
-            "اگر یوزرنیم عمومی دارد میتوانید با @ وارد کنید مثال: `@mygroup`\n\n"
-            "✅ دقت کنید اکانت تست حتما عضو گروه باشد."
+            "✅ ورود موفق!\n"
+            "🔄 در حال بارگذاری لیست گروه‌های شما (تا از این ارورها جلوگیری کنیم)...\n"
+            "چند لحظه صبر کنید..."
         )
+        # اسکن خودکار تمام دیالوگ ها برای گرم کردن کش تلگرام، جلوگیری از ارور CHAT_INVALID/عضو نیستی
+        try:
+            group_list = []
+            async for dialog in atk.app.get_dialogs(limit=2000):
+                if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
+                    try:
+                        # چک کن که واقعا عضو باشی
+                        me = await atk.app.get_chat_member(dialog.chat.id, "me")
+                        if me.status in ["administrator", "creator", "member", "restricted"]:
+                            group_list.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
+                    except:
+                        pass
+                await asyncio.sleep(0.02)
+            atk_state["available_groups"] = group_list
+        except Exception as e:
+            print(f"اسکن دیالوگ ها با خطا مواجه شد: {e}", flush=True)
+            group_list = []
+            atk_state["available_groups"] = []
+
+        if group_list:
+            # به جای درخواست آیدی دستی، لیست گروه ها رو نشون بده
+            buttons = []
+            for gname, gid, gcount in sorted(group_list, key=lambda x: -x[2]):
+                btn_text = f"👥 {gname[:35]} | {gcount:,} نفر"
+                buttons.append([InlineKeyboardButton(btn_text, callback_data=f"atk_target_{gid}")])
+            buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
+            await st.edit_text(f"✅ لیست گروه‌های شما بارگذاری شد ({len(group_list)} گروه)\n\nگروه هدف را از لیست زیر انتخاب کنید، یا اگر نیست دستی وارد کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            await st.edit_text(
+                "✅ ورود موفق!\n\n"
+                "حالا **آیدی عددی گروه هدف را بفرستید** (با -100 شروع میشود).\n"
+                "مثال: `-1002790821974`\n\n"
+                "اگر یوزرنیم عمومی دارد میتوانید با @ وارد کنید مثال: `@mygroup`\n\n"
+                "✅ دقت کنید اکانت تست حتما عضو گروه باشد."
+            )
 
     elif step == "target":
         raw = m.text.strip()
         atk = atk_state["atk"]
         st = atk_state["st"]
-        phone = atk_state["phone"]
-        target_id = None
-        target = None
         await st.edit_text("🔍 در حال پیدا کردن گروه...")
+        # اطمینان از گرم بودن کش
+        try:
+            async for _ in atk.app.get_dialogs(limit=2000):
+                pass
+        except:
+            pass
         try:
             if raw.lstrip('-').isdigit():
                 target_id = int(raw)
@@ -393,14 +498,8 @@ async def steps(c, m):
                 uname = raw.replace("@", "").replace("https://t.me/", "").strip()
                 target = await atk.app.get_chat(uname)
                 target_id = target.id
-            try:
-                await atk.app.get_chat_member(target_id, "me")
-            except:
-                await st.edit_text("❌ اکانت تست عضو این گروه نیست! اول عضو شو دوباره امتحان کن.")
-                atk_state.clear()
-                return
         except Exception as e:
-            await st.edit_text(f"❌ گروه پیدا نشد یا عضو نیستید:\n{str(e)}\nلطفا آیدی درست را وارد کنید.")
+            await st.edit_text(f"❌ گروه پیدا نشد:\n{str(e)}\nلطفا آیدی درست را وارد کنید، یا یک بار دستی آن گروه را در تلگرام باز کنید.")
             return
 
         prog = await st.edit_text(f"🎯 هدف: {target.title}\n🚀 در حال شروع حمله...")
@@ -458,17 +557,77 @@ async def steps(c, m):
             await m.reply_text(f"❌ خطا در کد: {str(e)}")
             return
         atk_state["step"] = "adder_target"
-        await st.edit_text("✅ ورود موفق!\nآیدی عددی گروه مقصد (که میخواهید افراد را به آن اضافه کنید) را بفرستید:\n(با -100 شروع میشود)")
+        await st.edit_text("✅ ورود موفق!\n🔄 در حال بارگذاری لیست گروه‌های شما...")
+        # گرم کردن کش و تهیه لیست گروه ها
+        add_groups = []
+        try:
+            async for dialog in add_client.app.get_dialogs(limit=2000):
+                if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
+                    try:
+                        me = await add_client.app.get_chat_member(dialog.chat.id, "me")
+                        if me.status in ["administrator", "creator", "member"]:
+                            # برای اضافه کردن عضو باید توانایی ادد ممبر داشته باشی
+                            can_add = True
+                            if me.status == "administrator" and me.privileges:
+                                can_add = me.privileges.can_invite_users
+                            if me.status == "member":
+                                # در گروه های عمومی معمولی اعضا میتونن نفر اضافه کنن
+                                can_add = True
+                            if can_add:
+                                add_groups.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
+                    except:
+                        pass
+                await asyncio.sleep(0.02)
+        except Exception as e:
+            print(f"خطا در بارگذاری لیست گروه برای ادد: {e}", flush=True)
+        atk_state["available_add_groups"] = add_groups
+        if add_groups:
+            buttons = []
+            for gname, gid, gcount in sorted(add_groups, key=lambda x: -x[2]):
+                buttons.append([InlineKeyboardButton(f"➕ {gname[:35]} | {gcount:,} نفر", callback_data=f"add_target_{gid}")])
+            buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="add_target_manual")])
+            await st.edit_text(f"✅ لیست گروه‌های شما آماده است ({len(add_groups)} گروه)\nگروه مقصد را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            await st.edit_text("✅ ورود موفق!\nآیدی عددی گروه مقصد (که میخواهید افراد را به آن اضافه کنید) را بفرستید:\n(با -100 شروع میشود)")
 
-    elif step == "adder_target":
+    elif step in ["adder_target", "adder_target_manual"]:
         raw = m.text.strip()
         add_client = atk_state["add_client"]
         st = atk_state["st"]
+        # برای ادد هم مانند حمله، اول کش رو گرم کنیم
         try:
-            target_gid = int(raw)
+            async for _ in add_client.app.get_dialogs(limit=2000):
+                pass
+        except:
+            pass
+        try:
+            if raw.lstrip('-').isdigit():
+                target_gid = int(raw)
+            else:
+                uname = raw.replace("@", "").replace("https://t.me/", "").strip()
+                chat_info = await add_client.app.get_chat(uname)
+                target_gid = chat_info.id
             target = await add_client.app.get_chat(target_gid)
         except Exception as e:
-            await st.edit_text(f"❌ گروه پیدا نشد: {str(e)}")
+            await st.edit_text(f"❌ گروه پیدا نشد: {str(e)}\nلطفا یک بار دستی با اکانت خود آن گروه را در تلگرام باز کنید و دوباره امتحان کنید.")
+            return
+        # چک عضویت
+        is_member = False
+        for _ in range(3):
+            try:
+                me = await add_client.app.get_chat_member(target_gid, "me")
+                if me and me.status in ["administrator", "creator", "member", "restricted"]:
+                    is_member = True
+                    break
+            except:
+                await asyncio.sleep(2)
+                try:
+                    async for _ in add_client.app.get_dialogs(limit=500):
+                        pass
+                except:
+                    pass
+        if not is_member:
+            await st.edit_text("❌ اکانت شما عضو این گروه نیست یا اجازه دسترسی ندارد!\nلطفا اول دستی عضو شوید.")
             return
         atk_state["target_add_gid"] = target_gid
         atk_state["step"] = "adder_file"

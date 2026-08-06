@@ -178,6 +178,18 @@ class AdvancedScraper:
         print("🚀 شروع حمله MAX MODE", flush=True)
         print("="*60, flush=True)
 
+        # گرم کردن کش دیالوگ ها - این کار مانع ارور CHAT_INVALID و عضو نبودن میشه
+        print("🔄 در حال بارگذاری لیست چت ها برای گرم کردن کش تلگرام...", flush=True)
+        try:
+            cnt = 0
+            async for _ in self.app.get_dialogs(limit=2000):
+                cnt +=1
+                if cnt % 200 == 0:
+                    await self.human_sleep(0.1, 0.3)
+            print(f"✅ {cnt} چت بارگذاری شد", flush=True)
+        except Exception as e:
+            print(f"توجه: خطا در بارگذاری چت ها: {e}", flush=True)
+
         # پیدا کردن گروه هدف با کش کامل
         target_found = None
         try:
@@ -185,6 +197,7 @@ class AdvancedScraper:
             print(f"🎯 هدف: {target_found.title} | {target_found.id}", flush=True)
         except Exception as e:
             # اگر مستقیم پیدا نشد تمام دیالوگ ها رو بگرد
+            print(f"🔍 هدف مستقیم پیدا نشد، در حال جستجو در لیست دیالوگ...", flush=True)
             async for d in self.app.get_dialogs(limit=2000):
                 if d.chat.id == chat_id:
                     target_found = d.chat
@@ -192,6 +205,24 @@ class AdvancedScraper:
             if not target_found:
                 raise Exception("گروه پیدا نشد، لطفا یک بار با اکانت وارد گروه شوید.")
         chat_id = target_found.id
+
+        # چک عضویت با چند بار تلاش برای اطمینان
+        is_member = False
+        for attempt in range(3):
+            try:
+                me = await self.app.get_chat_member(chat_id, "me")
+                if me and me.status in ["administrator", "creator", "member", "restricted"]:
+                    is_member = True
+                    break
+            except Exception as e:
+                print(f"⏱️ تلاش {attempt+1} برای چک عضویت ناموفق بود، ۲ ثانیه صبر...", flush=True)
+                await asyncio.sleep(2)
+                # یک بار دیگه لیست رو رفرش کن
+                async for _ in self.app.get_dialogs(limit=500):
+                    pass
+        if not is_member:
+            raise Exception("❌ اکانت تست عضو این گروه نیست! لطفا ابتدا خودتان دستی با اکانت وارد گروه شوید (یک بار چت را باز کنید) و دوباره امتحان کنید.")
+        print("✅ تایید شد که در گروه عضو هستم", flush=True)
 
         # مرحله ۱: لیست مستقیم با صفحه بندی الفبایی
         direct_ok = await self.scrape_direct_paginated(chat_id)
