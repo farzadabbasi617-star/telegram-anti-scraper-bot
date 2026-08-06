@@ -1,5 +1,5 @@
 # =================================================================
-# ربات ضد اسکریپت - نسخه نهایی قطعی
+# ربات ضد اسکریپت - نسخه نهایی قطعی + سشن دائمی اکانت ها
 # =================================================================
 import asyncio
 import sys
@@ -17,6 +17,8 @@ import io
 import csv
 import time
 import random
+import glob
+import shutil
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
@@ -24,8 +26,9 @@ sys.path.insert(0, '.')
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import SessionPasswordNeeded
 
-from attacker import AdvancedScraper
+from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename
 from defender import AdvancedDefender
 
 API_ID = int(os.environ.get("API_ID", 6))
@@ -36,9 +39,34 @@ PORT = int(os.environ.get("PORT", 10000))
 CONFIG_FILE = "config.json"
 SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
+ACCOUNTS_FILE = "saved_accounts.json"
 MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر اکانت
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
+
+
+def load_accounts():
+    """بارگذاری لیست اکانت های ذخیره شده"""
+    try:
+        with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_accounts(accs):
+    with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+        json.dump(accs, f, ensure_ascii=False)
+
+def list_saved_accounts():
+    """برگرداندن لیست اکانت های معتبر که فایل سشن شان موجود است"""
+    accounts = load_accounts()
+    valid = {}
+    for phone, info in accounts.items():
+        fname = safe_phone_filename(phone)
+        sfile = os.path.join(SESSIONS_DIR, f"acc_{fname}.session")
+        if os.path.exists(sfile):
+            valid[phone] = info
+    return valid
 
 def load_config():
     try:
@@ -100,10 +128,13 @@ def main_menu():
         buttons.append([InlineKeyboardButton("🔄 تغییر گروه محافظت شده", callback_data="select_group")])
     else:
         buttons.append([InlineKeyboardButton("🔍 انتخاب گروه برای محافظت", callback_data="select_group")])
-    buttons.append([InlineKeyboardButton("🚀 تست حمله پیشرفته", callback_data="attack")])
-    buttons.append([InlineKeyboardButton("➕ تست اضافه کردن اعضا به گروه", callback_data="add_members")])
+    saved_accs = list_saved_accounts()
+    acc_count = len(saved_accs)
+    buttons.append([InlineKeyboardButton("🚀 تست حمله پیشرفته", callback_data="pick_account_attack")])
+    buttons.append([InlineKeyboardButton("➕ تست اضافه کردن اعضا به گروه", callback_data="pick_account_add")])
     buttons.append([InlineKeyboardButton("📋 لیست مخاطبان استخراج شده", callback_data="show_list_0")])
     buttons.append([InlineKeyboardButton("📈 آمار اکانت‌های اضافه کننده", callback_data="adder_stats")])
+    buttons.append([InlineKeyboardButton(f"📱 مدیریت اکانت‌های من ({acc_count})", callback_data="manage_accounts")])
     return InlineKeyboardMarkup(buttons)
 
 @app.on_message(filters.command("start") & filters.private & filters.user(ADMIN_ID))
@@ -383,31 +414,458 @@ async def cb(c, q):
         await q.message.edit_text("✍️ آیدی عددی گروه مقصد را بفرستید (با -100 شروع می‌شود):")
         return
 
+    # ==================== مدیریت اکانت های ذخیره شده ====================
+    if d == "manage_accounts":
+        accounts = list_saved_accounts()
+        text = f"📱 **اکانت های ذخیره شده شما** ({len(accounts)} اکانت)\n\n"
+        if not accounts:
+            text += "⚠️ هنوز هیچ اکانتی به صورت دائمی ذخیره نشده.\nوقتی اولین بار لاگین کنی خودکار ذخیره میشه."
+        else:
+            for phone, info in accounts.items():
+                added_count = load_adder_limits().get(phone, {}).get("added", 0)
+                name = info.get("name", phone)
+                added_at = info.get("added_at", 0)
+                date_str = time.strftime("%Y-%m-%d", time.localtime(added_at)) if added_at else "-"
+                text += f"🔹 {name}\n   📱 {phone}\n   📅 اضافه شده: {date_str}\n   ➕ تا کنون {added_count} نفر اد کرده\n\n"
+        text += "\n💡 نکته: سشن‌ها روی سرور ذخیره دائمی هستند و فقط برای استفاده خودت هست."
+        buttons = []
+        if accounts:
+            buttons.append([InlineKeyboardButton("🗑️ حذف یک اکانت", callback_data="acc_delete_pick")])
+            for phone in accounts:
+                pass
+        buttons.append([InlineKeyboardButton("➕ افزودن اکانت جدید", callback_data="add_new_account")])
+        buttons.append([InlineKeyboardButton("📤 دانلود فایل سشن (بک آپ)", callback_data="acc_backup_pick")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت به منو", callback_data="home")])
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "acc_delete_pick":
+        accounts = list_saved_accounts()
+        buttons = []
+        for phone in accounts:
+            buttons.append([InlineKeyboardButton(f"❌ {phone}", callback_data=f"acc_del_{phone}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="manage_accounts")])
+        await q.message.edit_text("اکانت مورد نظر برای حذف را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("acc_del_"):
+        phone = d[len("acc_del_"):]
+        fname = safe_phone_filename(phone)
+        for pattern in [f"acc_{fname}.session", f"acc_{fname}.session-journal"]:
+            p = os.path.join(SESSIONS_DIR, pattern)
+            if os.path.exists(p):
+                os.remove(p)
+        accs = load_accounts()
+        if phone in accs:
+            del accs[phone]
+            save_accounts(accs)
+        await q.answer(f"اکانت {phone} حذف شد.", show_alert=True)
+        await q.message.edit_text("✅ اکانت با موفقیت حذف شد.", reply_markup=main_menu())
+        return
+
+    if d == "acc_backup_pick":
+        accounts = list_saved_accounts()
+        buttons = []
+        for phone in accounts:
+            buttons.append([InlineKeyboardButton(f"📤 {phone}", callback_data=f"acc_back_{phone}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="manage_accounts")])
+        await q.message.edit_text("فایل سشن کدام اکانت را بک آپ بگیرم؟", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("acc_back_"):
+        phone = d[len("acc_back_"):]
+        fname = safe_phone_filename(phone)
+        sfile = os.path.join(SESSIONS_DIR, f"acc_{fname}.session")
+        if os.path.exists(sfile):
+            await app.send_document(ADMIN_ID, sfile, caption=f"📤 فایل سشن بک آپ اکانت {phone}\nاین فایل را نگه دار، اگر سرور ری‌استارت کرد می‌توانی دوباره آپلود کنی بدون نیاز به کد.")
+            await q.answer("فایل سشن در چت ارسال شد.", show_alert=True)
+        else:
+            await q.answer("فایل سشن پیدا نشد!", show_alert=True)
+        return
+
+    if d == "add_new_account":
+        atk_state.clear()
+        atk_state["step"] = "add_new_acc_phone"
+        await q.message.edit_text("➕ افزودن اکانت جدید دائمی\n\nشماره تلفن را با فرمت +98 بفرستید:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="manage_accounts")]]))
+        return
+
+    # ==================== انتخاب اکانت برای شروع عملیات ====================
+    async def show_account_picker(callback, back_cb, mode_label):
+        """نمایش لیست اکانت ها + گزینه افزودن اکانت جدید"""
+        accounts = list_saved_accounts()
+        text = f"{mode_label}\n\nلطفا اکانت مورد استفاده را انتخاب کنید:"
+        buttons = []
+        if accounts:
+            limits = load_adder_limits()
+            for phone, info in accounts.items():
+                name = info.get("name", phone)
+                added = limits.get(phone, {}).get("added", 0)
+                status = ""
+                if mode_label.startswith("➕") and added >= MAX_ADD_PER_ACCOUNT:
+                    status = " ⚠️ پر"
+                btn = InlineKeyboardButton(f"✅ {name} | {phone}{status}", callback_data=f"useacc_{callback}_{phone}")
+                buttons.append([btn])
+        buttons.append([InlineKeyboardButton("➕ افزودن اکانت جدید و استفاده", callback_data=f"newacc_{callback}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+
+    if d == "pick_account_attack":
+        await show_account_picker("attack", "home", "🚀 شروع تست حمله پیشرفته")
+        return
+
+    if d == "pick_account_add":
+        limits = load_adder_limits()
+        warn = ""
+        full_count = sum(1 for p,i in limits.items() if i.get("added",0)>=MAX_ADD_PER_ACCOUNT)
+        if full_count > 0:
+            warn = f"\n⚠️ {full_count} اکانت به سقف {MAX_ADD_PER_ACCOUNT} نفر رسیده"
+        await show_account_picker("add", "home", f"➕ شروع اضافه کردن اعضا{warn}")
+        return
+
+    if d.startswith("useacc_"):
+        parts = d.split("_")
+        mode = parts[1]
+        phone = "_".join(parts[2:])
+        await q.answer(f"در حال اتصال به {phone}...", show_alert=False)
+        prog = await q.message.edit_text(f"🔐 در حال اتصال به اکانت ذخیره شده {phone}...")
+        try:
+            client = AdvancedScraper("temp_check", API_ID, API_HASH, phone=phone)
+            await client.connect()
+            # چک کن سشن سالم هست
+            me = await client.app.get_me()
+            await client.disconnect()
+        except Exception as e:
+            # سشن خراب شده، حذفش کن
+            fname = safe_phone_filename(phone)
+            for pat in [f"acc_{fname}.session", f"acc_{fname}.session-journal"]:
+                p = os.path.join(SESSIONS_DIR, pat)
+                if os.path.exists(p):
+                    os.remove(p)
+            accs = load_accounts()
+            if phone in accs:
+                del accs[phone]
+                save_accounts(accs)
+            await prog.edit_text(f"⚠️ سشن اکانت {phone} منقضی شده بود، از لیست حذف شد. لطفا دوباره اکانت را اضافه کنید.", reply_markup=main_menu())
+            return
+        # سشن سالم است، شروع عملیات
+        if mode == "attack":
+            atk_state.clear()
+            atk_state["phone"] = phone
+            atk_state["reuse_account"] = True
+            atk = AdvancedScraper("atk_session", API_ID, API_HASH, phone=phone)
+            await atk.connect()
+            atk_state["atk"] = atk
+            atk_state["st"] = prog
+            atk_state["step"] = "after_login_attack"
+            # حالا لیست گروه ها را نشان بده
+            await prog.edit_text("✅ ورود با اکانت ذخیره شده موفق!\n🔄 در حال بارگذاری لیست گروه‌های شما...")
+            group_list = []
+            try:
+                async for dialog in atk.app.get_dialogs(limit=2000):
+                    if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
+                        try:
+                            mstat = await atk.app.get_chat_member(dialog.chat.id, "me")
+                            if mstat.status in ["administrator", "creator", "member", "restricted"]:
+                                group_list.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
+                        except:
+                            pass
+                    await asyncio.sleep(0.02)
+            except Exception as e:
+                print(f"خطا در بارگذاری لیست: {e}", flush=True)
+            atk_state["available_groups"] = group_list
+            if group_list:
+                buttons = []
+                for gname, gid, gcount in sorted(group_list, key=lambda x:-x[2]):
+                    buttons.append([InlineKeyboardButton(f"👥 {gname[:35]} | {gcount:,} نفر", callback_data=f"atk_target_{gid}")])
+                buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
+                await prog.edit_text(f"✅ اکانت {me.first_name} آماده است!\nلطفا گروه هدف را انتخاب کنید ({len(group_list)} گروه):", reply_markup=InlineKeyboardMarkup(buttons))
+            else:
+                atk_state["step"] = "target"
+                await prog.edit_text(f"✅ اکانت {me.first_name} آماده است!\nحالا آیدی عددی گروه هدف را بفرستید:")
+            return
+
+        if mode == "add":
+            atk_state.clear()
+            atk_state["phone"] = phone
+            atk_state["reuse_account"] = True
+            limits = load_adder_limits()
+            already = limits.get(phone, {}).get("added", 0)
+            if already >= MAX_ADD_PER_ACCOUNT:
+                await prog.edit_text(f"⚠️ این اکانت ({phone}) به سقف {MAX_ADD_PER_ACCOUNT} نفر رسیده!", reply_markup=main_menu())
+                return
+            atk_state["already_added"] = already
+            add_client = AdvancedScraper("add_session", API_ID, API_HASH, phone=phone)
+            await add_client.connect()
+            atk_state["add_client"] = add_client
+            atk_state["st"] = prog
+            me = await add_client.app.get_me()
+            await prog.edit_text(f"✅ ورود با اکانت ذخیره شده موفق! ({me.first_name})\n🔄 در حال بارگذاری لیست گروه‌ها...")
+            add_groups = []
+            try:
+                async for dialog in add_client.app.get_dialogs(limit=2000):
+                    if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
+                        try:
+                            mstat = await add_client.app.get_chat_member(dialog.chat.id, "me")
+                            if mstat.status in ["administrator", "creator", "member"]:
+                                can_add = True
+                                if mstat.status == "administrator" and mstat.privileges:
+                                    can_add = mstat.privileges.can_invite_users
+                                if can_add:
+                                    add_groups.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
+                        except:
+                            pass
+                    await asyncio.sleep(0.02)
+            except Exception as e:
+                print(f"خطا در لیست ادد: {e}", flush=True)
+            atk_state["available_add_groups"] = add_groups
+            remaining = MAX_ADD_PER_ACCOUNT - already
+            if add_groups:
+                buttons = []
+                for gname, gid, gcount in sorted(add_groups, key=lambda x:-x[2]):
+                    buttons.append([InlineKeyboardButton(f"➕ {gname[:35]} | {gcount:,} نفر", callback_data=f"add_target_{gid}")])
+                buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="add_target_manual")])
+                await prog.edit_text(f"✅ آماده اضافه کردن! ظرفیت باقیمانده: {remaining} نفر\nگروه مقصد را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+            else:
+                atk_state["step"] = "adder_target"
+                await prog.edit_text(f"✅ آماده! ظرفیت باقیمانده: {remaining} نفر\nآیدی گروه مقصد را بفرستید:")
+            return
+
+    if d.startswith("newacc_"):
+        mode = d.split("_")[1]
+        atk_state.clear()
+        atk_state["after_auth_mode"] = mode
+        atk_state["step"] = "phone_new"
+        await q.message.edit_text(f"➕ افزودن اکانت جدید\n\nشماره تلفن با فرمت +98 بفرستید:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="home")]]))
+        return
+
+    # ==================== مسیر قدیمی که دیگر استفاده نمی‌شود (فقط برای سازگاری) ====================
     if d == "attack":
         atk_state.clear()
-        atk_state["step"] = "phone"
-        await q.message.edit_text("🚀 تست حمله\n\nشماره اکانت تست با فرمت +98 بفرست:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="home")]]))
+        await show_account_picker("attack", "home", "🚀 شروع تست حمله پیشرفته")
         return
 
     if d == "add_members":
         atk_state.clear()
-        limits = load_adder_limits()
-        # چک کن از قبل به حد نرسیده
-        atk_state["step"] = "adder_phone"
-        warn = ""
-        if limits:
-            reached = [p for p,info in limits.items() if info.get("added",0) >= MAX_ADD_PER_ACCOUNT]
-            if reached:
-                warn = f"⚠️ {len(reached)} اکانت قبلا به سقف {MAX_ADD_PER_ACCOUNT} نفر رسیده‌اند، از شماره جدید استفاده کنید.\n\n"
-        await q.message.edit_text(f"➕ **اضافه کردن اعضا از فایل CSV**\n\n{warn}⚠️ از اکانت تست استفاده کنید. سقف مجاز هر اکانت: {MAX_ADD_PER_ACCOUNT} نفر.\nشماره اکانت را با فرمت +98 بفرستید:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="home")]]))
+        await show_account_picker("add", "home", f"➕ شروع اضافه کردن اعضا")
         return
 
 @app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.text | filters.document) & ~filters.command("start"))
 async def steps(c, m):
     step = atk_state.get("step")
     if not step: return
+
+    # ==================== افزودن اکانت جدید از منوی مدیریت ====================
+    if step == "add_new_acc_phone":
+        phone = m.text.strip()
+        atk_state["phone"] = phone
+        st = await m.reply_text("📡 در حال اتصال...")
+        try:
+            acc_client = AdvancedScraper(f"newacc_tmp_{int(time.time())}", API_ID, API_HASH, phone=phone)
+            await acc_client.connect()
+            sent = await acc_client.app.send_code(phone)
+            atk_state["new_acc_client"] = acc_client
+            atk_state["hash"] = sent.phone_code_hash
+            atk_state["st"] = st
+            atk_state["step"] = "add_new_acc_code"
+            await st.edit_text("✅ کد تایید ارسال شد، کد ۵ رقمی را بفرست:")
+        except Exception as e:
+            await st.edit_text(f"❌ خطا: {str(e)}")
+            atk_state.clear()
+        return
+
+    if step == "add_new_acc_code":
+        code = m.text.strip()
+        acc_client = atk_state["new_acc_client"]
+        phone = atk_state["phone"]
+        h = atk_state["hash"]
+        st = atk_state["st"]
+        try:
+            await acc_client.app.sign_in(phone, h, code)
+        except SessionPasswordNeeded:
+            atk_state["step"] = "add_new_acc_2fa"
+            await st.edit_text("🔐 اکانت شما رمز دو عاملی دارد، لطفا پسورد 2FA را بفرستید:")
+            return
+        except Exception as e:
+            await m.reply_text(f"❌ خطا در کد: {str(e)}")
+            return
+        me = await acc_client.app.get_me()
+        # ذخیره اکانت
+        accs = load_accounts()
+        accs[phone] = {
+            "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
+            "user_id": me.id,
+            "username": me.username or "",
+            "added_at": int(time.time())
+        }
+        save_accounts(accs)
+        await acc_client.disconnect()
+        atk_state.clear()
+        await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت به صورت دائمی ذخیره شد!\nاز این به بعد بدون نیاز به کد می‌توانی ازش استفاده کنی.", reply_markup=main_menu())
+        return
+
+    if step == "add_new_acc_2fa":
+        pwd = m.text.strip()
+        acc_client = atk_state["new_acc_client"]
+        phone = atk_state["phone"]
+        st = atk_state["st"]
+        try:
+            await acc_client.app.check_password(pwd)
+        except Exception as e:
+            await m.reply_text(f"❌ رمز اشتباه: {str(e)}")
+            return
+        me = await acc_client.app.get_me()
+        accs = load_accounts()
+        accs[phone] = {
+            "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
+            "user_id": me.id,
+            "username": me.username or "",
+            "added_at": int(time.time())
+        }
+        save_accounts(accs)
+        await acc_client.disconnect()
+        atk_state.clear()
+        await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت ذخیره شد!", reply_markup=main_menu())
+        return
+
+    # ==================== لاگین اکانت جدید هنگام شروع عملیات ====================
+    if step == "phone_new":
+        phone = m.text.strip()
+        atk_state["phone"] = phone
+        after_mode = atk_state.get("after_auth_mode", "attack")
+        st = await m.reply_text("📡 در حال اتصال...")
+        try:
+            if after_mode == "attack":
+                new_client = AdvancedScraper("atk_new", API_ID, API_HASH, phone=phone)
+            else:
+                new_client = AdvancedScraper("add_new", API_ID, API_HASH, phone=phone)
+            await new_client.connect()
+            sent = await new_client.app.send_code(phone)
+            atk_state["new_client"] = new_client
+            atk_state["hash"] = sent.phone_code_hash
+            atk_state["st"] = st
+            atk_state["step"] = "code_new"
+            await st.edit_text("✅ کد تایید ارسال شد، کد ۵ رقمی را بفرست:\n⚠️ بعد از این بار دیگر نیازی به کد نخواهید داشت.")
+        except Exception as e:
+            await st.edit_text(f"❌ خطا: {str(e)}")
+            atk_state.clear()
+        return
+
+    if step == "code_new":
+        code = m.text.strip()
+        new_client = atk_state["new_client"]
+        phone = atk_state["phone"]
+        h = atk_state["hash"]
+        st = atk_state["st"]
+        after_mode = atk_state.get("after_auth_mode", "attack")
+        try:
+            await new_client.app.sign_in(phone, h, code)
+        except SessionPasswordNeeded:
+            atk_state["step"] = "code_new_2fa"
+            await st.edit_text("🔐 رمز دو عاملی لازم است، پسورد را بفرستید:")
+            return
+        except Exception as e:
+            await m.reply_text(f"❌ خطا در کد: {str(e)}")
+            return
+        # ذخیره اکانت
+        me = await new_client.app.get_me()
+        accs = load_accounts()
+        accs[phone] = {
+            "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
+            "user_id": me.id,
+            "username": me.username or "",
+            "added_at": int(time.time())
+        }
+        save_accounts(accs)
+        await new_client.disconnect()
+        # حالا مستقیم برو به مرحله انتخاب گروه با اکانت ذخیره شده
+        atk_state.clear()
+        await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت ذخیره شد!\nدر حال بارگذاری منوی عملیات...")
+        # شبیه سازی اینکه کاربر این اکانت رو انتخاب کرده
+        if after_mode == "attack":
+            atk_state.clear()
+            atk_state["phone"] = phone
+            atk_state["reuse_account"] = True
+            atk = AdvancedScraper("atk_session", API_ID, API_HASH, phone=phone)
+            await atk.connect()
+            atk_state["atk"] = atk
+            atk_state["st"] = st
+            atk_state["step"] = "after_login_attack"
+            group_list = []
+            try:
+                async for dialog in atk.app.get_dialogs(limit=2000):
+                    if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
+                        try:
+                            mstat = await atk.app.get_chat_member(dialog.chat.id, "me")
+                            if mstat.status in ["administrator", "creator", "member", "restricted"]:
+                                group_list.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
+                        except: pass
+                    await asyncio.sleep(0.02)
+            except: pass
+            atk_state["available_groups"] = group_list
+            buttons = []
+            for gname, gid, gcount in sorted(group_list, key=lambda x:-x[2]):
+                buttons.append([InlineKeyboardButton(f"👥 {gname[:35]} | {gcount:,} نفر", callback_data=f"atk_target_{gid}")])
+            buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
+            await st.edit_text(f"✅ خوش آمدی {me.first_name}! اکانت برای همیشه ذخیره شد.\nگروه هدف را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+        else:
+            atk_state.clear()
+            atk_state["phone"] = phone
+            atk_state["reuse_account"] = True
+            limits = load_adder_limits()
+            already = limits.get(phone, {}).get("added", 0)
+            atk_state["already_added"] = already
+            add_client = AdvancedScraper("add_session", API_ID, API_HASH, phone=phone)
+            await add_client.connect()
+            atk_state["add_client"] = add_client
+            atk_state["st"] = st
+            add_groups = []
+            try:
+                async for dialog in add_client.app.get_dialogs(limit=2000):
+                    if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
+                        try:
+                            mstat = await add_client.app.get_chat_member(dialog.chat.id, "me")
+                            if mstat.status in ["administrator", "creator", "member"]:
+                                add_groups.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
+                        except: pass
+                    await asyncio.sleep(0.02)
+            except: pass
+            remaining = MAX_ADD_PER_ACCOUNT - already
+            buttons = []
+            for gname, gid, gcount in sorted(add_groups, key=lambda x:-x[2]):
+                buttons.append([InlineKeyboardButton(f"➕ {gname[:35]} | {gcount:,} نفر", callback_data=f"add_target_{gid}")])
+            buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی", callback_data="add_target_manual")])
+            await st.edit_text(f"✅ اکانت ذخیره شد! ظرفیت باقیمانده: {remaining} نفر\nگروه مقصد را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if step == "code_new_2fa":
+        pwd = m.text.strip()
+        new_client = atk_state["new_client"]
+        phone = atk_state["phone"]
+        h = atk_state["hash"]
+        st = atk_state["st"]
+        after_mode = atk_state.get("after_auth_mode", "attack")
+        try:
+            await new_client.app.check_password(pwd)
+        except Exception as e:
+            await m.reply_text(f"❌ رمز اشتباه: {str(e)}")
+            return
+        me = await new_client.app.get_me()
+        accs = load_accounts()
+        accs[phone] = {
+            "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
+            "user_id": me.id,
+            "username": me.username or "",
+            "added_at": int(time.time())
+        }
+        save_accounts(accs)
+        await new_client.disconnect()
+        atk_state.clear()
+        await st.edit_text("✅ اکانت ذخیره شد! صفحه را رفرش کن /start بزن.", reply_markup=main_menu())
+        return
+
+    # ==================== مراحل قدیمی - دیگر مستقیم استفاده نمی‌شوند ====================
 
     if step == "phone":
         phone = m.text.strip()

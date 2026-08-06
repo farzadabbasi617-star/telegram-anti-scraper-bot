@@ -1,14 +1,12 @@
-# =================================================================
-# 🚨 ماژول حمله پیشرفته نسخه MAX - برای تست حداکثری
-# =================================================================
 import asyncio
 import time
 import random
 import io
 import csv
 import string
+import os
 from pyrogram import Client
-from pyrogram.errors import FloodWait, ChatAdminRequired
+from pyrogram.errors import FloodWait, ChatAdminRequired, SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired
 from pyrogram.raw import functions, types
 
 # فینگرپرینت دستگاه های مختلف برای دور زدن تشخیص
@@ -18,11 +16,25 @@ DEVICE_FP = [
     {"device_model": "Xiaomi 14 Pro", "system_version": "HyperOS 1.0", "app_version": "10.12.4", "lang_code": "en"},
 ]
 
+SESSIONS_DIR = "saved_sessions"
+os.makedirs(SESSIONS_DIR, exist_ok=True)
+
+def safe_phone_filename(phone):
+    """تبدیل شماره تلفن به نام فایل امن"""
+    return ''.join(c for c in str(phone) if c.isdigit() or c == '+').strip('+')
+
 class AdvancedScraper:
-    def __init__(self, session_name, api_id, api_hash, phone=None):
+    def __init__(self, session_name, api_id, api_hash, phone=None, in_memory=False):
         fp = random.choice(DEVICE_FP)
+        # اگر شماره تلفن داده شد از فایل سشن دائمی استفاده کن
+        if phone and not in_memory:
+            fname = safe_phone_filename(phone)
+            session_path = os.path.join(SESSIONS_DIR, f"acc_{fname}")
+        else:
+            session_path = session_name
+        self.phone = phone
         self.app = Client(
-            session_name,
+            session_path,
             api_id=api_id,
             api_hash=api_hash,
             phone_number=phone,
@@ -30,8 +42,9 @@ class AdvancedScraper:
             system_version=fp["system_version"],
             app_version=fp["app_version"],
             lang_code=fp["lang_code"],
-            in_memory=True,
-            sleep_threshold=10
+            in_memory=False,  # سشن ها دائمی روی دیسک ذخیره شوند
+            sleep_threshold=10,
+            workdir="."
         )
         self.found_users = {}
         self.total_api_calls = 0

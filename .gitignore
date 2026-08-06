@@ -5,4 +5,6 @@ __pycache__/
 .env
 scraped_users.json
 adder_limits.json
+saved_accounts.json
 config.json
+saved_sessions/
