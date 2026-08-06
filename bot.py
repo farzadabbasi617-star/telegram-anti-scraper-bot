@@ -1,5 +1,5 @@
 # =================================================================
-# ربات ضد اسکریپت - نسخه دپلوی دائمی روی رندر
+# ربات ضد اسکریپت - نسخه کاملا سازگار با رندر و تمام نسخه پایتون
 # =================================================================
 import os
 import sys
@@ -7,35 +7,38 @@ import asyncio
 import io
 import time
 
-# رفع مشکل event loop در پایتون 3.12+
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
+# رفع قطعی مشکل event loop در پایتون 3.12+
+if sys.platform.startswith('win'):
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
-# اضافه کردن مسیر فعلی
 sys.path.insert(0, '.')
 
-from pyrogram import Client, filters, idle
+# از pyrogram فقط توابع لازم رو ایمپورت میکنیم
+from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.errors import exceptions
 
 from attacker import AdvancedScraper
 from defender import AdvancedDefender
 
-# ========== کانفیگ ==========
+# ========== کانفیگ از متغیرهای محیطی ==========
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8790569799:AAFZuVDuVg62v87yQqmaQy3LS_w71-Q6yz0")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 564234793))
 GROUP_ID = int(os.environ.get("GROUP_ID", -1001572861284))
+PORT = int(os.environ.get("PORT", 10000))
 
-# ساخت کلاینت ربات
 app = Client(
     "antiscraper_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    workers=1,
+    no_updates=False
 )
 
 defender = AdvancedDefender(app, GROUP_ID, ADMIN_ID)
@@ -61,10 +64,10 @@ async def start_cmd(c, m):
     except:
         pass
     await m.reply_text(
-        "✅ ربات ضد اسکریپت با موفقیت روی سرور فعال شد!\n\n"
+        "✅ ربات ضد اسکریپت با موفقیت فعال شد!\n\n"
         "🤖 **پنل کنترل دفاع و تست حمله**\n"
         "نسخه نهایی 2026\n\n"
-        "یکی از گزینه ها را انتخاب کنید:",
+        "لطفا یکی از گزینه ها را انتخاب کنید:",
         reply_markup=menu()
     )
 
@@ -180,29 +183,25 @@ async def monitor_messages(c, m):
     await defender.monitor_message(m)
 
 # ==========================================================
-# سرور HTTP ساده برای اینکه رندر فکر کنه سرویس وب دارد و قطع نکند
+# سرور HTTP ساده برای جلوگیری از خاموش شدن در رندر
 # ==========================================================
 class HealthCheck(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Anti-Scraper Bot is running!")
+        self.wfile.write(b"OK: Bot is running")
     def log_message(self, format, *args):
         return
 
-def run_health_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheck)
+def run_health():
+    server = HTTPServer(("0.0.0.0", PORT), HealthCheck)
     server.serve_forever()
 
-print("✅ ربات آماده راه اندازی...")
-async def main():
-    Thread(target=run_health_server, daemon=True).start()
-    await app.start()
-    print("✅ ربات روشن و به تلگرام متصل شد!")
-    await idle()
-    await app.stop()
+def main():
+    Thread(target=run_health, daemon=True).start()
+    print("✅ سرور سلامت روشن شد، ربات در حال اتصال...", flush=True)
+    app.run()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
