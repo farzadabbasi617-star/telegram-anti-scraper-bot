@@ -138,10 +138,12 @@ async def cb(c, q):
 
     elif d == "attack":
         atk_state.clear()
-        atk_state["step"] = "phone"
+        atk_state["step"] = "attack_phone"
         await q.message.edit_text(
             "🚀 **شبیه ساز حمله پیشرفته**\n\n"
-            "شماره اکانت تست را با فرمت +989xxxxxxxxx بفرستید:",
+            "⚠️ نکته: برای حمله نیازی به ادمین بودن ربات در گروه هدف نیست.\n"
+            "فقط اکانت تست که وارد میشوید باید عضو گروه هدف باشد.\n\n"
+            "لطفا شماره اکانت تست را با فرمت +989xxxxxxxxx بفرستید:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="home")]])
         )
 
@@ -151,15 +153,11 @@ async def steps(c, m):
     step = atk_state.get("step")
     if not step:
         return
-    if not CURRENT_GROUP_ID:
-        await m.reply_text("اول گروه را انتخاب کنید.")
-        atk_state.clear()
-        return
 
-    if step == "phone":
+    if step == "attack_phone":
         phone = m.text.strip()
         atk_state["phone"] = phone
-        st = await m.reply_text("📡 در حال ارسال کد تایید...")
+        st = await m.reply_text("📡 در حال اتصال و ارسال کد تایید به اکانت تست...")
         try:
             atk = AdvancedScraper("atk_session", API_ID, API_HASH, phone=phone)
             await atk.connect()
@@ -167,13 +165,13 @@ async def steps(c, m):
             atk_state["atk"] = atk
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
-            atk_state["step"] = "code"
-            await st.edit_text("✅ کد به اکانت تست ارسال شد، کد ۵ رقمی را بفرستید.")
+            atk_state["step"] = "attack_code"
+            await st.edit_text("✅ کد به اکانت تست ارسال شد.\nلطفا کد ۵ رقمی را بفرستید:")
         except Exception as e:
             await st.edit_text(f"❌ خطا: {str(e)}")
             atk_state.clear()
 
-    elif step == "code":
+    elif step == "attack_code":
         code = m.text.strip()
         atk = atk_state["atk"]
         phone = atk_state["phone"]
@@ -182,25 +180,36 @@ async def steps(c, m):
         try:
             await atk.app.sign_in(phone, h, code)
         except Exception as e:
-            await m.reply_text(f"❌ خطا: {str(e)}")
+            await m.reply_text(f"❌ کد اشتباه یا خطا: {str(e)}")
             return
-        await st.edit_text("✅ ورود موفق، حمله شروع شد...")
-        prog = await app.send_message(ADMIN_ID, f"🚀 حمله به گروه در حال انجام است...")
-        async def run_attack():
+        atk_state["step"] = "attack_groupid"
+        await st.edit_text("✅ ورود به اکانت موفقیت آمیز بود!\nحالا لطفا **آیدی عددی گروه هدف** را بفرستید (با -100 شروع میشود):")
+
+    elif step == "attack_groupid":
+        try:
+            target_gid = int(m.text.strip())
+        except:
+            await m.reply_text("❌ لطفا آیدی عددی معتبر وارد کنید که با -100 شروع میشود.")
+            return
+        st = atk_state["st"]
+        atk = atk_state["atk"]
+        await st.edit_text(f"✅ آیدی گروه دریافت شد: `{target_gid}`\n🚀 در حال شروع حمله و استخراج اعضا...")
+        prog = await app.send_message(ADMIN_ID, f"🚀 حمله به گروه `{target_gid}` شروع شد...")
+        async def run():
             try:
-                users = await atk.run_full_scrape(CURRENT_GROUP_ID)
+                users = await atk.run_full_scrape(target_gid)
                 csv_bytes = atk.export_csv()
                 await prog.edit_text(
-                    f"✅ حمله تمام شد!\n"
+                    f"✅ حمله به اتمام رسید!\n"
                     f"تعداد کاربر استخراج شده: {len(users)} نفر\n"
-                    f"بررسی کنید هشدار تشخیص اسکریپت برای شما ارسال شده؟"
+                    f"فایل نتیجه در زیر ارسال میشود:"
                 )
                 await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"attack_{int(time.time())}.csv")
                 await atk.disconnect()
             except Exception as e:
-                await prog.edit_text(f"❌ خطا در حمله: {str(e)}")
+                await prog.edit_text(f"❌ خطا در طول حمله:\n{str(e)}\n\nدقت کنید اکانت تست باید عضو گروه باشد.")
             atk_state.clear()
-        asyncio.create_task(run_attack())
+        asyncio.create_task(run())
 
 # ===== هندلرهای گروه =====
 @app.on_message(filters.new_chat_members)
