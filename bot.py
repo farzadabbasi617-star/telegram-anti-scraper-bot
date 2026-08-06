@@ -489,8 +489,15 @@ async def cb(c, q):
         await q.answer()
         prog = await q.message.edit_text(f"🎯 هدف: {target.title}\n🚀 در حال شروع حمله...")
         async def run():
+            progress_msg = prog
+            async def on_progress(text):
+                try:
+                    nonlocal progress_msg
+                    progress_msg = await progress_msg.edit_text(f"🎯 هدف: {target.title}\n\n{text}\n\n⏱️ لطفا صبر کنید، بستن صفحه مشکلی ایجاد نمی کند نتیجه در آخر ارسال میشود.")
+                except Exception:
+                    pass
             try:
-                users = await atk.run_full_scrape(target.id)
+                users = await atk.run_full_scrape(target.id, progress_cb=on_progress)
                 csv_bytes = atk.export_csv()
                 save_scraped(users, target.title, target.id)
                 await app.send_message(ADMIN_ID, f"✅ حمله تمام شد!\nگروه: {target.title}\nتعداد استخراج: {len(users)} نفر\n\n📋 از دکمه «لیست مخاطبان استخراج شده» در منو می‌توانید ببینید.")
@@ -541,18 +548,23 @@ async def cb(c, q):
                 return
         async def run_retry():
             try:
-                # قبل از شروع کش را دو بار گرم کن
                 for _ in range(2):
                     async for _ in atk.app.get_dialogs(limit=2000):
                         pass
                     await asyncio.sleep(3)
-                users = await atk.run_full_scrape(gid)
-                csv_bytes = atk.export_csv()
                 try:
-                    target = await atk.app.get_chat(gid)
-                    tname = target.title
+                    tchat = await atk.app.get_chat(gid)
+                    tname = tchat.title
                 except:
                     tname = "گروه هدف"
+                progress_msg = q.message
+                async def on_progress(text):
+                    nonlocal progress_msg
+                    try:
+                        progress_msg = await progress_msg.edit_text(f"🔄 تلاش مجدد\n🎯 {tname}\n\n{text}")
+                    except: pass
+                users = await atk.run_full_scrape(gid, progress_cb=on_progress)
+                csv_bytes = atk.export_csv()
                 save_scraped(users, tname, gid)
                 await app.send_message(ADMIN_ID, f"✅ تلاش مجدد موفق!\nگروه: {tname}\nتعداد استخراج: {len(users)} نفر")
                 await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"result_{int(time.time())}.csv")
