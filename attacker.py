@@ -50,7 +50,8 @@ class AdvancedScraper:
             in_memory=False,
             sleep_threshold=30,
             workdir=".",
-            no_updates=True
+            no_updates=True,
+            takeout=False
         )
         self.found_users = {}
         self.total_api_calls = 0

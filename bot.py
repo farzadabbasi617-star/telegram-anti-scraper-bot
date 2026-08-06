@@ -26,7 +26,7 @@ sys.path.insert(0, '.')
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import SessionPasswordNeeded, AuthKeyDuplicated, AuthKeyUnregistered
+from pyrogram.errors import SessionPasswordNeeded, AuthKeyDuplicated, AuthKeyUnregistered, FloodWait
 
 from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename, DEVICE_FP
 from defender import AdvancedDefender
@@ -698,7 +698,7 @@ async def cb(c, q):
     if d == "add_new_account":
         atk_state.clear()
         atk_state["step"] = "add_new_acc_phone"
-        await q.message.edit_text("➕ افزودن اکانت جدید دائمی\n\nشماره تلفن را با فرمت +98 بفرستید:",
+        await q.message.edit_text("➕ افزودن اکانت جدید دائمی\n\n⚠️ نکته: درخواست کد زیاد پشت سر هم باعث فلود ۱۸ ساعته تلگرام میشود!\nاگر اکانت از قبل در لیست هست از آن استفاده کنید.\n\nشماره تلفن را با فرمت +98 بفرستید:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="manage_accounts")]]))
         return
 
@@ -909,10 +909,14 @@ async def steps(c, m):
     # ==================== افزودن اکانت جدید از منوی مدیریت ====================
     if step == "add_new_acc_phone":
         phone = m.text.strip()
+        # چک کن اکانت از قبل وجود نداشته باشه
+        if phone in list_saved_accounts():
+            await m.reply_text(f"⚠️ اکانت {phone} از قبل در لیست ذخیره شده است! نیازی به افزودن مجدد نیست، از لیست اکانت ها انتخاب کنید.", reply_markup=main_menu())
+            atk_state.clear()
+            return
         atk_state["phone"] = phone
-        st = await m.reply_text("📡 در حال اتصال...")
+        st = await m.reply_text("📡 در حال ارسال کد تایید...")
         try:
-            # از اول یک فینگرپرینت ثابت انتخاب کن که برای همیشه برای این اکانت بماند
             chosen_fp = random.choice(DEVICE_FP)
             atk_state["chosen_fp"] = chosen_fp
             acc_client = AdvancedScraper(f"newacc_tmp_{int(time.time())}", API_ID, API_HASH, phone=phone, device_fp=chosen_fp)
@@ -923,8 +927,13 @@ async def steps(c, m):
             atk_state["st"] = st
             atk_state["step"] = "add_new_acc_code"
             await st.edit_text("✅ کد تایید ارسال شد، کد ۵ رقمی را بفرست:")
+        except FloodWait as fw:
+            wait_h = fw.value // 3600
+            wait_m = (fw.value % 3600) // 60
+            await st.edit_text(f"❌ تلگرام موقتا از ارسال کد به این شماره خودداری میکند!\n⏱️ باید حدود {wait_h} ساعت و {wait_m} دقیقه صبر کنید.\n\n✅ نگران نباشید، سشن شما سالم است و اگر قبلا اکانت را افزوده بودید میتوانید بدون کد وارد شوید. این محدودیت موقت است و اکانت بن نشده.", reply_markup=main_menu())
+            atk_state.clear()
         except Exception as e:
-            await st.edit_text(f"❌ خطا: {str(e)}")
+            await st.edit_text(f"❌ خطا در ارسال کد: {str(e)[:300]}\n\nلطفا چند دقیقه دیگر امتحان کنید.", reply_markup=main_menu())
             atk_state.clear()
         return
 
@@ -989,13 +998,16 @@ async def steps(c, m):
     # ==================== لاگین اکانت جدید هنگام شروع عملیات ====================
     if step == "phone_new":
         phone = m.text.strip()
+        if phone in list_saved_accounts():
+            await m.reply_text(f"⚠️ اکانت {phone} از قبل ذخیره شده است! لطفا از منوی انتخاب اکانت استفاده کنید.", reply_markup=main_menu())
+            atk_state.clear()
+            return
         atk_state["phone"] = phone
         after_mode = atk_state.get("after_auth_mode", "attack")
-        st = await m.reply_text("📡 در حال اتصال...")
+        st = await m.reply_text("📡 در حال ارسال کد تایید...")
         try:
             chosen_fp = random.choice(DEVICE_FP)
             atk_state["chosen_fp"] = chosen_fp
-            # از یک نام سشن موقت برای لاگین اولیه استفاده کن بعد از لاگین به سشن دائمی منتقل میشه
             new_client = AdvancedScraper(f"login_tmp_{int(time.time())}", API_ID, API_HASH, phone=phone, device_fp=chosen_fp, in_memory=False)
             await new_client.connect()
             sent = await new_client.app.send_code(phone)
@@ -1003,9 +1015,14 @@ async def steps(c, m):
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "code_new"
-            await st.edit_text("✅ کد تایید ارسال شد، کد ۵ رقمی را بفرست:\n⚠️ بعد از این بار دیگر نیازی به کد نخواهید داشت، شناسه دستگاه ثابت ذخیره می‌شود.")
+            await st.edit_text("✅ کد تایید ارسال شد، کد ۵ رقمی را بفرست:\n⚠️ بعد از این بار دیگر نیازی به کد نخواهید داشت.")
+        except FloodWait as fw:
+            wait_h = fw.value // 3600
+            wait_m = (fw.value % 3600) // 60
+            await st.edit_text(f"❌ تلگرام موقتا کد نمیدهد!\n⏱️ لطفا حدود {wait_h} ساعت و {wait_m} دقیقه صبر کنید.\n✅ اکانت شما سالم است، نگران بن نباشید.", reply_markup=main_menu())
+            atk_state.clear()
         except Exception as e:
-            await st.edit_text(f"❌ خطا: {str(e)}")
+            await st.edit_text(f"❌ خطا: {str(e)[:300]}", reply_markup=main_menu())
             atk_state.clear()
         return
 
