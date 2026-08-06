@@ -229,16 +229,28 @@ async def steps(c, m):
         except Exception as e:
             await m.reply_text(f"❌ خطا در ورود: {str(e)}")
             return
-        await st.edit_text("✅ ورود موفق!\nدر حال دریافت لیست گروه های اکانت، لطفا صبر کنید...")
+        await st.edit_text("✅ ورود موفق!\nدر حال بارگذاری کامل لیست چت های اکانت، لطفا صبر کنید...")
         groups = []
         try:
-            async for dialog in atk.app.get_dialogs():
-                # سوپرگروپ ها و گروه های معمولی و همچنین مگاگروپ ها (نوع channel ولی گروه هستند)
+            # اول تمام چت ها را با حد بالا میخوانیم تا در کش بیاید
+            all_dialogs = []
+            async for dialog in atk.app.get_dialogs(limit=2000):
+                all_dialogs.append(dialog)
+            print(f"مجموع {len(all_dialogs)} چت پیدا شد", flush=True)
+            for dialog in all_dialogs:
                 chat = dialog.chat
-                if chat.type in ["group", "supergroup"] or (chat.type == "channel" and getattr(chat, 'is_group', False) or getattr(chat, 'megagroup', False)):
+                # گروه ها و سوپرگروپ ها و مگاگروپ ها
+                is_group = False
+                if chat.type in ["group", "supergroup"]:
+                    is_group = True
+                elif chat.type == "channel":
+                    # مگاگروپ ها نوع کانال هستند اما ویژگی megagroup دارند
+                    if getattr(chat, 'megagroup', False) or getattr(chat, 'gigagroup', False):
+                        is_group = True
+                if is_group and chat.title:
                     groups.append((chat.title, chat.id))
         except Exception as e:
-            await st.edit_text(f"❌ خطا در دریافت لیست: {str(e)}")
+            await st.edit_text(f"❌ خطا در دریافت لیست چت ها: {str(e)}")
             atk_state.clear()
             return
         if not groups:
