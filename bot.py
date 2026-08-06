@@ -43,6 +43,7 @@ from project_finder import (
     load_found as pf_load, load_state as pf_state, save_state as pf_save_state,
     projects_by_category, export_csv as pf_export, clear_all as pf_clear,
 )
+import parallel
 
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
@@ -176,8 +177,11 @@ def main_menu():
         buttons.append([InlineKeyboardButton("🔍 انتخاب گروه برای محافظت", callback_data="select_group")])
     saved_accs = list_saved_accounts()
     acc_count = len(saved_accs)
-    buttons.append([InlineKeyboardButton("🚀 تست حمله پیشرفته", callback_data="pick_account_attack")])
-    buttons.append([InlineKeyboardButton("➕ تست اضافه کردن اعضا به گروه", callback_data="pick_account_add")])
+    buttons.append([InlineKeyboardButton("🚀 تست حمله (تک‌اکانت)", callback_data="pick_account_attack")])
+    buttons.append([InlineKeyboardButton("➕ اضافه کردن اعضا (تک‌اکانت)", callback_data="pick_account_add")])
+    if acc_count >= 2:
+        buttons.append([InlineKeyboardButton(f"⚡ حمله موازی ({acc_count} اکانت)", callback_data="par_pick_target_attack")])
+        buttons.append([InlineKeyboardButton(f"⚡ ادد موازی ({acc_count} اکانت)", callback_data="par_pick_target_add")])
     buttons.append([InlineKeyboardButton("📋 لیست مخاطبان استخراج شده", callback_data="show_list_0")])
     buttons.append([InlineKeyboardButton("📈 آمار اکانت‌های اضافه کننده", callback_data="adder_stats")])
     add_hist = load_added_history()
@@ -211,6 +215,17 @@ async def start_cmd(c, m):
     if pf_all:
         welcome += f"🔭 پروژه‌یاب: {len(pf_all)} پروژه در بایگانی.\n"
     await m.reply_text(welcome, reply_markup=main_menu())
+
+# Honeypot callback watcher (catches non-admin users in protected group clicking trap buttons)
+@app.on_callback_query(~filters.user(ADMIN_ID))
+async def hp_cb(c, q):
+    if not defender or not CURRENT_GROUP_ID:
+        return
+    try:
+        if q.message and q.message.chat and q.message.chat.id == CURRENT_GROUP_ID:
+            await defender.monitor_callback(q)
+    except:
+        pass
 
 @app.on_callback_query(filters.user(ADMIN_ID))
 async def cb(c, q):
@@ -1000,6 +1015,211 @@ async def cb(c, q):
         if full_count > 0:
             warn = f"\n⚠️ {full_count} اکانت به سقف {MAX_ADD_PER_ACCOUNT} نفر رسیده"
         await show_account_picker("add", "home", f"➕ شروع اضافه کردن اعضا{warn}")
+        return
+
+    # ==================== Parallel multi-account ====================
+    if d == "par_pick_target_attack":
+        accounts = list_saved_accounts()
+        if len(accounts) < 2:
+            await q.answer("حداقل به ۲ اکانت ذخیره شده نیاز هست.", show_alert=True)
+            return
+        atk_state["par_mode"] = "scrape"
+        # Let user pick target group from dialogs of first account
+        try:
+            phone0 = accounts[0]
+            accs = load_accounts()
+            fp = accs.get(phone0, {}).get("device_fp") or random.choice(DEVICE_FP)
+            from attacker import safe_phone_filename as spfn
+            sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone0)}")
+            tmp = AdvancedScraper(sess_path, API_ID, API_HASH, device_fp=fp)
+            await tmp.connect()
+            async for _ in tmp.app.get_dialogs(limit=2000):
+                pass
+            await asyncio.sleep(2)
+            dialogs = []
+            async for dlg in tmp.app.get_dialogs(limit=200):
+                if dlg.chat and (dlg.chat.type.name in ("GROUP","SUPERGROUP","CHANNEL")) or (getattr(dlg.chat,"type",None) and "group" in str(dlg.chat.type).lower()):
+                    try:
+                        c = await tmp.app.get_chat(dlg.chat.id)
+                        cnt = 0
+                        try:
+                            cnt = await tmp.app.get_chat_members_count(c.id)
+                        except: pass
+                        if cnt > 0:
+                            dialogs.append((c.id, c.title, cnt))
+                    except: pass
+            try: await tmp.disconnect()
+            except: pass
+        except Exception as e:
+            await q.answer(f"خطا در بارگذاری لیست گروه‌ها: {str(e)[:100]}", show_alert=True)
+            return
+        if not dialogs:
+            await q.answer("گروهی پیدا نشد.", show_alert=True)
+            return
+        dialogs.sort(key=lambda x: -x[2])
+        buttons = []
+        for gid, gname, gcount in dialogs[:30]:
+            buttons.append([InlineKeyboardButton(f"👥 {gname[:35]} | {gcount:,}", callback_data=f"par_target_{gid}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
+        await q.message.edit_text(
+            f"⚡ <b>حمله موازی با {len(accounts)} اکانت</b>\n\n"
+            f"همه اکانت‌های ذخیره شده همزمان روی گروه هدف کار میکنند.\n"
+            f"استراتژی‌ها بین اکانت‌ها تقسیم میشن تا نرخ موفقیت بیشتر بشه.\n\n"
+            f"گروه هدف را انتخاب کنید:",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "par_pick_target_add":
+        accounts = list_saved_accounts()
+        if len(accounts) < 2:
+            await q.answer("حداقل به ۲ اکانت ذخیره شده نیاز هست.", show_alert=True)
+            return
+        # Check limits
+        limits = load_adder_limits()
+        available = [p for p in accounts if limits.get(p,{}).get("added",0) < MAX_ADD_PER_ACCOUNT]
+        if not available:
+            await q.answer(f"همه اکانت‌ها به سقف {MAX_ADD_PER_ACCOUNT} رسیده‌اند! لطفا ریست آمار کنید.", show_alert=True)
+            return
+        atk_state["par_mode"] = "add"
+        atk_state["par_add_accounts"] = available
+        # Pick target group
+        try:
+            phone0 = available[0]
+            accs = load_accounts()
+            fp = accs.get(phone0, {}).get("device_fp") or random.choice(DEVICE_FP)
+            from attacker import safe_phone_filename as spfn
+            sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone0)}")
+            tmp = AdvancedScraper(sess_path, API_ID, API_HASH, device_fp=fp)
+            await tmp.connect()
+            async for _ in tmp.app.get_dialogs(limit=2000):
+                pass
+            await asyncio.sleep(2)
+            dialogs = []
+            async for dlg in tmp.app.get_dialogs(limit=200):
+                try:
+                    c = await tmp.app.get_chat(dlg.chat.id)
+                    if "group" in str(getattr(c.type,"","")).lower():
+                        cnt = 0
+                        try: cnt = await tmp.app.get_chat_members_count(c.id)
+                        except: pass
+                        dialogs.append((c.id, c.title, cnt))
+                except: pass
+            try: await tmp.disconnect()
+            except: pass
+        except Exception as e:
+            await q.answer(f"خطا: {str(e)[:100]}", show_alert=True)
+            return
+        if not dialogs:
+            await q.answer("گروهی پیدا نشد.", show_alert=True)
+            return
+        dialogs.sort(key=lambda x: -x[2])
+        buttons = []
+        for gid, gname, gcount in dialogs[:30]:
+            buttons.append([InlineKeyboardButton(f"👥 {gname[:35]} | {gcount:,}", callback_data=f"par_add_target_{gid}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
+        total_slots = sum(MAX_ADD_PER_ACCOUNT - limits.get(p,{}).get("added",0) for p in available)
+        await q.message.edit_text(
+            f"⚡ <b>اضافه کردن موازی با {len(available)} اکانت</b>\n\n"
+            f"📦 ظرفیت کل در دسترس: <b>{total_slots}</b> نفر\n"
+            f"هر اکانت حداکثر {MAX_ADD_PER_ACCOUNT} نفر ادد میکند.\n\n"
+            f"گروه مقصد را انتخاب کنید:",
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("par_target_"):
+        gid = int(d.split("_")[2])
+        accounts = list_saved_accounts()
+        parallel.reset_dash()
+        prog = await q.message.edit_text(f"⚡ در حال شروع حمله موازی با {len(accounts)} اکانت روی گروه {gid}...")
+        # Fetch group title
+        try:
+            phone0 = accounts[0]
+            accs = load_accounts()
+            fp = accs.get(phone0, {}).get("device_fp") or random.choice(DEVICE_FP)
+            from attacker import safe_phone_filename as spfn
+            sess_p = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone0)}")
+            _tmp = AdvancedScraper(sess_p, API_ID, API_HASH, device_fp=fp)
+            await _tmp.connect()
+            _chat = await _tmp.app.get_chat(gid)
+            gname = _chat.title or "گروه هدف"
+            parallel.dash["chat_title"] = gname
+            try: await _tmp.disconnect()
+            except: pass
+        except:
+            gname = "گروه هدف"
+        users_list, gname_old, _ = load_scraped()
+        lock = asyncio.Lock()
+        if isinstance(users_list, dict):
+            users_store = dict(users_list)
+        else:
+            users_store = {}
+            for u in users_list:
+                try:
+                    uid = int(u.get("user_id"))
+                    users_store[uid] = u
+                except:
+                    pass
+
+        async def on_progress(text):
+            try:
+                await prog.edit_text(text, disable_web_page_preview=True)
+            except:
+                pass
+
+        async def run_par_scrape():
+            try:
+                await parallel.parallel_scrape(gid, accounts, progress_cb=on_progress,
+                                               users_store=users_store, users_lock=lock)
+                # Save final
+                save_scraped(users_store, gname, gid)
+                await prog.edit_text(
+                    parallel.render_dashboard(final=True) +
+                    f"\n\n✅ <b>مجموع {len(users_store):,} کاربر</b> در فایل ذخیره شد.\n"
+                    f"از منوی «لیست مخاطبان» می‌توانی ببینی یا دانلود کنی.",
+                    reply_markup=main_menu())
+            except Exception as e:
+                await prog.edit_text(f"❌ خطا در حمله موازی: {e}", reply_markup=main_menu())
+
+        asyncio.create_task(run_par_scrape())
+        return
+
+    if d.startswith("par_add_target_"):
+        gid = int(d.split("_")[3])
+        accounts = atk_state.get("par_add_accounts", list_saved_accounts())
+        users, gname, _ = load_scraped()
+        if not users:
+            await q.answer("هنوز هیچ مخاطبی استخراج نشده! اول حمله بزن.", show_alert=True)
+            return
+        uid_list = list(users.keys())
+        random.shuffle(uid_list)
+        parallel.reset_dash()
+        prog = await q.message.edit_text(f"⚡ شروع ادد موازی {len(uid_list)} نفر با {len(accounts)} اکانت...")
+
+        async def on_progress(text):
+            try:
+                await prog.edit_text(text, disable_web_page_preview=True)
+            except:
+                pass
+
+        async def run_par_add():
+            try:
+                await parallel.parallel_add(
+                    gid, uid_list, accounts,
+                    adder_limits_load=load_adder_limits,
+                    save_adder_limits_fn=save_adder_limits,
+                    add_history_check=is_user_already_added,
+                    mark_added=mark_user_as_added,
+                    max_per_account=MAX_ADD_PER_ACCOUNT,
+                    progress_cb=on_progress,
+                )
+                await prog.edit_text(
+                    parallel.render_dashboard(final=True) +
+                    "\n\n✅ عملیات موازی تمام شد.",
+                    reply_markup=main_menu())
+            except Exception as e:
+                await prog.edit_text(f"❌ خطا: {e}", reply_markup=main_menu())
+
+        asyncio.create_task(run_par_add())
         return
 
     if d.startswith("useacc_"):
