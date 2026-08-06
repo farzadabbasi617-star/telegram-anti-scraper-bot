@@ -164,10 +164,38 @@ async def cb(c, q):
         atk_state["step"] = "attack_phone"
         await q.message.edit_text(
             "🚀 **شبیه ساز حمله پیشرفته**\n\n"
-            "⚠️ برای حمله نیازی به ادمین بودن ربات نیست، فقط اکانت تست باید عضو گروه هدف باشد.\n\n"
+            "⚠️ برای حمله نیازی به ادمین بودن ربات نیست.\n"
             "شماره اکانت تست را با فرمت +989xxxxxxxxx بفرستید:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="home")]])
         )
+
+    elif d == "atk_cancel":
+        atk_state.clear()
+        await q.message.edit_text("حمله لغو شد، منوی اصلی:", reply_markup=main_menu())
+        return
+
+    elif d.startswith("atk_run_"):
+        target_gid = int(d.split("_")[2])
+        atk = atk_state.get("atk")
+        target_name = ""
+        for name, gid in atk_state.get("groups_list", []):
+            if gid == target_gid:
+                target_name = name
+                break
+        await q.answer(f"حمله به گروه {target_name} شروع شد!", show_alert=True)
+        prog = await q.message.edit_text(f"🚀 حمله به گروه «{target_name}» در حال انجام است، نتایج به زودی ارسال میشود...")
+        async def run_attack():
+            try:
+                users = await atk.run_full_scrape(target_gid)
+                csv_bytes = atk.export_csv()
+                await app.send_message(ADMIN_ID, f"✅ حمله به گروه «{target_name}» تمام شد!\nتعداد کاربر استخراج شده: {len(users)} نفر")
+                await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"attack_{target_name}_{int(time.time())}.csv")
+                await atk.disconnect()
+            except Exception as e:
+                await app.send_message(ADMIN_ID, f"❌ خطا در حمله:\n{str(e)}")
+            atk_state.clear()
+            await app.send_message(ADMIN_ID, "به منوی اصلی بازگردید:", reply_markup=main_menu())
+        asyncio.create_task(run_attack())
 
 @app.on_message(filters.private & filters.user(ADMIN_ID) & filters.text & ~filters.command("start"))
 async def steps(c, m):
@@ -201,52 +229,39 @@ async def steps(c, m):
         except Exception as e:
             await m.reply_text(f"❌ خطا: {str(e)}")
             return
-        atk_state["step"] = "attack_groupid"
-        await st.edit_text("✅ ورود موفق!\nلطفا آیدی عددی گروه هدف را بفرستید (با -100 شروع میشود):")
-    elif step == "attack_groupid":
-        raw_input = m.text.strip()
-        # پاکسازی ورودی برای لینک/یوزرنیم/آیدی
-        cleaned = raw_input.replace("@", "").replace("https://t.me/", "").replace("http://t.me/", "").replace("t.me/", "").strip()
-        target = None
-        target_gid = None
-        try:
-            # اول امتحان کن به عدد
-            target_gid = int(cleaned)
-            target = await atk.app.get_chat(target_gid)
-        except:
-            try:
-                # بعد امتحان کن به عنوان یوزرنیم
-                target = await atk.app.get_chat(cleaned)
-                target_gid = target.id
-            except Exception as e:
-                await m.reply_text(f"❌ گروه با اطلاعاتی که دادید پیدا نشد: {str(e)}\n\nمی توانید این موارد را وارد کنید:\n• آیدی عددی گروه با -100\n• یوزرنیم عمومی گروه مثل @namad_group\n• لینک کامل گروه مثل https://t.me/namad_group\n\nدقت کنید اکانت تست حتما عضو گروه باشد.")
-                return
-
-        # بررسی عضویت اکانت تست در گروه
-        try:
-            check_mem = await atk.app.get_chat_member(target_gid, "me")
-            if not check_mem:
-                await m.reply_text("❌ اکانت تست اصلا عضو این گروه نیست! اول اکانت را عضو گروه کنید.")
-                return
-        except Exception as e:
-            await m.reply_text(f"❌ اکانت تست در این گروه عضو نیست یا دسترسی ندارم:\n{str(e)}")
-            return
-
-        st = atk_state["st"]
+    elif step == "attack_code":
+        code = m.text.strip()
         atk = atk_state["atk"]
-        await st.edit_text(f"✅ گروه پیدا شد: **{target.title}**\nآیدی گروه: `{target_gid}`\n🚀 در حال شروع عملیات استخراج اعضا...")
-        prog = await app.send_message(ADMIN_ID, f"🚀 حمله به گروه «{target.title}» شروع شد...")
-        async def run():
-            try:
-                users = await atk.run_full_scrape(target_gid)
-                csv_bytes = atk.export_csv()
-                await prog.edit_text(f"✅ حمله به اتمام رسید!\nنام گروه: {target.title}\nتعداد کاربری که استخراج شد: {len(users)} نفر\nفایل نتیجه زیر ارسال میگردد:")
-                await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"attack_{target.title}_{int(time.time())}.csv")
-                await atk.disconnect()
-            except Exception as e:
-                await prog.edit_text(f"❌ خطا در هنگام حمله:\n{str(e)}")
+        phone = atk_state["phone"]
+        h = atk_state["hash"]
+        st = atk_state["st"]
+        try:
+            await atk.app.sign_in(phone, h, code)
+        except Exception as e:
+            await m.reply_text(f"❌ خطا در ورود: {str(e)}")
+            return
+        await st.edit_text("✅ ورود موفق!\nدر حال دریافت لیست گروه های اکانت، لطفا صبر کنید...")
+        groups = []
+        try:
+            async for dialog in atk.app.get_dialogs():
+                if dialog.chat.type in ["group", "supergroup"]:
+                    groups.append((dialog.chat.title, dialog.chat.id))
+        except Exception as e:
+            await st.edit_text(f"❌ خطا در دریافت لیست: {str(e)}")
             atk_state.clear()
-        asyncio.create_task(run())
+            return
+        if not groups:
+            await st.edit_text("❌ اکانت شما در هیچ گروهی عضو نیست!")
+            atk_state.clear()
+            return
+        atk_state["groups_list"] = groups
+        buttons = []
+        for name, gid in groups:
+            buttons.append([InlineKeyboardButton(f"👥 {name}", callback_data=f"atk_run_{gid}")])
+        buttons.append([InlineKeyboardButton("انصراف", callback_data="atk_cancel")])
+        atk_state["step"] = "attack_selected"
+        await st.edit_text("✅ لیست گروه ها آماده شد!\nلطفا گروه هدف را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+        pass  # مرحله آیدی گروه حذف شد، از دکمه انتخاب استفاده میکنیم
 
 @app.on_message(filters.new_chat_members)
 async def new_mem(c, m):
