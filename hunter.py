@@ -235,20 +235,39 @@ auto_scan_running = False
 auto_scan_thread = None
 
 # ---------------------- Auto public scanner ----------------------
-def fetch_recent_pastes():
-    """Fetch recent public pastes from pastebin-like sources"""
-    results = []
-    # Recent github gists (public)
+def _gist_is_recent(gist, max_age_years=2):
+    """Check if a gist is newer than max_age_years"""
     try:
-        r = requests.get("https://api.github.com/gists/public?per_page=30", timeout=10, headers={"Accept":"application/vnd.github.v3+json"})
+        created = gist.get("created_at", "")
+        if not created:
+            return True
+        # Github date ISO 8601
+        y = int(created[:4])
+        return y >= (time.gmtime().tm_year - max_age_years)
+    except:
+        return True
+
+def fetch_recent_pastes():
+    """Fetch recent public github gists from last 2 years"""
+    results = []
+    try:
+        headers = {"Accept":"application/vnd.github.v3+json", "User-Agent":"Mozilla/5.0 TreasureHunter/1.0"}
+        r = requests.get("https://api.github.com/gists/public?per_page=100", timeout=12, headers=headers)
         if r.ok:
             for gist in r.json():
+                if not _gist_is_recent(gist, 2):
+                    continue
                 for fn, finfo in gist.get("files", {}).items():
                     raw = finfo.get("raw_url")
+                    lang = finfo.get("language", "") or ""
                     if raw:
+                        # Only check code/text files, skip binaries/images
+                        if finfo.get("size",0) and finfo["size"] > 5_000_000:
+                            continue
                         try:
-                            txt = requests.get(raw, timeout=8).text
-                            results.append((txt, f"github_gist:{gist.get('id')}"))
+                            txt = requests.get(raw, timeout=8, headers=headers).text
+                            if isinstance(txt, str) and len(txt) < 1_000_000:
+                                results.append((txt, f"gist:{gist['id'][:8]}"))
                         except:
                             pass
     except Exception as e:
@@ -256,54 +275,88 @@ def fetch_recent_pastes():
     return results
 
 async def auto_scanner_loop(bot_app, admin_id):
-    """Background task 24/7 to scan public sources"""
+    """Background task 24/7 to scan public sources - only report items WITH balance"""
     global auto_scan_running
     auto_scan_running = True
     state = load_hunter_state()
     state["running"] = True
     state["started_at"] = int(time.time())
+    state["scanned_gists"] = state.get("scanned_gists", 0)
     save_hunter_state(state)
-    print("🕵️ Auto treasure scanner started 24/7", flush=True)
+    print("🕵️ Auto treasure scanner started 24/7 - only reporting wallets with balance", flush=True)
     try:
-        await bot_app.send_message(admin_id, "✅ اسکنر خودکار شکارچی روشن شد!\n۲۴ ساعته در منابع عمومی در حال گشتن هستم، هر چیزی باارزش پیدا کنم فورا بهت میگم.")
+        await bot_app.send_message(admin_id, "✅ <b>اسکنر خودکار حرفه‌ای فعال شد</b>\n\n🔍 فقط گیست‌های عمومی آخر ۲ سال اسکن میشوند\n⚠️ فقط کیف پول‌هایی که موجودی واقعی دارند گزارش میشوند\n❌ کیف پول خالی اصلا نمایش داده نمیشود")
     except:
         pass
     while auto_scan_running:
         try:
             state = load_hunter_state()
             state["checked"] += 1
-            save_hunter_state(state)
             sources = fetch_recent_pastes()
+            state["scanned_gists"] = state.get("scanned_gists",0) + len(sources)
+            save_hunter_state(state)
             existing = load_found()
             seen_keys = set((f["type"], f["value"]) for f in existing)
-            new_count = 0
+            reported = 0
             for text, src in sources:
+                # Fast pattern pre-filter
+                if not any(k in text.lower() for k in ["seed", "mnemonic", "private", "key", "wif", "abandon", "wallet"]):
+                    # Quick check for hex/WIF patterns even without keywords
+                    if not RE_BTC_WIF.search(text) and not RE_ETH_ADDR.search(text):
+                        continue
                 findings = scan_text(text, source=src)
-                if findings:
-                    findings = check_balance_of_findings(findings)
-                    for f in findings:
-                        k = (f["type"], f["value"])
-                        if k not in seen_keys:
-                            existing.append(f)
-                            seen_keys.add(k)
-                            new_count += 1
-                            bal = f.get("balance",0) or 0
-                            msg = f"🕵️ <b>مورد جدید پیدا شد!</b>\nمنبع: {src}\nنوع: {f['type']}\nمقدار:\n<code>{f['value'][:500]}</code>"
-                            if bal > 0.0001:
-                                msg += f"\n\n💰 موجودی: {bal:.8f} {f.get('coin','')}"
-                                msg += "\n🚨 این کیف پول موجود دارد!"
-                            try:
-                                await bot_app.send_message(admin_id, msg)
-                            except:
-                                pass
-            if new_count > 0:
+                if not findings:
+                    continue
+                # ONLY check balance for items that look real
+                for f in findings:
+                    k = (f["type"], f["value"])
+                    if k in seen_keys:
+                        continue
+                    # Skip eth/sol/tron addresses without keys (they are public! everyone knows them)
+                    # Only check: seed phrases, BTC WIF private keys (these grant access to money)
+                    if f["type"] in ("eth_addr", "btc_addr", "tron_addr", "sol_addr"):
+                        # Just addresses are public, no need to report - they can't be used to steal
+                        # Unless you have the private key, knowing the address means nothing
+                        continue
+                # Now check balances only for private keys/seeds
+                valid_findings = [f for f in findings if f["type"] in ("seed_phrase", "btc_wif")]
+                checked = check_balance_of_findings(valid_findings)
+                for f in checked:
+                    bal = f.get("balance", 0) or 0
+                    total = bal
+                    if f.get("bnb_balance",0):
+                        total += f["bnb_balance"]
+                    if total < 0.0001:
+                        # No meaningful balance, skip it entirely
+                        continue
+                    # We found a real wallet with money!
+                    existing.append(f)
+                    seen_keys.add(k)
+                    reported += 1
+                    coin = f.get("coin","")
+                    val = f["value"]
+                    msg = f"🚨 <b>کیف پول با موجودی پیدا شد!</b>\n\n"
+                    msg += f"📂 منبع: {src}\n"
+                    msg += f"🔑 نوع: {f['type']}\n"
+                    msg += f"💰 موجودی: {bal:.8f} {coin}"
+                    if f.get("bnb_balance",0) > 0.0001:
+                        msg += f"\n+ {f['bnb_balance']:.8f} BNB"
+                    msg += f"\n\n🔐 مقدار:\n<code>{val[:700]}</code>"
+                    if f.get("derived_addr"):
+                        msg += f"\n\n📍 آدرس استخراج شده: <code>{f['derived_addr']}</code>"
+                    try:
+                        await bot_app.send_message(admin_id, msg)
+                    except:
+                        pass
+                    await asyncio.sleep(1)
+            if reported > 0:
                 save_found(existing)
-            # Wait 2-5 min between scans (polite to APIs)
-            wait = random.randint(120, 300)
+            # Random wait 2-4 minutes between scans
+            wait = random.randint(120, 240)
             await asyncio.sleep(wait)
         except Exception as e:
             print(f"Auto scan error: {e}", flush=True)
-            await asyncio.sleep(60)
+            await asyncio.sleep(90)
 
 def start_auto_scanner(app, admin_id):
     """Start the auto scanner in background"""
