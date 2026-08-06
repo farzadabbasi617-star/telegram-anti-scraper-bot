@@ -1,4 +1,8 @@
 *.session
+*.session-journal
 __pycache__/
 *.pyc
 .env
+scraped_users.json
+adder_limits.json
+config.json

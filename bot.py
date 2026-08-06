@@ -34,6 +34,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "8790569799:AAFZuVDuVg62v87yQqmaQy3LS_w7
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 564234793))
 PORT = int(os.environ.get("PORT", 10000))
 CONFIG_FILE = "config.json"
+SCRAPED_FILE = "scraped_users.json"
+ADDER_LIMIT_FILE = "adder_limits.json"
+MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر اکانت
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
 
@@ -47,6 +50,38 @@ def load_config():
 def save_config(cfg):
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f)
+
+def load_scraped():
+    """بارگذاری لیست مخاطبان استخراج شده از فایل"""
+    try:
+        with open(SCRAPED_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data.get("users", []), data.get("group_name", ""), data.get("group_id", 0)
+    except:
+        return [], "", 0
+
+def save_scraped(users, group_name="", group_id=0):
+    """ذخیره لیست استخراج شده در فایل دائمی"""
+    data = {
+        "users": list(users.values()) if isinstance(users, dict) else users,
+        "group_name": group_name,
+        "group_id": group_id,
+        "saved_at": int(time.time())
+    }
+    with open(SCRAPED_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+def load_adder_limits():
+    """بارگذاری آمار اضافه کردن هر اکانت"""
+    try:
+        with open(ADDER_LIMIT_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {}
+
+def save_adder_limits(limits):
+    with open(ADDER_LIMIT_FILE, "w", encoding="utf-8") as f:
+        json.dump(limits, f, ensure_ascii=False)
 
 config = load_config()
 CURRENT_GROUP_ID = config.get("defend_group")
@@ -67,6 +102,8 @@ def main_menu():
         buttons.append([InlineKeyboardButton("🔍 انتخاب گروه برای محافظت", callback_data="select_group")])
     buttons.append([InlineKeyboardButton("🚀 تست حمله پیشرفته", callback_data="attack")])
     buttons.append([InlineKeyboardButton("➕ تست اضافه کردن اعضا به گروه", callback_data="add_members")])
+    buttons.append([InlineKeyboardButton("📋 لیست مخاطبان استخراج شده", callback_data="show_list_0")])
+    buttons.append([InlineKeyboardButton("📈 آمار اکانت‌های اضافه کننده", callback_data="adder_stats")])
     return InlineKeyboardMarkup(buttons)
 
 @app.on_message(filters.command("start") & filters.private & filters.user(ADMIN_ID))
@@ -82,6 +119,9 @@ async def start_cmd(c, m):
     welcome = "✅ ربات ضد اسکریپت آماده است!\n\n"
     if CURRENT_GROUP_ID:
         welcome += "🛡️ سیستم دفاع فعال است.\n"
+    users, gname, _ = load_scraped()
+    if users:
+        welcome += f"📋 {len(users)} مخاطب استخراج شده در حافظه ذخیره شده.\n"
     await m.reply_text(welcome, reply_markup=main_menu())
 
 @app.on_callback_query(filters.user(ADMIN_ID))
@@ -149,6 +189,131 @@ async def cb(c, q):
         await q.message.edit_text("✅ وضعیت تغییر کرد", reply_markup=main_menu())
         return
 
+    # ==================== نمایش لیست مخاطبان ====================
+    if d.startswith("show_list_"):
+        page = int(d.split("_")[2])
+        PER_PAGE = 15
+        users, gname, gid = load_scraped()
+        if not users:
+            await q.answer("هنوز هیچ مخاطبی استخراج نشده! اول تست حمله بزن.", show_alert=True)
+            return
+        total = len(users)
+        total_pages = (total + PER_PAGE - 1) // PER_PAGE
+        if page >= total_pages:
+            page = total_pages - 1
+        if page < 0:
+            page = 0
+        start = page * PER_PAGE
+        end = min(start + PER_PAGE, total)
+        chunk = users[start:end]
+        text = f"📋 **لیست مخاطبان استخراج شده**\n"
+        if gname:
+            text += f"👥 گروه: {gname}\n"
+        text += f"🔢 تعداد کل: {total} نفر\n"
+        text += f"📄 صفحه {page+1} از {total_pages}\n\n"
+        for i, u in enumerate(chunk, start=start+1):
+            name = u.get("first_name","") or "بدون نام"
+            if u.get("last_name"):
+                name += " " + u["last_name"]
+            uname = f"@{u['username']}" if u.get("username") else "(بدون یوزرنیم)"
+            uid = u.get("user_id", "?")
+            prem = "⭐" if u.get("is_premium") == "بله" else ""
+            src = u.get("source", "")
+            text += f"{i}. {prem}{name}\n   └ {uname} | `{uid}`\n   └ منبع: {src}\n"
+        if len(text) > 3800:
+            text = text[:3800] + "\n...(ادامه در صفحه بعد)"
+        nav_buttons = []
+        nav_row = []
+        if page > 0:
+            nav_row.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"show_list_{page-1}"))
+        nav_row.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+        if page < total_pages - 1:
+            nav_row.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"show_list_{page+1}"))
+        nav_buttons.append(nav_row)
+        nav_buttons.append([InlineKeyboardButton("📥 دانلود CSV کامل", callback_data="download_csv")])
+        nav_buttons.append([InlineKeyboardButton("🔙 بازگشت به منو", callback_data="home")])
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(nav_buttons), disable_web_page_preview=True)
+        return
+
+    if d == "download_csv":
+        users, gname, gid = load_scraped()
+        if not users:
+            await q.answer("لیست خالی است!", show_alert=True)
+            return
+        out = io.StringIO()
+        keys = list(users[0].keys())
+        w = csv.DictWriter(out, fieldnames=keys)
+        w.writeheader()
+        w.writerows(users)
+        csv_bytes = out.getvalue().encode("utf-8-sig")
+        await app.send_document(
+            ADMIN_ID,
+            io.BytesIO(csv_bytes),
+            file_name=f"scraped_{int(time.time())}.csv",
+            caption=f"📥 لیست کامل {len(users)} مخاطب"
+        )
+        await q.answer("فایل ارسال شد!", show_alert=True)
+        return
+
+    if d == "noop":
+        await q.answer()
+        return
+
+    # ==================== آمار اکانت‌های اضافه کننده ====================
+    if d == "adder_stats":
+        limits = load_adder_limits()
+        text = f"📈 **آمار اکانت‌های اضافه کننده**\n\n"
+        text += f"🚨 سقف مجاز هر اکانت: **{MAX_ADD_PER_ACCOUNT} نفر**\n\n"
+        if not limits:
+            text += "هنوز هیچ اکانت برای اضافه کردن استفاده نشده."
+        else:
+            for phone, info in limits.items():
+                count = info.get("added", 0)
+                remaining = MAX_ADD_PER_ACCOUNT - count
+                status = "✅ سالم" if remaining > 0 else "⚠️ به سقف رسید"
+                last_use = info.get("last_used", 0)
+                last_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_use)) if last_use else "-"
+                bar_len = 10
+                filled = int(bar_len * min(count, MAX_ADD_PER_ACCOUNT) / MAX_ADD_PER_ACCOUNT)
+                bar = "█" * filled + "░" * (bar_len - filled)
+                text += f"📱 {phone}\n"
+                text += f"   {bar} {count}/{MAX_ADD_PER_ACCOUNT}\n"
+                text += f"   وضعیت: {status}\n"
+                text += f"   آخرین استفاده: {last_str}\n\n"
+        buttons = [[InlineKeyboardButton("🔄 ریست آمار یک اکانت", callback_data="reset_adder_pick")]]
+        buttons.append([InlineKeyboardButton("🗑️ ریست کامل همه آمار", callback_data="reset_adder_all")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "reset_adder_pick":
+        limits = load_adder_limits()
+        if not limits:
+            await q.answer("هیچ اکانتی ثبت نشده.", show_alert=True)
+            return
+        buttons = []
+        for phone in limits.keys():
+            buttons.append([InlineKeyboardButton(f"❌ {phone}", callback_data=f"reset_add_{phone}")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="adder_stats")])
+        await q.message.edit_text("اکانت مورد نظر برای ریست را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("reset_add_"):
+        phone = d[len("reset_add_"):]
+        limits = load_adder_limits()
+        if phone in limits:
+            del limits[phone]
+            save_adder_limits(limits)
+            await q.answer(f"آمار {phone} ریست شد.", show_alert=True)
+        await q.message.edit_text("✅ آمار ریست شد.", reply_markup=main_menu())
+        return
+
+    if d == "reset_adder_all":
+        save_adder_limits({})
+        await q.answer("همه آمار ریست شد.", show_alert=True)
+        await q.message.edit_text("✅ تمام آمار اضافه کردن پاک شد.", reply_markup=main_menu())
+        return
+
     if d == "attack":
         atk_state.clear()
         atk_state["step"] = "phone"
@@ -158,8 +323,15 @@ async def cb(c, q):
 
     if d == "add_members":
         atk_state.clear()
+        limits = load_adder_limits()
+        # چک کن از قبل به حد نرسیده
         atk_state["step"] = "adder_phone"
-        await q.message.edit_text("➕ **اضافه کردن اعضا از فایل CSV**\n\n⚠️ از اکانت تست استفاده کنید.\nشماره اکانت را با فرمت +98 بفرستید:",
+        warn = ""
+        if limits:
+            reached = [p for p,info in limits.items() if info.get("added",0) >= MAX_ADD_PER_ACCOUNT]
+            if reached:
+                warn = f"⚠️ {len(reached)} اکانت قبلا به سقف {MAX_ADD_PER_ACCOUNT} نفر رسیده‌اند، از شماره جدید استفاده کنید.\n\n"
+        await q.message.edit_text(f"➕ **اضافه کردن اعضا از فایل CSV**\n\n{warn}⚠️ از اکانت تست استفاده کنید. سقف مجاز هر اکانت: {MAX_ADD_PER_ACCOUNT} نفر.\nشماره اکانت را با فرمت +98 بفرستید:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("بازگشت", callback_data="home")]]))
         return
 
@@ -209,11 +381,11 @@ async def steps(c, m):
         raw = m.text.strip()
         atk = atk_state["atk"]
         st = atk_state["st"]
+        phone = atk_state["phone"]
         target_id = None
         target = None
         await st.edit_text("🔍 در حال پیدا کردن گروه...")
         try:
-            # اول سعی کن مستقیم بگیری
             if raw.lstrip('-').isdigit():
                 target_id = int(raw)
                 target = await atk.app.get_chat(target_id)
@@ -221,7 +393,6 @@ async def steps(c, m):
                 uname = raw.replace("@", "").replace("https://t.me/", "").strip()
                 target = await atk.app.get_chat(uname)
                 target_id = target.id
-            # چک کن عضو باشی
             try:
                 await atk.app.get_chat_member(target_id, "me")
             except:
@@ -237,7 +408,9 @@ async def steps(c, m):
             try:
                 users = await atk.run_full_scrape(target_id)
                 csv_bytes = atk.export_csv()
-                await app.send_message(ADMIN_ID, f"✅ حمله تمام شد!\nگروه: {target.title}\nتعداد استخراج: {len(users)} نفر")
+                # ذخیره دائمی در فایل
+                save_scraped(users, target.title, target.id)
+                await app.send_message(ADMIN_ID, f"✅ حمله تمام شد!\nگروه: {target.title}\nتعداد استخراج: {len(users)} نفر\n\n📋 از دکمه «لیست مخاطبان استخراج شده» در منو می‌توانید ببینید.")
                 await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"result_{int(time.time())}.csv")
                 await atk.disconnect()
             except Exception as e:
@@ -249,8 +422,17 @@ async def steps(c, m):
     # ==================== مراحل اضافه کردن اعضا ====================
     elif step == "adder_phone":
         phone = m.text.strip()
+        # چک محدودیت قبل از اتصال
+        limits = load_adder_limits()
+        already = limits.get(phone, {}).get("added", 0)
+        if already >= MAX_ADD_PER_ACCOUNT:
+            await m.reply_text(f"⚠️ این اکانت ({phone}) قبلا {already} نفر اضافه کرده و به سقف {MAX_ADD_PER_ACCOUNT} رسیده!\nلطفا با شماره دیگری ادامه دهید یا از منوی آمار آن را ریست کنید.")
+            atk_state.clear()
+            await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
+            return
         atk_state["phone"] = phone
-        st = await m.reply_text("📡 در حال اتصال به اکانت اد کننده...")
+        atk_state["already_added"] = already
+        st = await m.reply_text(f"📡 در حال اتصال به اکانت اد کننده...\n(تا کنون {already} نفر با این اکانت اضافه شده، باقیمانده: {MAX_ADD_PER_ACCOUNT-already})")
         try:
             add_client = AdvancedScraper("adder_session", API_ID, API_HASH, phone=phone)
             await add_client.connect()
@@ -290,36 +472,55 @@ async def steps(c, m):
             return
         atk_state["target_add_gid"] = target_gid
         atk_state["step"] = "adder_file"
-        await st.edit_text(f"✅ گروه مقصد: {target.title}\nحالا **فایل CSV** که از استخراج دارید را همینجا آپلود کنید.")
+        remaining = MAX_ADD_PER_ACCOUNT - atk_state.get("already_added", 0)
+        await st.edit_text(f"✅ گروه مقصد: {target.title}\n⚠️ این اکانت حداکثر می‌تواند {remaining} نفر دیگر اضافه کند.\nحالا **فایل CSV** که از استخراج دارید را همینجا آپلود کنید.")
 
     elif step == "adder_file" and m.document:
         add_client = atk_state.get("add_client")
         target_gid = atk_state.get("target_add_gid")
         st = atk_state["st"]
+        phone = atk_state["phone"]
+        already = atk_state.get("already_added", 0)
         await st.edit_text("📥 فایل دریافت شد، در حال پردازش و اضافه کردن اعضا...")
-        # دانلود فایل
         try:
             file = await app.download_media(m.document, in_memory=True)
             content = file.getvalue().decode("utf-8-sig")
             reader = csv.DictReader(io.StringIO(content))
             user_ids = []
             for row in reader:
-                if "user_id" in row and row["user_id"].isdigit():
+                if "user_id" in row and str(row["user_id"]).lstrip('-').isdigit():
                     user_ids.append(int(row["user_id"]))
             added = 0
             errors = 0
-            prog = await app.send_message(ADMIN_ID, f"شروع اضافه کردن {len(user_ids)} نفر به گروه...")
+            skipped_due_to_limit = 0
+            remaining_slots = MAX_ADD_PER_ACCOUNT - already
+            prog = await app.send_message(ADMIN_ID, f"شروع اضافه کردن...\nسقف اکانت: {MAX_ADD_PER_ACCOUNT}\nقبلا اضافه شده: {already}\nظرفیت باقیمانده: {remaining_slots}\nتعداد افراد در فایل: {len(user_ids)}")
             for uid in user_ids:
+                # چک محدودیت قبل از هر اضافه کردن
+                total_for_account = already + added
+                if total_for_account >= MAX_ADD_PER_ACCOUNT:
+                    skipped_due_to_limit = len(user_ids) - (added + errors)
+                    await prog.edit_text(f"⚠️ به سقف {MAX_ADD_PER_ACCOUNT} نفر در این اکانت رسیدیم!\nادامه متوقف شد.\n\nموفق: {added}\nناموفق: {errors}\nباقیمانده در فایل (اضافه نشد): {skipped_due_to_limit}")
+                    break
                 try:
                     await add_client.app.add_chat_members(target_gid, uid)
                     added +=1
-                    await asyncio.sleep(random.randint(8,15))  # تاخیر زیاد برای جلوگیری از بن
+                    # ذخیره فوری آمار بعد از هر اضافه کردن موفق
+                    limits = load_adder_limits()
+                    limits[phone] = {
+                        "added": already + added,
+                        "last_used": int(time.time())
+                    }
+                    save_adder_limits(limits)
+                    await asyncio.sleep(random.randint(8,15))
                     if added %5 ==0:
-                        await prog.edit_text(f"در حال اضافه کردن...\nموفق: {added}\nناموفق: {errors}\nباقیمانده: {len(user_ids) - added - errors}")
+                        await prog.edit_text(f"در حال اضافه کردن...\nموفق: {added}\nناموفق: {errors}\nمحدودیت اکانت: {already+added}/{MAX_ADD_PER_ACCOUNT}\nباقیمانده: {len(user_ids) - added - errors}")
                 except Exception as e:
                     errors +=1
                     await asyncio.sleep(2)
-            await prog.edit_text(f"✅ اضافه کردن تمام شد!\nموفق: {added} نفر\nناموفق: {errors} نفر")
+            else:
+                # اگر به انتها رسیدیم بدون break
+                await prog.edit_text(f"✅ اضافه کردن تمام شد!\nموفق: {added} نفر\nناموفق: {errors} نفر\nکل اضافه شده با این اکانت: {already+added}/{MAX_ADD_PER_ACCOUNT}")
             await add_client.disconnect()
         except Exception as e:
             await st.edit_text(f"❌ خطا در اضافه کردن: {str(e)}")
