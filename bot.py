@@ -204,24 +204,47 @@ async def steps(c, m):
         atk_state["step"] = "attack_groupid"
         await st.edit_text("✅ ورود موفق!\nلطفا آیدی عددی گروه هدف را بفرستید (با -100 شروع میشود):")
     elif step == "attack_groupid":
+        raw_input = m.text.strip()
+        # پاکسازی ورودی برای لینک/یوزرنیم/آیدی
+        cleaned = raw_input.replace("@", "").replace("https://t.me/", "").replace("http://t.me/", "").replace("t.me/", "").strip()
+        target = None
+        target_gid = None
         try:
-            target_gid = int(m.text.strip())
+            # اول امتحان کن به عدد
+            target_gid = int(cleaned)
+            target = await atk.app.get_chat(target_gid)
         except:
-            await m.reply_text("❌ لطفا آیدی عددی صحیح وارد کنید.")
+            try:
+                # بعد امتحان کن به عنوان یوزرنیم
+                target = await atk.app.get_chat(cleaned)
+                target_gid = target.id
+            except Exception as e:
+                await m.reply_text(f"❌ گروه با اطلاعاتی که دادید پیدا نشد: {str(e)}\n\nمی توانید این موارد را وارد کنید:\n• آیدی عددی گروه با -100\n• یوزرنیم عمومی گروه مثل @namad_group\n• لینک کامل گروه مثل https://t.me/namad_group\n\nدقت کنید اکانت تست حتما عضو گروه باشد.")
+                return
+
+        # بررسی عضویت اکانت تست در گروه
+        try:
+            check_mem = await atk.app.get_chat_member(target_gid, "me")
+            if not check_mem:
+                await m.reply_text("❌ اکانت تست اصلا عضو این گروه نیست! اول اکانت را عضو گروه کنید.")
+                return
+        except Exception as e:
+            await m.reply_text(f"❌ اکانت تست در این گروه عضو نیست یا دسترسی ندارم:\n{str(e)}")
             return
+
         st = atk_state["st"]
         atk = atk_state["atk"]
-        await st.edit_text(f"✅ آیدی دریافت شد، حمله به گروه `{target_gid}` در حال انجام...")
-        prog = await app.send_message(ADMIN_ID, "🚀 عملیات حمله شروع شد...")
+        await st.edit_text(f"✅ گروه پیدا شد: **{target.title}**\nآیدی گروه: `{target_gid}`\n🚀 در حال شروع عملیات استخراج اعضا...")
+        prog = await app.send_message(ADMIN_ID, f"🚀 حمله به گروه «{target.title}» شروع شد...")
         async def run():
             try:
                 users = await atk.run_full_scrape(target_gid)
                 csv_bytes = atk.export_csv()
-                await prog.edit_text(f"✅ حمله تمام شد!\nتعداد کاربر استخراج شده: {len(users)} نفر\nفایل نتیجه زیر ارسال میشود:")
-                await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"attack_result_{int(time.time())}.csv")
+                await prog.edit_text(f"✅ حمله به اتمام رسید!\nنام گروه: {target.title}\nتعداد کاربری که استخراج شد: {len(users)} نفر\nفایل نتیجه زیر ارسال میگردد:")
+                await app.send_document(ADMIN_ID, io.BytesIO(csv_bytes), file_name=f"attack_{target.title}_{int(time.time())}.csv")
                 await atk.disconnect()
             except Exception as e:
-                await prog.edit_text(f"❌ خطا در حمله:\n{str(e)}\nدقت کنید اکانت تست حتما عضو گروه هدف باشد.")
+                await prog.edit_text(f"❌ خطا در هنگام حمله:\n{str(e)}")
             atk_state.clear()
         asyncio.create_task(run())
 
