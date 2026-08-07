@@ -2777,6 +2777,13 @@ def keep_awake_loop():
             print(f"⚠️ کیپ الایو ناموفق: {e}", flush=True)
 
 if __name__ == "__main__":
+    # Clear any stale webhook from previous deployments so polling works
+    try:
+        import requests as _req
+        _req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=10)
+        print("✅ وبهوک قدیمی پاک شد (در صورت وجود)", flush=True)
+    except Exception as _e:
+        print(f"webhook clear err: {_e}", flush=True)
     Thread(target=run_health, daemon=True).start()
     Thread(target=keep_awake_loop, daemon=True).start()
     app.run()
