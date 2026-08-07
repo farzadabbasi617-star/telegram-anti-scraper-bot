@@ -279,73 +279,54 @@ class AdvancedScraper:
             "source": source
         }
         self._last_progress_val += 1
-        # ذخیره تدریجی در دیتابیس هر ۵ نفر تا در صورت کرش چیزی از بین نرود
-        if self._incremental_save_cb and self._last_progress_val % 5 == 0:
+        # ذخیره تدریجی فقط هر ۱۰۰ نفر
+        if self._incremental_save_cb and self._last_progress_val % 100 == 0:
             try:
                 await self._incremental_save_cb(list(self.found_users.values()))
             except Exception:
                 pass
-        if self._last_progress_val % 3 == 0:
+        # Progress فقط هر ۵۰ نفر
+        if self._last_progress_val % 50 == 0:
             await self._progress()
 
     async def scrape_direct_paginated(self, chat_id):
-        print("\n🔍 روش ۱: لیست مستقیم...", flush=True)
-        self._stage = "در حال استخراج از لیست مستقیم اعضا"
-        await self._progress(force=True)
-        count_added = 0
+        """BARE METAL extraction — inline dict, zero add_user, zero sleep"""
+        t0 = time.time()
+        count = 0; last_prog = 0
+        existing = self._existing_user_ids
+        
+        # Phase 1: Direct member list
         try:
             async for member in self.app.get_chat_members(chat_id, limit=50000):
-                if self._stop_requested:
-                    return True
-                self.total_api_calls +=1
-                await self.add_user(member.user, "direct_list")
-                count_added +=1
-                if count_added % 100 == 0:
-                    self._stage = f"📋 لیست مستقیم اعضا، {count_added} نفر..."
+                if self._stop_requested: return False
+                u = member.user
+                uid = u.id
+                if uid in self.found_users or uid in existing: continue
+                if getattr(u, 'is_bot', False): continue
+                self.found_users[uid] = {"user_id": uid, "first_name": u.first_name or "",
+                    "last_name": u.last_name or "", "username": u.username or "",
+                    "phone": getattr(u, 'phone_number', '') or '', "source": "direct"}
+                count += 1
+                # Micro-yield every 100 to avoid flood
+                if count % 100 == 0: await asyncio.sleep(0.02)
+                # Progress every 2s
+                now = time.time()
+                if now - last_prog > 2:
+                    last_prog = now; self.total_api_calls += 1
+                    spd = int(count / max(1, now - t0) * 60)
+                    self._stage = f"📋 {count} عضو ({spd}/min)"
                     await self._progress()
-            print(f"✅ لیست اولیه {count_added} عضو", flush=True)
+            elapsed = int(time.time() - t0)
+            self._stage = f"📋 {count} عضو در {elapsed}s"
+            print(f"✅ لیست: {count} عضو در {elapsed}s", flush=True)
         except ChatAdminRequired:
-            print("❌ لیست اعضا مخفی است", flush=True)
-            return False
+            print("❌ لیست مخفی — skip", flush=True)
         except FloodWait as e:
             await self.handle_flood(e)
         except Exception as e:
-            print(f"خطا در لیست: {e}", flush=True)
-            return False
-
-        search_prefixes = list(string.ascii_lowercase) + list("ابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهی") + list("1234567890")
-        print(f"🔍 صفحه بندی با {len(search_prefixes)} حرف...", flush=True)
-        self._stage = f"صفحه بندی جستجو با حروف الفبا"
-        await self._progress(force=True)
-        for pi, prefix in enumerate(search_prefixes):
-            if self._stop_requested:
-                return True
-            try:
-                while True:
-                    self.total_api_calls +=1
-                    res = await self.app.invoke(functions.contacts.Search(q=prefix, limit=200))
-                    for u in res.users:
-                        if u.id in self.found_users:
-                            continue
-                        try:
-                            mem = await self.app.get_chat_member(chat_id, u.id)
-                            if mem:
-                                await self.add_user(u, f"search_{prefix}")
-                                count_added +=1
-                        except:
-                            pass
-                    if len(res.users) < 200:
-                        break
-                        if pi % 3 == 0:
-                            self._stage = f"جستجو با حرف '{prefix}' | {count_added} جدید"
-                            await self._progress()
-            except FloodWait as e:
-                await self.handle_flood(e)
-            except Exception:
-                continue
-        print(f"✅ صفحه بندی تمام، مجموع {len(self.found_users)}", flush=True)
-        return True
-
+            print(f"⚠️ لیست: {e}", flush=True)
+        
+        return len(self.found_users) > 0  # True if we got members
     async def scrape_full_history(self, chat_id, limit=10000):
         """اسکن فوق‌سریع تاریخچه — بدون sleep، بدون add_user overhead"""
         print(f"\n🔍 اسکن {limit} پیام...", flush=True)
