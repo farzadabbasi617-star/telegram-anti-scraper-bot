@@ -697,6 +697,194 @@ async def _show_source_filter_menu(q):
 
 
 # ═══════════════ 📸 Instagram UI ═══════════════
+async def _start_ig_follow_do(q, source):
+    """Actually start the follow process (after confirmation)"""
+    from db import get_scanned_chats, get_conn
+    from db.psycopg2.extras import DictCursor
+    chats = get_scanned_chats()
+    source_chat = None
+    for c in chats:
+        if c.get("chat_type") == "instagram" and c["chat_name"].replace("IG:@", "") == source:
+            source_chat = c
+            break
+    if not source_chat:
+        await q.answer("source not found!", show_alert=True)
+        return
+
+    users = []
+    try:
+        cur = get_conn().cursor(cursor_factory=DictCursor)
+        cur.execute("SELECT username FROM scraped_users WHERE source_group_id = %s", (source_chat["chat_id"],))
+        for r in cur.fetchall():
+            uname = (r.get("username") or "").strip().lower()
+            if uname and uname not in users:
+                users.append(uname)
+        cur.close()
+    except:
+        users = []
+
+    stats = ig_scraper.get_ig_follow_stats()
+    daily_left = min(40, stats["daily_limit"] - stats["today"])
+
+    if daily_left <= 0:
+        await q.answer(f'Daily limit reached! ({stats["today"]}/{stats["daily_limit"]})', show_alert=True)
+        return
+
+    prog = await q.message.edit_text(
+        f"📸 در حال Follow از @{source}...\n"
+        f"🎯 هدف: {min(daily_left, len(users))} نفر\n"
+        f"⏱️ با تاخیر ۴۰-۱۲۰ ثانیه..."
+    )
+
+    async def run_follow():
+        import random as _rnd
+        _rnd.shuffle(users)
+        stop = [0]
+
+        def progress_cb(f, fail, username, status):
+            pass
+
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: ig_scraper.follow_users(
+                users[:daily_left], max_follows=daily_left,
+                progress_cb=progress_cb, stop_flag=stop
+            )
+        )
+
+        text = f"📸 <b>Follow از @{source} تمام شد!</b>\n━━━━━━━━━━━━━━━━━━\n"
+        text += f"✅ دنبال شده: <b>{result['followed']}</b>\n"
+        text += f"❌ خطا: <b>{result['failed']}</b>\n"
+        text += f"⏭️ رد شده: <b>{result['skipped']}</b>\n"
+        if result.get("error"):
+            text += f"\n⚠️ {result['error']}\n"
+        new_stats = ig_scraper.get_ig_follow_stats()
+        text += f"\n📊 امروز: {new_stats['today']}/{new_stats['daily_limit']}"
+
+        try:
+            await prog.edit_text(text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 آمار follow", callback_data="ig_follow_stats")],
+                [InlineKeyboardButton("🔙 منوی follow", callback_data="ig_follow_menu")],
+            ]), disable_web_page_preview=True)
+        except: pass
+
+    asyncio.create_task(run_follow())
+    return
+
+
+async def _show_ig_follow_menu(q):
+    """Show follow menu with source selection"""
+    from db import get_scanned_chats, count_users_by_source
+    ig_chats = [c for c in get_scanned_chats() if c.get("chat_type") == "instagram"]
+
+    stats = ig_scraper.get_ig_follow_stats()
+    daily_left = stats["daily_limit"] - stats["today"]
+
+    text = f"📸 <b>Follow در اینستاگرام</b>\n━━━━━━━━━━━━━━━━━━\n"
+    text += f"🕐 امروز: <b>{stats['today']}/{stats['daily_limit']}</b>\n"
+    text += f"📦 باقیمانده: <b>{daily_left}</b>\n"
+    text += f"📊 کل تاریخچه: <b>{stats['total_ever']:,}</b>\n"
+    text += "\n⚠️ <b>نکات ایمنی:</b>\n"
+    text += "• تاخیر ۴۰-۱۲۰ ثانیه بین هر follow\n"
+    text += "• رفتار شبه{انسانی} (بازدید پروفایل)\n"
+    text += "• توقف خودکار در action block\n"
+    text += "• سقف روزانه: ۶۰ تا\n\n"
+    text += "<b>منبع کاربران برای follow:</b>\n"
+
+    if not ig_chats:
+        text += "\n⚠️ هنوز هیچ پیجی اسکرپ نشده!"
+        buttons = [[InlineKeyboardButton("🔙 بازگشت", callback_data="ig_menu")]]
+    else:
+        buttons = []
+        for ch in ig_chats[:10]:
+            cnt = count_users_by_source(source_chat_id=ch["chat_id"])
+            name = ch["chat_name"].replace("IG:@", "")
+            if cnt > 0:
+                buttons.append([InlineKeyboardButton(
+                    f"👤 @{name} ({cnt:,})",
+                    callback_data=f"ig_follow_start_{name}"
+                )])
+        buttons.append([InlineKeyboardButton("📊 آمار follow", callback_data="ig_follow_stats")])
+        buttons.append(_sub_back_btn(target="ig_menu"))
+
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+async def _show_ig_follow_stats(q):
+    """Show follow statistics"""
+    from db import kv_get
+    stats = ig_scraper.get_ig_follow_stats()
+    followed = kv_get("ig_followed_usernames", []) or []
+
+    text = f"📊 <b>آمار Follow اینستاگرام</b>\n━━━━━━━━━━━━━━━━━━\n"
+    text += f"🕐 امروز: <b>{stats['today']}/{stats['daily_limit']}</b>\n"
+    text += f"📦 کل تاریخچه: <b>{stats['total_ever']:,}</b>\n\n"
+
+    if followed:
+        text += f"👤 <b>آخرین follow شده{ها}:</b>\n"
+        for u in followed[-20:]:
+            text += f"✅ @{u}\n"
+    else:
+        text += "هنوز کسی follow نشده ✨"
+
+    buttons = [_sub_back_btn(target="ig_follow_menu")]
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+async def _start_ig_follow(q, source_username):
+    """Show confirmation before starting follow"""
+    from db import get_scanned_chats, get_conn
+    from db.psycopg2.extras import DictCursor
+
+    chats = get_scanned_chats()
+    source_chat = None
+    for c in chats:
+        if c.get("chat_type") == "instagram" and c["chat_name"].replace("IG:@", "") == source_username:
+            source_chat = c
+            break
+
+    if not source_chat:
+        await q.answer("source not found!", show_alert=True)
+        return
+
+    users = []
+    try:
+        cur = get_conn().cursor(cursor_factory=DictCursor)
+        cur.execute("SELECT username FROM scraped_users WHERE source_group_id = %s", (source_chat["chat_id"],))
+        for r in cur.fetchall():
+            uname = (r.get("username") or "").strip().lower()
+            if uname and uname not in users:
+                users.append(uname)
+        cur.close()
+    except:
+        users = []
+
+    if not users:
+        await q.answer("no users found!", show_alert=True)
+        return
+
+    import random as _rnd
+    _rnd.shuffle(users)
+
+    stats = ig_scraper.get_ig_follow_stats()
+    daily_left = stats["daily_limit"] - stats["today"]
+
+    text = f"📸 <b>شروع Follow از @{source_username}</b>\n\n"
+    text += f"👤 کاربران موجود: <b>{len(users):,}</b>\n"
+    text += f"🕐 ظرفیت امروز: <b>{daily_left}</b>\n"
+    text += f"⏱️ زمان تخمینی: ~{daily_left * 1.5:.0f} دقیقه\n\n"
+    text += "آماده{ای}؟"
+
+    await q.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"▶️ شروع ({min(daily_left, 40)} نفر)", callback_data=f"ig_follow_do_{source_username}")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="ig_follow_menu")],
+        ]),
+        disable_web_page_preview=True)
+
+
 async def _show_ig_menu(q):
     """Show Instagram scraping menu"""
     text = "📸 <b>اسکرپر اینستاگرام</b>\n━━━━━━━━━━━━━━━━━━\n"
@@ -726,8 +914,9 @@ async def _show_ig_menu(q):
     
     buttons = []
     if logged_in:
-        buttons.append([InlineKeyboardButton("🔍 جستجو و اسکرپ یک پیج", callback_data="ig_scrape_prompt")])
-        buttons.append([InlineKeyboardButton("📋 نتایج قبلی", callback_data="ig_list")])
+        buttons.append([InlineKeyboardButton("🔍 اسکرپ فالوورهای یک پیج", callback_data="ig_scrape_prompt")])
+        buttons.append([InlineKeyboardButton("📋 نتایج اسکرپ", callback_data="ig_list")])
+        buttons.append([InlineKeyboardButton("➕ Follow اسکرپ‌شده‌ها", callback_data="ig_follow_menu")])
         buttons.append([InlineKeyboardButton("🚪 خروج از اکانت", callback_data="ig_logout")])
     else:
         buttons.append([InlineKeyboardButton("🔐 تنظیم لاگین", callback_data="ig_login")])

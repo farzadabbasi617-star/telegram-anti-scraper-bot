@@ -19,6 +19,7 @@ Environment variables (set in Render):
 import os
 import time
 import json
+import random
 import asyncio
 
 # ═══════════════ Config ═══════════════
@@ -67,6 +68,168 @@ def login_instagram(L=None) -> bool:
 
     if not IG_USERNAME or not IG_PASSWORD:
         return False
+
+
+# ═══════════════ 📸 Follow Users ═══════════════
+
+def follow_users(target_usernames: list, max_follows: int = 40,
+                 progress_cb=None, stop_flag=None) -> dict:
+    """
+    Follow a list of Instagram users with human-like delays.
+
+    Args:
+        target_usernames: list of usernames to follow
+        max_follows: maximum number to follow in this session
+        progress_cb: optional callback(success_count, fail_count, last_username, status)
+        stop_flag: optional list with [0] that becomes [1] to stop
+
+    Returns:
+        {"followed": int, "failed": int, "skipped": int, "error": str or None}
+    """
+    import instaloader
+    import instaloader.exceptions as iex
+
+    L = get_instaloader()
+    if not login_instagram(L):
+        return {"followed": 0, "failed": 0, "skipped": 0, "error": "Not logged in"}
+
+    # Check daily follow limit
+    from db import kv_get, kv_set
+    today_key = f"ig_follow_count_{time.strftime('%Y%m%d')}"
+    already_today = int(kv_get(today_key, 0) or 0)
+    DAILY_LIMIT = 60
+
+    if already_today >= DAILY_LIMIT:
+        return {
+            "followed": 0, "failed": 0, "skipped": 0,
+            "error": f"Daily limit reached: {already_today}/{DAILY_LIMIT}. Wait until tomorrow."
+        }
+
+    remaining = min(max_follows, DAILY_LIMIT - already_today)
+
+    followed = 0
+    failed = 0
+    skipped = 0
+    error = None
+
+    # Load already-followed list from DB
+    from db import kv_get as _kg, kv_set as _ks
+    followed_set_key = "ig_followed_usernames"
+    already_followed = set(_kg(followed_set_key, []) or [])
+
+    for i, username in enumerate(target_usernames):
+        if stop_flag and stop_flag[0]:
+            error = "Stopped by user"
+            break
+
+        if followed >= remaining:
+            break
+
+        username = username.strip().replace("@", "").lower()
+        if not username or username in already_followed:
+            skipped += 1
+            continue
+
+        try:
+            # Random delay: 40-120 seconds between follows (human-like)
+            delay = random.randint(40, 120)
+            if progress_cb:
+                progress_cb(
+                    followed, failed, username,
+                    f"⏳ Waiting {delay}s before next follow..."
+                )
+            # Sleep in small chunks so we can check stop_flag
+            for _ in range(delay):
+                if stop_flag and stop_flag[0]:
+                    break
+                time.sleep(1)
+
+            if stop_flag and stop_flag[0]:
+                error = "Stopped by user"
+                break
+
+            # Do a random human-like action before follow (visit profile, look at a post)
+            if random.random() < 0.3:
+                try:
+                    profile = instaloader.Profile.from_username(L.context, username)
+                    if progress_cb:
+                        progress_cb(followed, failed, username, "👀 Viewing profile...")
+                    time.sleep(random.randint(3, 8))
+                except:
+                    pass
+
+            # Follow
+            if progress_cb:
+                progress_cb(followed, failed, username, "➕ Following...")
+            profile = instaloader.Profile.from_username(L.context, username)
+            L.context.username = IG_USERNAME
+            profile.follow()
+            followed += 1
+            already_followed.add(username)
+
+            # Save progress
+            _ks(followed_set_key, list(already_followed))
+            _ks(today_key, already_today + followed)
+
+            # Save to DB as "added" (like Telegram)
+            try:
+                from db import mark_added as _ma
+                ig_source_id = -300000000000 - hash(username) % 1000000000
+                uid = int(hash(username) % (10**12))
+                _ma(ig_source_id, uid, f"ig:{IG_USERNAME}")
+            except:
+                pass
+
+            print(f"📸 Followed @{username} ({followed}/{remaining})", flush=True)
+
+        except iex.FollowRequestSent:
+            followed += 1
+            already_followed.add(username)
+            _ks(followed_set_key, list(already_followed))
+            _ks(today_key, already_today + followed)
+
+        except iex.ConnectionException as e:
+            failed += 1
+            err_str = str(e).lower()
+            if "429" in err_str or "too many" in err_str or "block" in err_str:
+                error = f"Rate limited after {followed} follows. Stop for today."
+                break
+            if progress_cb:
+                progress_cb(followed, failed, username, f"⚠️ Connection error, continuing...")
+            time.sleep(60)
+
+        except Exception as e:
+            failed += 1
+            err_str = str(e).lower()
+            if "feedback_required" in err_str or "challenge" in err_str:
+                error = f"Instagram challenged the account after {followed} follows. STOP."
+                break
+            if progress_cb:
+                progress_cb(followed, failed, username, f"⚠️ Error, skipping...")
+            time.sleep(5)
+
+    # Save final state
+    _ks(followed_set_key, list(already_followed))
+    _ks(today_key, already_today + followed)
+
+    result = {
+        "followed": followed,
+        "failed": failed,
+        "skipped": skipped,
+        "error": error
+    }
+    print(f"📸 Follow session: {followed} followed, {failed} failed, {skipped} skipped", flush=True)
+    return result
+
+
+def get_ig_follow_stats() -> dict:
+    """Get today's Instagram follow statistics"""
+    from db import kv_get
+    today_key = f"ig_follow_count_{time.strftime('%Y%m%d')}"
+    today = int(kv_get(today_key, 0) or 0)
+    followed_set_key = "ig_followed_usernames"
+    total = len(kv_get(followed_set_key, []) or [])
+    return {"today": today, "total_ever": total, "daily_limit": 60}
 
     try:
         L.test_login()
