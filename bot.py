@@ -38,6 +38,7 @@ from hunter import (
 )
 # new project finder module
 from project_finder import (
+    check_project_updates,
     CATEGORIES as PF_CATS, scan_category, scan_trending, search_trending_github,
     scan_custom_query, merge_new, to_jalali_age,
     load_found as pf_load, load_state as pf_state, save_state as pf_save_state,
@@ -292,6 +293,34 @@ def _db_count_users():
         return len(users)
 
 bg_scraper_started = False
+proj_tracker_started = False
+
+async def project_tracker_loop():
+    """هر ۶ ساعت پروژه‌های بوکمارک شده را چک میکند و در صورت تغییر اطلاع میدهد."""
+    await asyncio.sleep(120)  # wait 2 min after boot
+    while True:
+        try:
+            loop = asyncio.get_running_loop()
+            changes = await loop.run_in_executor(None, check_project_updates)
+            for c in changes:
+                try:
+                    name = c.get("name","")
+                    msg = "🔔 <b>پروژه‌ای که دنبال می‌کنی تغییر کرد!</b>\n\n"
+                    msg += f"🐙 <a href=\"{c['url']}\">{name}</a>\n"
+                    if c.get("delta_stars",0) > 0:
+                        msg += f"⭐ +{c['delta_stars']} ستاره جدید (مجموع {c.get('new_stars',0):,})\n"
+                    if c.get("update"):
+                        msg += f"🔄 {c['update']}\n"
+                    if c.get("issues"):
+                        msg += f"{c['issues']}\n"
+                    await app.send_message(ADMIN_ID, msg, disable_web_page_preview=True)
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"tracker notify err: {e}", flush=True)
+        except Exception as e:
+            print(f"tracker err: {e}", flush=True)
+        await asyncio.sleep(6*3600)  # every 6 hours
+
 
 @app.on_message(filters.command("start") & filters.private & filters.user(ADMIN_ID))
 async def start_cmd(c, m):
@@ -303,6 +332,9 @@ async def start_cmd(c, m):
     if not bg_scraper_started:
         bg_scraper_start(app, ADMIN_ID)
         bg_scraper_started = True
+    if not proj_tracker_started:
+        asyncio.create_task(project_tracker_loop())
+        proj_tracker_started = True
     try:
         await app.set_bot_commands([])
     except:

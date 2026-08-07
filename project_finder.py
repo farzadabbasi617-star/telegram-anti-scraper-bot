@@ -479,3 +479,47 @@ def clear_all():
     if _HAS_DB:
         try: _db.clear_projects()
         except: pass
+
+
+# ---------- Update tracker ----------
+def check_project_updates():
+    """Check favorited projects for new stars/updates. Returns list of (project, change_text)."""
+    try:
+        import db as _db
+        urls = _db.fav_list()
+    except Exception:
+        return []
+    changes = []
+    for url in urls:
+        try:
+            # extract platform + full_name from URL
+            if "github.com/" in url:
+                platform = "github"
+                full_name = url.split("github.com/")[1].split("?")[0].split("#")[0].strip("/")
+                api = f"https://api.github.com/repos/{full_name}"
+                r = requests.get(api, headers=HEADERS, timeout=15)
+                if not r.ok: continue
+                d = r.json()
+                cur = _db.kv_get(f"projstat_{url}", {})
+                new_stars = d.get("stargazers_count", 0)
+                new_pushed = d.get("pushed_at","")
+                new_open = d.get("open_issues_count",0)
+                if cur and (new_stars > cur.get("stars",0) or new_pushed != cur.get("pushed","") or new_open < cur.get("open_issues",0)):
+                    delta_s = new_stars - cur.get("stars",0)
+                    delta_t = "✅ آپدیت جدید!" if new_pushed != cur.get("pushed","") else ""
+                    delta_i = ""
+                    if new_open > cur.get("open_issues",0):
+                        delta_i = f"🐛 {new_open - cur['open_issues']} ایشوی جدید"
+                    changes.append({
+                        "url": url, "name": full_name, "platform": "github",
+                        "delta_stars": delta_s, "new_stars": new_stars,
+                        "pushed": new_pushed, "update": delta_t, "issues": delta_i,
+                    })
+                # update stored state
+                _db.kv_set(f"projstat_{url}", {"stars": new_stars, "pushed": new_pushed, "open_issues": new_open,
+                                            "name": d.get("full_name",""), "language": d.get("language",""),
+                                            "desc": (d.get("description") or "")[:200]})
+            time.sleep(0.6)
+        except Exception as e:
+            print(f"check_updates err for {url}: {e}", flush=True)
+    return changes
