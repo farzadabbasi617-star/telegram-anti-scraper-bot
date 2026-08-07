@@ -108,11 +108,11 @@ class AdvancedScraper:
         self.start_time = time.time()
 
     async def _progress(self, text=None, force=False):
-        """گزارش پیشرفت زنده هر ۵ ثانیه"""
+        """گزارش پیشرفت زنده با نوار پراگرس بار متحرک و درصد تقریبی"""
         now = time.time()
         if text:
             self._stage = text
-        if not force and now - self._last_progress < 5:
+        if not force and now - self._last_progress < 2:  # آپدیت هر ۲ ثانیه
             return
         self._last_progress = now
         if self._progress_cb:
@@ -121,18 +121,49 @@ class AdvancedScraper:
                 mins = elapsed // 60
                 secs = elapsed % 60
                 count = len(self.found_users)
-                speed = int(count / (elapsed/60)) if elapsed > 10 else 0
-                # چراغ متحرک
-                dots = ["🟢", "🟢", "🟡", "🟢"][int(elapsed/2) % 4]
-                text_out = f"{dots} **وضعیت زنده**\n\n"
+                speed = int(count / (elapsed/60)) if elapsed > 10 else count*3
+                # نوار پیشرفت متحرک (پر شدن به تدریج بر اساس تعداد پیدا شده)
+                # تخمین پیشرفت از روی استیج
+                stage_weights = {
+                    "در حال اتصال": 2,
+                    "آماده سازی": 5,
+                    "بارگذاری لیست چت": 10,
+                    "پیدا کردن گروه هدف": 15,
+                    "بررسی عضویت": 18,
+                    "لیست مستقیم": 35,
+                    "صفحه بندی جستجو": 55,
+                    "جستجو با حرف": 60,
+                    "تاریخچه پیام": 75,
+                    "بررسی تاریخچه": 80,
+                    "اعضای جدید": 88,
+                    "خروج": 95,
+                    "تمام": 100,
+                }
+                pct = 20
+                for key, val in stage_weights.items():
+                    if key in self._stage:
+                        pct = val
+                        break
+                # در طول صفحه بندی به تدریج درصد اضافه کن
+                if "حرف" in self._stage and count > 0:
+                    pct = min(65, 40 + count // 200)
+                if "تاریخچه" in self._stage and count > 0:
+                    pct = min(85, 65 + count // 150)
+                pct = min(100, max(5, pct))
+                filled = int(pct / 4)  # 25 خانه
+                empty = 25 - filled
+                bar = "🟩" * filled + "⬜" * empty
+                dot = ["🟢","🟡","🟢","🔵","🟣","🟢"][int(elapsed/1.5) % 6]
+                text_out = f"{dot} **وضعیت زنده عملیات**\n\n"
+                text_out += f"{bar} **{pct}%**\n\n"
                 text_out += f"🎯 مرحله: {self._stage}\n"
                 text_out += f"✅ پیدا شده: **{count:,}** نفر\n"
-                text_out += f"⏱️ زمان سپری: {mins} دقیقه و {secs} ثانیه\n"
+                text_out += f"⏱️ زمان: {mins:02d}:{secs:02d}\n"
                 text_out += f"⚡ سرعت: ~{speed} نفر در دقیقه\n"
-                text_out += f"📡 درخواست به تلگرام: {self.total_api_calls}\n"
-                text_out += f"👤 آخرین فرد: {self._last_added_name}\n\n"
-                if elapsed > 60:
-                    text_out += f"💡 کار در حال اجرا، لطفا صبر کنید..."
+                if self._last_added_name and self._last_added_name != "-":
+                    text_out += f"👤 آخرین: {self._last_added_name[:25]}\n"
+                if elapsed > 30:
+                    text_out += f"\n⏳ در حال کار، صبر کنید..."
                 await self._progress_cb(text_out)
             except Exception:
                 pass
@@ -292,12 +323,12 @@ class AdvancedScraper:
         print("🚀 شروع حمله MAX MODE", flush=True)
         print("="*60, flush=True)
 
-        # یک وظیفه پس زمینه که هر ۵ ثانیه بدون توجه به کار اصلی وضعیت را آپدیت نگه میدارد
+        # یک وظیفه پس زمینه که هر ۲ ثانیه وضعیت را آپدیت نگه میدارد
         heartbeat_on = True
         async def heartbeat():
             while heartbeat_on:
-                await self._progress()
-                await asyncio.sleep(4)
+                await self._progress(force=True)
+                await asyncio.sleep(2)
 
         hb_task = asyncio.create_task(heartbeat())
 
