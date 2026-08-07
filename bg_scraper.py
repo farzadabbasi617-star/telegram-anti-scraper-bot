@@ -98,6 +98,16 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
         except: pass
         return 0, f"connect: {e}"
 
+    # تشخیص نوع چت (کانال یا گروه)
+    is_channel = False
+    target_chat = None
+    try:
+        target_chat = await sc.app.get_chat(group_id)
+        is_channel = str(target_chat.type).lower() == "chattype.channel"
+    except:
+        pass
+
+    chat_type_str = "کانال" if is_channel else "گروه"
     # Warm up caches (two passes)
     status_msg = None
     try:
@@ -114,7 +124,8 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
                 status_msg = await app_bot.send_message(admin_id,
                     f"🔄 <b>اسکن خودکار پس‌زمینه شروع شد</b>\n"
                     f"👤 اکانت: <code>{phone}</code>\n"
-                    f"👥 گروه هدف: {group_name}")
+                    f"📡 نوع: {chat_type_str}\n"
+                    f"👥 هدف: {group_name}")
             except: status_msg = None
 
         users_found = {}
@@ -144,53 +155,138 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
             sc._last_added_name = (info["first_name"] + " " + info["last_name"]).strip() or info.get("username") or str(uid)
             sc.total_api_calls += 1
 
-        # Strategy 1: alphabetical prefixes
-        sc._stage = "جستجوی الفبایی"
-        prefixes = list("اآبپتثجچحخدذرزژسشصضطظعغفقکگلمنوهیabcdefghijklmnopqrstuvwxyz")
-        random.shuffle(prefixes)
-        for p in prefixes[:25]:
-            try:
-                async for m in sc.app.get_chat_members(group_id, query=p, limit=200):
-                    u = m.user if hasattr(m, "user") else m
-                    await add_user(u)
-                await sc.human_sleep(0.8, 1.8)
-            except FloodWait as e:
-                await sc.handle_flood(e)
-            except:
-                await asyncio.sleep(1)
-            if len(users_found) % 300 == 0:
-                await sc._progress(force=True)
+        # Helper to extract reactors from a message
+        async def extract_reactors(msg, source_label):
+            count = 0
+            if not msg.reactions or not msg.reactions.reactions:
+                return 0
+            for react in msg.reactions.reactions:
+                emoji = getattr(react, 'emoji', '👍')
+                count_hint = getattr(react, 'count', 0) or 0
+                batch_limit = min(100, max(30, count_hint))
+                offset = 0
+                while True:
+                    try:
+                        reactors = await sc.app.get_message_reactions(
+                            group_id, msg.id, emoji, limit=batch_limit, offset=offset
+                        )
+                        if not reactors:
+                            break
+                        for r in reactors:
+                            if r and getattr(r, 'peer', None) and getattr(r.peer, 'user_id', None):
+                                try:
+                                    u = await sc.app.get_users(r.peer.user_id)
+                                    await add_user(u)
+                                    count += 1
+                                except:
+                                    uid = r.peer.user_id
+                                    if uid not in users_found:
+                                        users_found[uid] = {
+                                            "user_id": uid, "username": "", "first_name": str(uid),
+                                            "last_name": "", "phone": ""
+                                        }
+                                        count += 1
+                        if len(reactors) < batch_limit:
+                            break
+                        offset += batch_limit
+                        await sc.human_sleep(0.3, 0.6)
+                    except FloodWait as e:
+                        await sc.handle_flood(e)
+                    except:
+                        break
+            return count
 
-        # Strategy 2: message history
-        sc._stage = "اسکن تاریخچه پیام"
-        try:
-            offset = 0; scanned = 0
-            while scanned < 5000:
-                cnt = 0
-                async for msg in sc.app.get_chat_history(group_id, limit=200, offset=offset):
-                    scanned += 1; cnt += 1
-                    if msg.from_user: await add_user(msg.from_user)
-                    if msg.forward_from: await add_user(msg.forward_from)
-                    if msg.reply_to_message and msg.reply_to_message.from_user:
-                        await add_user(msg.reply_to_message.from_user)
+        if is_channel:
+            # ═══════ استراتژی اسکن کانال (پس‌زمینه) ═══════
+            sc._stage = "اسکن پست‌های کانال"
+            post_count = 0; author_count = 0; reactor_count = 0
+            try:
+                async for msg in sc.app.get_chat_history(group_id, limit=5000):
+                    post_count += 1
+                    if msg.from_user:
+                        await add_user(msg.from_user); author_count += 1
+                    if msg.forward_from:
+                        await add_user(msg.forward_from)
                     if msg.entities:
                         for ent in msg.entities:
-                            if ent.user: await add_user(ent.user)
-                if cnt == 0: break
-                offset += cnt
-                await sc.human_sleep(1.0, 2.0)
-                await sc._progress()
-        except:
-            pass
+                            if ent.type in ("mention", "text_mention") and ent.user:
+                                await add_user(ent.user)
+                    reactor_count += await extract_reactors(msg, "react")
+                    if post_count % 150 == 0:
+                        sc._stage = f"کانال: {post_count} پست | {author_count} نویسنده | {reactor_count} ری‌اکت‌دهنده"
+                        await sc._progress()
+                    await sc.human_sleep(0.04, 0.12)
+            except: pass
 
-        # Strategy 3: new-join service messages
-        sc._stage = "اعضای تازه‌وارد"
-        try:
-            async for msg in sc.app.get_chat_history(group_id, limit=2000):
-                if msg.new_chat_members:
-                    for u in msg.new_chat_members: await add_user(u)
-        except:
-            pass
+            # تلاش برای get_chat_members (فقط برای ادمین جواب میده)
+            try:
+                sc._stage = "تلاش لیست اعضای کانال"
+                async for m in sc.app.get_chat_members(group_id, limit=5000):
+                    u = m.user if hasattr(m, "user") else m
+                    await add_user(u)
+            except: pass
+
+        else:
+            # ═══════ استراتژی اسکن گروه (پس‌زمینه) ═══════
+            # Strategy 1: alphabetical prefixes
+            sc._stage = "جستجوی الفبایی"
+            prefixes = list("اآبپتثجچحخدذرزژسشصضطظعغفقکگلمنوهیabcdefghijklmnopqrstuvwxyz")
+            random.shuffle(prefixes)
+            for p in prefixes[:25]:
+                try:
+                    async for m in sc.app.get_chat_members(group_id, query=p, limit=200):
+                        u = m.user if hasattr(m, "user") else m
+                        await add_user(u)
+                    await sc.human_sleep(0.8, 1.8)
+                except FloodWait as e:
+                    await sc.handle_flood(e)
+                except:
+                    await asyncio.sleep(1)
+                if len(users_found) % 300 == 0:
+                    await sc._progress(force=True)
+
+            # Strategy 2: message history
+            sc._stage = "اسکن تاریخچه پیام"
+            try:
+                offset = 0; scanned = 0
+                while scanned < 5000:
+                    cnt = 0
+                    async for msg in sc.app.get_chat_history(group_id, limit=200, offset=offset):
+                        scanned += 1; cnt += 1
+                        if msg.from_user: await add_user(msg.from_user)
+                        if msg.forward_from: await add_user(msg.forward_from)
+                        if msg.reply_to_message and msg.reply_to_message.from_user:
+                            await add_user(msg.reply_to_message.from_user)
+                        if msg.entities:
+                            for ent in msg.entities:
+                                if ent.user: await add_user(ent.user)
+                    if cnt == 0: break
+                    offset += cnt
+                    await sc.human_sleep(1.0, 2.0)
+                    await sc._progress()
+            except:
+                pass
+
+            # Strategy 3: new-join service messages
+            sc._stage = "اعضای تازه‌وارد"
+            try:
+                async for msg in sc.app.get_chat_history(group_id, limit=2000):
+                    if msg.new_chat_members:
+                        for u in msg.new_chat_members: await add_user(u)
+            except:
+                pass
+
+            # 🆕 Strategy 4: reaction scanning (groups)
+            sc._stage = "اسکن ری‌اکشن‌ها"
+            reactor_count = 0; msg_count = 0
+            try:
+                async for msg in sc.app.get_chat_history(group_id, limit=3000):
+                    msg_count += 1
+                    reactor_count += await extract_reactors(msg, "react")
+                    if msg_count % 200 == 0:
+                        sc._stage = f"اسکن ری‌اکشن: {msg_count} پیام | {reactor_count} کاربر"
+                        await sc._progress()
+            except: pass
 
         # Persist all to DB
         before_count = count_users()

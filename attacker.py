@@ -192,7 +192,9 @@ class AdvancedScraper:
                     "در حال اتصال": 2,
                     "آماده سازی": 5,
                     "بارگذاری لیست چت": 10,
-                    "پیدا کردن گروه هدف": 15,
+                    "پیدا کردن گروه": 15,
+                    "پیدا کردن کانال": 15,
+                    "گروه/کانال هدف": 15,
                     "بررسی عضویت": 18,
                     "لیست مستقیم": 35,
                     "صفحه بندی جستجو": 55,
@@ -200,6 +202,9 @@ class AdvancedScraper:
                     "تاریخچه پیام": 75,
                     "بررسی تاریخچه": 80,
                     "اعضای جدید": 88,
+                    "اسکن ری اکشن": 70,
+                    "اسکن کانال": 65,
+                    "پست های کانال": 65,
                     "خروج": 95,
                     "تمام": 100,
                 }
@@ -401,6 +406,175 @@ class AdvancedScraper:
             await self.human_sleep(0.05, 0.1)
         print(f"✅ پیام ورود اسکن شد", flush=True)
 
+    async def scrape_reactions_dedicated(self, chat_id, limit=5000):
+        """🆕 روش ۴: اسکن اختصاصی ری‌اکشن‌ها — مستقیم میره سراغ پیام‌هایی که ری‌اکشن دارن
+        و لیست کامل ری‌اکت‌دهنده‌ها رو استخراج میکنه. این روش برای کسایی که فقط
+        ری‌اکشن میدن و هیچوقت پیام نمیدن عالیه."""
+        print(f"\n🔍 روش ۴: اسکن اختصاصی ری‌اکشن ها (تا {limit} پیام)...", flush=True)
+        self._stage = f"در حال اسکن ری‌اکشن ها (تا {limit} پیام)"
+        await self._progress(force=True)
+        msg_count = 0
+        reaction_count = 0
+        async for msg in self.app.get_chat_history(chat_id, limit=limit):
+            if self._stop_requested:
+                return
+            self.total_api_calls += 1
+            msg_count += 1
+
+            # فقط پیام‌هایی که ری‌اکشن دارن رو پردازش کن
+            if not msg.reactions or not msg.reactions.reactions:
+                if msg_count % 200 == 0:
+                    self._stage = f"اسکن ری‌اکشن: {msg_count} پیام بررسی شد، {reaction_count} ری‌اکت پیدا شد"
+                    await self._progress()
+                await self.human_sleep(0.03, 0.08)
+                continue
+
+            for react in msg.reactions.reactions:
+                if self._stop_requested:
+                    return
+                emoji = getattr(react, 'emoji', '👍')
+                count_hint = getattr(react, 'count', 0) or 0
+                # اگه تعداد ری‌اکت‌ها خیلی زیاده، با offset صفحه‌بندی کن
+                offset = 0
+                batch_limit = min(200, max(50, count_hint))
+                while True:
+                    try:
+                        reactors = await self.app.get_message_reactions(
+                            chat_id, msg.id, emoji, limit=batch_limit, offset=offset
+                        )
+                        if not reactors:
+                            break
+                        for r in reactors:
+                            if r and getattr(r, 'peer', None) and getattr(r.peer, 'user_id', None):
+                                try:
+                                    u = await self.app.get_users(r.peer.user_id)
+                                    await self.add_user(u, f"ری‌اکشن_{emoji}")
+                                    reaction_count += 1
+                                except:
+                                    # Fallback: add minimal info without full get_users
+                                    uid = r.peer.user_id
+                                    if uid not in self.found_users:
+                                        self._last_added_name = str(uid)
+                                        self.found_users[uid] = {
+                                            "user_id": uid,
+                                            "first_name": str(uid),
+                                            "last_name": "",
+                                            "username": "",
+                                            "is_premium": "نامشخص",
+                                            "source": f"ری‌اکشن_{emoji}"
+                                        }
+                                        reaction_count += 1
+                        if len(reactors) < batch_limit:
+                            break
+                        offset += batch_limit
+                        await self.human_sleep(0.3, 0.6)
+                    except FloodWait as e:
+                        await self.handle_flood(e)
+                    except:
+                        break
+
+                await self.human_sleep(0.08, 0.2)
+
+            if msg_count % 100 == 0:
+                self._stage = f"اسکن ری‌اکشن: {msg_count} پیام | {reaction_count} کاربر از ری‌اکشن"
+                await self._progress()
+
+        print(f"✅ اسکن ری‌اکشن: {msg_count} پیام بررسی شد، {reaction_count} کاربر از ری‌اکشن استخراج شد", flush=True)
+
+    async def scrape_channel_posts(self, chat_id, limit=5000):
+        """🆕 روش ۵: اسکن مخصوص کانال — پست‌های کانال، نویسنده‌ها،
+        فرواردها، و ری‌اکشن‌ها رو استخراج میکنه.
+        برای کانال‌هایی که get_chat_members روشون جواب نمیده."""
+        print(f"\n🔍 روش ۵: اسکن پست های کانال (تا {limit} پست)...", flush=True)
+        self._stage = f"در حال اسکن پست های کانال (تا {limit} پست)"
+        await self._progress(force=True)
+        post_count = 0
+        authors_found = 0
+        reactors_found = 0
+
+        async for msg in self.app.get_chat_history(chat_id, limit=limit):
+            if self._stop_requested:
+                return
+            self.total_api_calls += 1
+            post_count += 1
+
+            # نویسنده پست (برای کانال‌هایی که با اکانت کاربری پست می‌ذارن)
+            if msg.from_user:
+                await self.add_user(msg.from_user, "نویسنده_کانال")
+                authors_found += 1
+
+            # نویسنده hidden (sender_chat برای پست‌های امضا شده با نام کانال)
+            if msg.sender_chat and hasattr(msg.sender_chat, 'id'):
+                # sender_chat خودش یک چت هست، ولی میتونیم ثبتش کنیم
+                pass
+
+            # فروارد از کانال‌های دیگه
+            if msg.forward_from:
+                await self.add_user(msg.forward_from, "فوروارد_کانال")
+            if msg.forward_from_chat:
+                # forward_from_chat خودش چت هست، ولی info مفیده
+                pass
+            if msg.forward_sender_name:
+                # اسم فرستنده بدون اکانت - نمیشه استخراج کرد
+                pass
+
+            # ری‌اکشن‌های پست‌های کانال — منبع عالی برای استخراج
+            if msg.reactions and msg.reactions.reactions:
+                for react in msg.reactions.reactions:
+                    if self._stop_requested:
+                        return
+                    emoji = getattr(react, 'emoji', '👍')
+                    count_hint = getattr(react, 'count', 0) or 0
+                    batch_limit = min(200, max(50, count_hint))
+                    offset = 0
+                    while True:
+                        try:
+                            reactors = await self.app.get_message_reactions(
+                                chat_id, msg.id, emoji, limit=batch_limit, offset=offset
+                            )
+                            if not reactors:
+                                break
+                            for r in reactors:
+                                if r and getattr(r, 'peer', None) and getattr(r.peer, 'user_id', None):
+                                    try:
+                                        u = await self.app.get_users(r.peer.user_id)
+                                        await self.add_user(u, f"ری‌اکشن_کانال_{emoji}")
+                                        reactors_found += 1
+                                    except:
+                                        uid = r.peer.user_id
+                                        if uid not in self.found_users:
+                                            self.found_users[uid] = {
+                                                "user_id": uid,
+                                                "first_name": str(uid),
+                                                "last_name": "",
+                                                "username": "",
+                                                "is_premium": "نامشخص",
+                                                "source": f"ری‌اکشن_کانال_{emoji}"
+                                            }
+                                            reactors_found += 1
+                            if len(reactors) < batch_limit:
+                                break
+                            offset += batch_limit
+                            await self.human_sleep(0.3, 0.6)
+                        except FloodWait as e:
+                            await self.handle_flood(e)
+                        except:
+                            break
+                    await self.human_sleep(0.08, 0.2)
+
+            # Entity mentions in post captions
+            if msg.entities:
+                for ent in msg.entities:
+                    if ent.type in ("mention", "text_mention") and ent.user:
+                        await self.add_user(ent.user, "منشن_کانال")
+
+            if post_count % 100 == 0:
+                self._stage = f"اسکن کانال: {post_count} پست | {authors_found} نویسنده | {reactors_found} ری‌اکت‌دهنده"
+                await self._progress()
+            await self.human_sleep(0.04, 0.12)
+
+        print(f"✅ اسکن کانال: {post_count} پست | {authors_found} نویسنده | {reactors_found} ری‌اکت‌دهنده", flush=True)
+
     async def run_full_scrape(self, chat_id, progress_cb=None, incremental_save_cb=None):
         self._progress_cb = progress_cb
         self._incremental_save_cb = incremental_save_cb
@@ -438,7 +612,7 @@ class AdvancedScraper:
             except Exception as e:
                 print(f"خطا در چت ها: {e}", flush=True)
 
-            self._stage = "🔎 در حال پیدا کردن گروه هدف"
+            self._stage = "🔎 در حال پیدا کردن گروه/کانال هدف"
             await self._progress(force=True)
             target_found = None
             target_id_resolved = None
@@ -446,7 +620,7 @@ class AdvancedScraper:
                 peer = await self.app.resolve_peer(chat_id)
                 target_found = await self.app.get_chat(chat_id)
                 target_id_resolved = target_found.id
-                print(f"🎯 هدف: {target_found.title} | {target_found.id}", flush=True)
+                print(f"🎯 هدف: {target_found.title} | {target_found.id} | type={target_found.type}", flush=True)
             except Exception as e:
                 print(f"🔍 رزول مستقیم نشد: {e}", flush=True)
                 if chat_id in all_chats:
@@ -465,19 +639,50 @@ class AdvancedScraper:
                         target_found = await self.app.get_chat(chat_id)
                         target_id_resolved = target_found.id
                     except:
-                        raise Exception("❌ گروه پیدا نشد! لطفا یک بار گروه را در تلگرام باز و اسکرول کنید.")
+                        raise Exception("❌ گروه/کانال پیدا نشد! لطفا یک بار در تلگرام باز و اسکرول کنید.")
             chat_id = target_id_resolved
-            print(f"✅ هدف: {target_found.title}", flush=True)
 
-            self._stage = f"✅ هدف: {target_found.title} | آماده‌سازی شروع استخراج..."
+            # تشخیص نوع چت: کانال یا گروه/سوپرگروه
+            is_channel = str(target_found.type).lower() == "chattype.channel"
+            chat_type_str = "کانال" if is_channel else "گروه"
+            print(f"✅ هدف: {target_found.title} | نوع: {chat_type_str}", flush=True)
+
+            self._stage = f"✅ هدف: {target_found.title} | نوع: {chat_type_str} | آماده‌سازی شروع استخراج..."
             await self._progress(force=True)
 
             self._stage = f"🚀 شروع استخراج از {target_found.title}"
             await self._progress(force=True)
 
-            await self.scrape_direct_paginated(chat_id)
-            await self.scrape_full_history(chat_id, limit=2000)
-            await self.scrape_join_events(chat_id)
+            if is_channel:
+                # ═══════ استراتژی مخصوص کانال ═══════
+                print("📡 حالت کانال فعال شد - استفاده از متدهای مخصوص کانال", flush=True)
+
+                # ۱. اسکن پست‌های کانال (نویسنده‌ها + ری‌اکشن‌ها + فرواردها)
+                await self.scrape_channel_posts(chat_id, limit=10000)
+
+                # ۲. اسکن اختصاصی ری‌اکشن‌ها (دور دوم با focus بیشتر روی ری‌اکشن‌ها)
+                await self.scrape_reactions_dedicated(chat_id, limit=5000)
+
+                # ۳. تلاش برای get_chat_members (فقط برای کانال‌هایی که ادمین هستیم جواب میده)
+                try:
+                    await self.scrape_direct_paginated(chat_id)
+                except Exception as e:
+                    print(f"⚠️ get_chat_members روی کانال جواب نداد (طبیعیه): {e}", flush=True)
+
+            else:
+                # ═══════ استراتژی مخصوص گروه/سوپرگروه ═══════
+                # ۱. لیست مستقیم اعضا + صفحه‌بندی الفبایی
+                await self.scrape_direct_paginated(chat_id)
+
+                # ۲. اسکن تاریخچه پیام‌ها
+                await self.scrape_full_history(chat_id, limit=3000)
+
+                # ۳. اسکن پیام‌های ورود عضو جدید
+                await self.scrape_join_events(chat_id)
+
+                # ۴. 🆕 اسکن اختصاصی ری‌اکشن‌ها (کسایی که فقط ری‌اکشن میدن)
+                await self.scrape_reactions_dedicated(chat_id, limit=5000)
+
             # ذخیره نهایی
             if self._incremental_save_cb:
                 try:
