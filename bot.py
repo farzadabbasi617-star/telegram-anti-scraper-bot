@@ -1258,7 +1258,231 @@ async def _execute_direct_add(q, target_gid):
     except: pass
 
 
-# ═══════════════ 📥 Session file upload helper (bypass 2FA) ═══════════════
+# ═══════════════ ⚡ Parallel Multi-Account Direct Add ═══════════════
+async def _start_parallel_direct_add(q):
+    """Start multi-account add from database with live dashboard"""
+    available = atk_state.get("par_add_available", [])
+    target_gid = atk_state.get("par_target_gid")
+    target_name = atk_state.get("par_target_name", f"Chat {target_gid}")
+    source = atk_state.get("par_add_source", "all")
+    source_id = atk_state.get("par_add_source_id")
+    
+    if not available or not target_gid:
+        await q.answer("خطا در تنظیمات!", show_alert=True)
+        return
+    
+    # Get users from DB
+    total_cap = sum(c for _,c in available)
+    if source == "category":
+        user_records = get_users_by_source(category=source_id, limit=total_cap)
+    elif source == "chat":
+        user_records = get_users_by_source(source_chat_id=source_id, limit=total_cap)
+    else:
+        user_records = get_users_by_source(limit=total_cap)
+    
+    # Filter already-added
+    uid_list = []
+    for u in user_records:
+        uid = int(u.get("user_id", 0) or 0)
+        if uid and not is_user_already_added(target_gid, uid):
+            uid_list.append(uid)
+    
+    total = min(len(uid_list), total_cap)
+    
+    text = f"⚡ <b>ادد موازی — {target_name}</b>\n"
+    text += f"━━━━━━━━━━━━━━━━━━\n"
+    text += f"📱 {len(available)} اکانت · 📦 {total_cap} ظرفیت کل\n"
+    text += f"🎯 {total} نفر آماده ادد\n"
+    text += f"⏱️ زمان تخمینی: ~{max(1, total * 12 // len(available) // 60)} دقیقه\n"
+    text += f"━━━━━━━━━━━━━━━━━━\n"
+    for phone, cap in available:
+        accs = load_accounts()
+        name = accs.get(phone, {}).get("name", phone)[:15]
+        text += f"📱 {name}: {cap}\n"
+    text += "\nآماده‌ای؟"
+    
+    atk_state["par_add_uid_list"] = uid_list
+    
+    await q.message.edit_text(
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"▶️ شروع ادد موازی ({total} نفر)", callback_data="par_dir_add_exec")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="home")],
+        ]), disable_web_page_preview=True)
+
+
+async def _execute_parallel_direct_add(q):
+    """Execute multi-account add with live progress"""
+    available = atk_state.get("par_add_available", [])
+    target_gid = atk_state.get("par_target_gid")
+    target_name = atk_state.get("par_target_name", f"Chat {target_gid}")
+    uid_list = atk_state.get("par_add_uid_list", [])
+    
+    if not uid_list:
+        await q.answer("کاربری برای ادد نیست!", show_alert=True)
+        return
+    
+    total = len(uid_list)
+    # Distribute users among accounts
+    import random as _rnd
+    _rnd.shuffle(uid_list)
+    
+    phones = [p for p,_ in available]
+    
+    # Build per-account workers
+    workers = []
+    total_global = {"added": 0, "failed": 0, "skipped": 0, "errors": {"privacy": 0, "flood": 0, "already": 0, "banned": 0, "no_add": 0, "other": 0}}
+    start_t = time.time()
+    stop_req = [False]
+    
+    # Prepare user batches for each account
+    limits = load_adder_limits()
+    batches = {phone: [] for phone in phones}
+    assigned = {phone: 0 for phone in phones}
+    capacities = {p: c for p,c in available}
+    
+    for uid in uid_list:
+        # Assign to account with most remaining capacity
+        best_phone = max(phones, key=lambda p: capacities[p] - assigned[p])
+        if assigned[best_phone] >= capacities[best_phone]:
+            # Find next available
+            found = False
+            for p in sorted(phones, key=lambda p: capacities[p] - assigned[p], reverse=True):
+                if assigned[p] < capacities[p]:
+                    batches[p].append(uid)
+                    assigned[p] += 1
+                    found = True
+                    break
+            if not found:
+                break
+        else:
+            batches[best_phone].append(uid)
+            assigned[best_phone] += 1
+    
+    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    async def add_worker(phone, user_ids):
+        if not user_ids:
+            return
+        already = limits.get(phone, {}).get("added", 0)
+        accs = load_accounts()
+        fp = accs.get(phone, {}).get("device_fp") or random.choice(DEVICE_FP)
+        name = accs.get(phone, {}).get("name", phone)[:15]
+        sc = AdvancedScraper("par_add_w", API_ID, API_HASH, phone=phone, device_fp=fp)
+        try:
+            await sc.connect()
+            added = 0; failed = 0
+            for i, uid in enumerate(user_ids):
+                if stop_req[0]:
+                    break
+                try:
+                    await sc.app.add_chat_members(target_gid, uid)
+                    added += 1
+                    total_global["added"] += 1
+                    mark_user_as_added(target_gid, target_name, uid)
+                    limits[phone] = {"added": already + added, "last_used": int(time.time())}
+                    save_adder_limits(limits)
+                    await asyncio.sleep(_rnd.randint(8, 15))
+                except FloodWait as fw:
+                    failed += 1
+                    total_global["failed"] += 1
+                    total_global["errors"]["flood"] += 1
+                    await asyncio.sleep(fw.value + 5)
+                except Exception as e:
+                    failed += 1
+                    total_global["failed"] += 1
+                    es = str(e).lower()
+                    if "privacy" in es or "private" in es: total_global["errors"]["privacy"] += 1
+                    elif "already" in es or "participant" in es:
+                        total_global["errors"]["already"] += 1
+                        mark_user_as_added(target_gid, target_name, uid)
+                    elif "banned" in es or "kick" in es: total_global["errors"]["banned"] += 1
+                    elif "not_mutual" in es.replace("_","") or "not mutual" in es: total_global["errors"]["no_add"] += 1
+                    else: total_global["errors"]["other"] += 1
+                    await asyncio.sleep(_rnd.randint(3, 8))
+            try: await sc.disconnect()
+            except: pass
+        except Exception as e:
+            total_global["failed"] += len(user_ids)
+            total_global["errors"]["other"] += len(user_ids)
+    
+    # Launch all workers concurrently
+    tasks = []
+    for phone in phones:
+        if batches.get(phone):
+            tasks.append(asyncio.create_task(add_worker(phone, batches[phone])))
+    
+    # Progress updater
+    prog_msg = q.message
+    async def update_progress_loop():
+        while any(not t.done() for t in tasks):
+            try:
+                elapsed = int(time.time() - start_t)
+                mins = elapsed // 60; secs = elapsed % 60
+                done = total_global["added"] + total_global["failed"]
+                pct = int(done * 100 / total) if total > 0 else 0
+                filled = pct // 5; empty = 20 - filled
+                bar = "🟩" * filled + "⬜" * empty
+                speed = int(total_global["added"] / (elapsed / 60)) if elapsed > 30 else 0
+                eta = int((total - done) * 12 / len(phones) / 60) if speed > 0 else 0
+                
+                text = f"⚡ <b>ادد موازی — {target_name}</b>\n"
+                text += f"━━━━━━━━━━━━━━━━━━\n"
+                text += f"{bar} {pct}%\n"
+                text += f"━━━━━━━━━━━━━━━━━━\n"
+                text += f"📱 {len(phones)} اکانت فعال\n"
+                text += f"✅ ادد شده: <b>{total_global['added']}</b>\n"
+                text += f"❌ ناموفق: <b>{total_global['failed']}</b>\n"
+                text += f"📊 پیشرفت: {done}/{total}\n"
+                text += f"⏱️ {mins:02d}:{secs:02d} · ⚡ ~{speed} در دقیقه\n"
+                if eta > 0: text += f"🕐 اتمام: ~{eta} دقیقه\n"
+                
+                await prog_msg.edit_text(text,
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")],
+                    ]), disable_web_page_preview=True)
+            except: pass
+            await asyncio.sleep(3)
+    
+    updater = asyncio.create_task(update_progress_loop())
+    
+    # Wait for all workers
+    await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Stop updater
+    try: updater.cancel()
+    except: pass
+    
+    # Final report
+    elapsed = int(time.time() - start_t)
+    mins = elapsed // 60; secs = elapsed % 60
+    
+    text = f"✅ <b>ادد موازی تمام شد!</b> — {target_name}\n"
+    text += f"━━━━━━━━━━━━━━━━━━\n"
+    text += f"📱 {len(phones)} اکانت · ⏱️ {mins:02d}:{secs:02d}\n"
+    text += f"✅ ادد شده: <b>{total_global['added']}</b>\n"
+    text += f"❌ ناموفق: <b>{total_global['failed']}</b>\n"
+    text += f"━━━━━━━━━━━━━━━━━━\n"
+    text += f"🔍 <b>دلایل خطا:</b>\n"
+    errs = total_global["errors"]
+    if errs["privacy"]: text += f"🔒 Privacy: {errs['privacy']}\n"
+    if errs["no_add"]: text += f"🚫 ادد بسته: {errs['no_add']}\n"
+    if errs["flood"]: text += f"⏱️ Flood: {errs['flood']}\n"
+    if errs["already"]: text += f"👥 قبلاً عضو: {errs['already']}\n"
+    if errs["banned"]: text += f"🚫 Banned: {errs['banned']}\n"
+    if errs["other"]: text += f"❓ سایر: {errs['other']}\n"
+    
+    try:
+        await prog_msg.edit_text(text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 آمار اکانت‌ها", callback_data="adder_stats")],
+                [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
+            ]), disable_web_page_preview=True)
+    except: pass
+
+
+
+# ═══════════════ 📥 Session file upload helper (bypass 2FA) ═══════════════\n\n# ═══════════════ 📥 Session file upload helper (bypass 2FA) ═══════════════
 async def _save_uploaded_session(st, phone, session_bytes, orig_fname):
     """Save an uploaded .session file and register the account"""
     import random as _r
@@ -1566,6 +1790,85 @@ async def _cb_impl(c, q):
         await _show_categories_menu(q)
         return
 
+    if d.startswith("par_dir_add_tgt_"):
+        gid = int(d.split("_")[4])
+        atk_state["par_target_gid"] = gid
+        # Get target name
+        try:
+            phone0 = atk_state["par_add_available"][0][0]
+            accs = load_accounts()
+            fp = accs.get(phone0, {}).get("device_fp") or random.choice(DEVICE_FP)
+            from attacker import safe_phone_filename as spfn
+            tmp = AdvancedScraper(os.path.join(SESSIONS_DIR, f"acc_{spfn(phone0)}"), API_ID, API_HASH, device_fp=fp)
+            await robust_connect(tmp)
+            tgt = await tmp.app.get_chat(gid)
+            atk_state["par_target_name"] = tgt.title
+            try: await tmp.disconnect()
+            except: pass
+        except: atk_state["par_target_name"] = f"Chat {gid}"
+        
+        total_db = _db_count_users()
+        available = atk_state["par_add_available"]
+        total_cap = sum(c for _,c in available)
+        actual = min(total_cap, total_db)
+        
+        await q.message.edit_text(
+            f"⚡ <b>ادد موازی</b> — {atk_state['par_target_name']}\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📱 {len(available)} اکانت · 📦 {total_cap} ظرفیت\n"
+            f"🗄️ {total_db:,} کاربر در دیتابیس\n"
+            f"🎯 حداکثر {actual} نفر ادد میشن\n"
+            f"━━━━━━━━━━━━━━━━━━\n<b>منبع کاربران:</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"🌐 همه ({actual:,})", callback_data=f"par_dir_add_src_all")],
+                [InlineKeyboardButton("📂 دسته‌بندی", callback_data=f"par_dir_add_src_cat")],
+                [InlineKeyboardButton("👥 چت خاص", callback_data=f"par_dir_add_src_chat")],
+                _sub_back_btn(target="home")[0],
+            ]), disable_web_page_preview=True)
+        return
+
+    if d == "par_dir_add_src_all":
+        atk_state["par_add_source"] = "all"
+        atk_state["par_add_source_id"] = None
+        await _start_parallel_direct_add(q)
+        return
+
+    if d == "par_dir_add_src_cat":
+        cats = get_all_categories()
+        buttons = []
+        for c in cats[:15]:
+            cnt = count_users_by_source(category=c)
+            if cnt > 0:
+                buttons.append([InlineKeyboardButton(f"📁 {c} ({cnt:,})", callback_data=f"par_dir_add_go_cat_{c}")])
+        buttons.append(_sub_back_btn())
+        await q.message.edit_text("📂 انتخاب دسته:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "par_dir_add_src_chat":
+        chats = get_scanned_chats()
+        buttons = []
+        for ch in chats[:15]:
+            cnt = count_users_by_source(source_chat_id=ch["chat_id"])
+            if cnt > 0:
+                buttons.append([InlineKeyboardButton(f"{_chat_type_icon(ch.get('chat_type',''))} {ch['chat_name'][:25]} ({cnt:,})", callback_data=f"par_dir_add_go_src_{ch['chat_id']}")])
+        buttons.append(_sub_back_btn())
+        await q.message.edit_text("👥 انتخاب چت:", reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("par_dir_add_go_cat_"):
+        cat = d[18:]
+        atk_state["par_add_source"] = "category"
+        atk_state["par_add_source_id"] = cat
+        await _start_parallel_direct_add(q)
+        return
+
+    if d.startswith("par_dir_add_go_src_"):
+        src_id = int(d[19:])
+        atk_state["par_add_source"] = "chat"
+        atk_state["par_add_source_id"] = src_id
+        await _start_parallel_direct_add(q)
+        return
+
     if d.startswith("cat_view_"):
         cat = d[9:]  # after "cat_view_"
         await _show_chats_manager(q, category=cat)
@@ -1585,6 +1888,10 @@ async def _cb_impl(c, q):
     if d.startswith("dir_add_go_"):
         gid = int(d.split("_")[3])
         asyncio.create_task(_execute_direct_add(q, gid))
+        return
+
+    if d == "par_dir_add_exec":
+        asyncio.create_task(_execute_parallel_direct_add(q))
         return
 
     if d.startswith("cat_apply_"):
@@ -3180,58 +3487,53 @@ async def _cb_impl(c, q):
         if len(accounts) < 2:
             await q.answer("حداقل به ۲ اکانت ذخیره شده نیاز هست.", show_alert=True)
             return
-        # Check limits
         limits = load_adder_limits()
-        available = [p for p in accounts if limits.get(p,{}).get("added",0) < MAX_ADD_PER_ACCOUNT]
+        available = [(p, MAX_ADD_PER_ACCOUNT - limits.get(p,{}).get("added",0)) 
+                      for p in accounts if limits.get(p,{}).get("added",0) < MAX_ADD_PER_ACCOUNT]
         if not available:
-            await q.answer(f"همه اکانت‌ها به سقف {MAX_ADD_PER_ACCOUNT} رسیده‌اند! لطفا ریست آمار کنید.", show_alert=True)
+            await q.answer(f"همه اکانت‌ها پر شدن!", show_alert=True)
             return
         atk_state["par_mode"] = "add"
-        atk_state["par_add_accounts"] = available
-        # Pick target group
+        atk_state["par_add_available"] = available
+        total_cap = sum(c for _,c in available)
+        # Show available accounts
+        text = f"⚡ <b>ادد موازی — مستقیم از دیتابیس</b>\n━━━━━━━━━━━━━━━━━━\n"
+        text += f"📱 اکانت‌های آماده: <b>{len(available)}</b>\n"
+        text += f"📦 ظرفیت کل: <b>{total_cap}</b> نفر\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        for phone, cap in available:
+            accs = load_accounts()
+            name = accs.get(phone, {}).get("name", phone)
+            text += f"📱 <code>{phone}</code> ({name}): <b>{cap}</b> ظرفیت\n"
+        text += "\nحالا گروه/کانال مقصد رو انتخاب کن:\n"
+        # Load dialogs from first available account
         try:
-            phone0 = available[0]
+            phone0 = available[0][0]
             accs = load_accounts()
             fp = accs.get(phone0, {}).get("device_fp") or random.choice(DEVICE_FP)
             from attacker import safe_phone_filename as spfn
             sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone0)}")
             tmp = AdvancedScraper(sess_path, API_ID, API_HASH, device_fp=fp)
             await robust_connect(tmp)
-            async for _ in tmp.app.get_dialogs(limit=2000):
-                pass
+            async for _ in tmp.app.get_dialogs(limit=2000): pass
             await asyncio.sleep(2)
-            dialogs = []
-            async for dlg in tmp.app.get_dialogs(limit=200):
-                try:
-                    c = await tmp.app.get_chat(dlg.chat.id)
-                    ctype = str(getattr(c.type,"","")).lower()
-                    if "group" in ctype or "channel" in ctype:
-                        cnt = 0
-                        try: cnt = await tmp.app.get_chat_members_count(c.id)
-                        except: pass
-                        dialogs.append((c.id, c.title, cnt))
-                except: pass
+            chats = await _fast_load_chats(tmp)
             try: await tmp.disconnect()
             except: pass
         except Exception as e:
             await q.answer(f"خطا: {str(e)[:100]}", show_alert=True)
             return
-        if not dialogs:
-            await q.answer("گروهی پیدا نشد.", show_alert=True)
+        if not chats:
+            await q.answer("چتی پیدا نشد!", show_alert=True)
             return
-        dialogs.sort(key=lambda x: -x[2])
         buttons = []
-        for gid, gname, gcount in dialogs[:30]:
-            buttons.append([InlineKeyboardButton(f"👥 {gname[:35]} | {gcount:,}", callback_data=f"par_add_target_{gid}")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
-        total_slots = sum(MAX_ADD_PER_ACCOUNT - limits.get(p,{}).get("added",0) for p in available)
-        await q.message.edit_text(
-            f"⚡ <b>اضافه کردن موازی با {len(available)} اکانت</b>\n\n"
-            f"📦 ظرفیت کل در دسترس: <b>{total_slots}</b> نفر\n"
-            f"هر اکانت حداکثر {MAX_ADD_PER_ACCOUNT} نفر ادد میکند.\n\n"
-            f"گروه مقصد را انتخاب کنید:",
-            reply_markup=InlineKeyboardMarkup(buttons))
-        return
+        for gname, gid, gcount, chtype in sorted(chats, key=lambda x:-x[2])[:25]:
+            icon = "📡" if chtype == "channel" else "👥"
+            buttons.append([InlineKeyboardButton(f"{icon} {gname[:30]} | {gcount:,}", callback_data=f"par_dir_add_tgt_{gid}")])
+        buttons.append([InlineKeyboardButton("✍️ دستی", callback_data="atk_target_manual")])
+        buttons.append(_sub_back_btn())
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
 
     if d.startswith("par_target_"):
         gid = int(d.split("_")[2])

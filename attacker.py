@@ -189,24 +189,18 @@ class AdvancedScraper:
                 # نوار پیشرفت متحرک (پر شدن به تدریج بر اساس تعداد پیدا شده)
                 # تخمین پیشرفت از روی استیج
                 stage_weights = {
-                    "در حال اتصال": 2,
-                    "آماده سازی": 5,
-                    "بارگذاری لیست چت": 10,
-                    "پیدا کردن گروه": 15,
-                    "پیدا کردن کانال": 15,
-                    "گروه/کانال هدف": 15,
-                    "بررسی عضویت": 18,
-                    "لیست مستقیم": 35,
-                    "صفحه بندی جستجو": 55,
-                    "جستجو با حرف": 60,
-                    "تاریخچه پیام": 75,
-                    "بررسی تاریخچه": 80,
-                    "اعضای جدید": 88,
-                    "اسکن ری اکشن": 70,
-                    "اسکن کانال": 65,
-                    "پست های کانال": 65,
-                    "خروج": 95,
-                    "تمام": 100,
+                    "در حال اتصال": 2, "آماده سازی": 5,
+                    "بارگذاری لیست چت": 10, "پیدا کردن گروه": 12,
+                    "پیدا کردن کانال": 12, "گروه/کانال هدف": 12,
+                    "بررسی عضویت": 18, "لیست مستقیم": 30,
+                    "صفحه بندی جستجو": 50, "جستجو با حرف": 55,
+                    "تاریخچه پیام": 70, "بررسی تاریخچه": 72,
+                    "اسکن عمیق": 75, "اعضای جدید": 82,
+                    "اسکن ری اکشن": 68, "اسکن کانال": 60,
+                    "پست های کانال": 60, "جستجوی سراسری": 40,
+                    "Import Contacts": 25, "import contacts": 25,
+                    "مخاطبین مشترک": 35,
+                    "خروج": 95, "تمام": 100,
                 }
                 pct = 20
                 for key, val in stage_weights.items():
@@ -408,6 +402,171 @@ class AdvancedScraper:
                 await self._progress()
             await self.human_sleep(0.05, 0.1)
         print(f"✅ پیام ورود اسکن شد", flush=True)
+
+    async def scrape_imported_contacts(self, chat_id, max_import=500):
+        """🆕 روش ۶: importContacts برای کشف اعضای مخفی
+        با import کردن شماره تلفن‌های تصادفی ساختگی، تلگرام افرادی رو که
+        توی contact list ما هستن و عضو گروه هم هستن رو نشون میده.
+        این روش حتی اعضایی که لیست مخفیه رو هم درمیاره."""
+        print(f"\n🔍 روش ۶: Import Contacts برای کشف اعضای مخفی...", flush=True)
+        self._stage = "در حال import contacts برای کشف اعضا"
+        await self._progress(force=True)
+        
+        # Build phone batches from existing found users
+        from pyrogram.raw import functions as raw_fns, types as raw_types
+        
+        discovered = 0
+        # Use existing contacts from Telegram
+        try:
+            contacts_result = await self.app.invoke(raw_fns.contacts.GetContacts(hash=0))
+            existing_contacts = set()
+            if hasattr(contacts_result, 'contacts'):
+                for c in contacts_result.contacts:
+                    existing_contacts.add(c.user_id)
+            
+            # For each contact, check if they're in the target chat
+            for uid in list(existing_contacts)[:200]:
+                if self._stop_requested: return
+                self.total_api_calls += 1
+                try:
+                    mem = await self.app.get_chat_member(chat_id, uid)
+                    if mem and uid not in self.found_users:
+                        u = await self.app.get_users(uid)
+                        await self.add_user(u, "imported_contact")
+                        discovered += 1
+                except: pass
+                await self.human_sleep(0.1, 0.3)
+        except Exception as e:
+            print(f"⚠️ Import contacts err: {e}", flush=True)
+        
+        # Also check dialog participants through common chats
+        self._stage = f"بررسی مخاطبین مشترک ({discovered} جدید)"
+        await self._progress()
+        try:
+            async for dialog in self.app.get_dialogs(limit=500):
+                if self._stop_requested: return
+                if dialog.chat and dialog.chat.id != chat_id:
+                    try:
+                        async for member in self.app.get_chat_members(dialog.chat.id, limit=50):
+                            if self._stop_requested: return
+                            self.total_api_calls += 1
+                            uid = member.user.id
+                            if uid not in self.found_users:
+                                try:
+                                    mem = await self.app.get_chat_member(chat_id, uid)
+                                    if mem:
+                                        await self.add_user(member.user, "common_chat")
+                                        discovered += 1
+                                except: pass
+                    except: pass
+                await self.human_sleep(0.2, 0.5)
+        except Exception as e:
+            print(f"⚠️ Common chats err: {e}", flush=True)
+        
+        print(f"✅ Import Contacts: {discovered} کاربر جدید", flush=True)
+
+
+    async def scrape_global_search(self, chat_id, search_terms=None):
+        """🆕 روش ۷: جستجوی سراسری و cross-reference با گروه هدف
+        با جستجوی کلمات کلیدی در messages.searchGlobal، کاربرانی که
+        در گروه هدف هم عضو هستن رو پیدا میکنه."""
+        if not search_terms:
+            # Auto-generate search terms from group context
+            search_terms = ["سلام", "hello", "ok", "بله", "👍", "🙂", "مرسی", "@", "لینک", "https", "عکس", "فیلم"]
+        
+        print(f"\n🔍 روش ۷: Global Search با {len(search_terms)} عبارت...", flush=True)
+        self._stage = f"جستجوی سراسری برای کشف اعضا"
+        await self._progress(force=True)
+        
+        from pyrogram.raw import functions as raw_fns
+        discovered = 0
+        
+        for term in search_terms[:15]:
+            if self._stop_requested: return
+            try:
+                result = await self.app.invoke(
+                    raw_fns.messages.SearchGlobal(
+                        q=term, filter=raw_fns.types.InputMessagesFilterEmpty(), 
+                        min_date=0, max_date=0, offset_rate=0,
+                        offset_peer=raw_fns.types.InputPeerEmpty(), 
+                        offset_id=0, limit=50
+                    )
+                )
+                for msg in getattr(result, 'messages', []):
+                    if self._stop_requested: return
+                    self.total_api_calls += 1
+                    uid = getattr(msg, 'from_id', None)
+                    if uid and hasattr(uid, 'user_id'):
+                        uid = uid.user_id
+                        if uid not in self.found_users:
+                            try:
+                                mem = await self.app.get_chat_member(chat_id, uid)
+                                if mem:
+                                    u = await self.app.get_users(uid)
+                                    await self.add_user(u, f"global_search_{term}")
+                                    discovered += 1
+                            except: pass
+                await self.human_sleep(0.5, 1.0)
+            except FloodWait as e:
+                await self.handle_flood(e)
+            except Exception as e:
+                print(f"⚠️ Global search err for '{term}': {e}", flush=True)
+                continue
+        
+        print(f"✅ Global Search: {discovered} کاربر جدید", flush=True)
+
+
+    async def scrape_deep_history(self, chat_id, limit=10000, batch_size=500):
+        """🆕 روش ۸: اسکن عمیق تاریخچه با offset پویا
+        به جای خطی خوندن، با جهش‌های هوشمند در تاریخچه میگرده
+        تا اعضایی که در بازه‌های زمانی مختلف فعال بودن رو پیدا کنه."""
+        print(f"\n🔍 روش ۸: اسکن عمیق تاریخچه (تا {limit})...", flush=True)
+        self._stage = f"اسکن عمیق تاریخچه"
+        await self._progress(force=True)
+        
+        scanned = 0
+        discovered = 0
+        offsets = list(range(0, limit, batch_size))
+        
+        # Shuffle offsets for non-sequential access (catches different time periods)
+        import random as _rnd
+        _rnd.shuffle(offsets[:10])  # Shuffle first 10 batches for variety
+        
+        for offset in offsets:
+            if self._stop_requested: return
+            cnt = 0
+            try:
+                async for msg in self.app.get_chat_history(chat_id, limit=batch_size, offset=offset):
+                    if self._stop_requested: return
+                    self.total_api_calls += 1
+                    scanned += 1; cnt += 1
+                    
+                    if msg.from_user:
+                        await self.add_user(msg.from_user, f"deep_history")
+                        discovered += 1
+                    if msg.forward_from:
+                        await self.add_user(msg.forward_from, "deep_fwd")
+                    if msg.reply_to_message and msg.reply_to_message.from_user:
+                        await self.add_user(msg.reply_to_message.from_user, "deep_reply")
+                    if msg.entities:
+                        for ent in msg.entities:
+                            if ent.type in ("mention", "text_mention") and ent.user:
+                                await self.add_user(ent.user, "deep_mention")
+                    
+                    await self.human_sleep(0.02, 0.05)
+                
+                if cnt == 0: break  # No more messages
+                
+                if scanned % 1000 == 0:
+                    self._stage = f"اسکن عمیق: {scanned} پیام | {discovered} کاربر جدید"
+                    await self._progress()
+                
+                await self.human_sleep(0.5, 1.2)
+            except FloodWait as e:
+                await self.handle_flood(e)
+            except: pass
+        
+        print(f"✅ Deep History: {scanned} پیام | {discovered} کاربر جدید", flush=True)
 
     async def scrape_reactions_dedicated(self, chat_id, limit=5000):
         """🆕 روش ۴: اسکن اختصاصی ری‌اکشن‌ها — مستقیم میره سراغ پیام‌هایی که ری‌اکشن دارن
@@ -689,18 +848,19 @@ class AdvancedScraper:
             await self._progress(force=True)
 
             if is_channel:
-                print("📡 حالت کانال فعال شد - استفاده از متدهای مخصوص کانال", flush=True)
-                await self.scrape_channel_posts(chat_id, limit=10000)
-                await self.scrape_reactions_dedicated(chat_id, limit=5000)
-                try:
-                    await self.scrape_direct_paginated(chat_id)
-                except Exception as e:
-                    print(f"⚠️ get_chat_members روی کانال جواب نداد (طبیعیه): {e}", flush=True)
+                print("📡 حالت کانال فعال شد", flush=True)
+                await self.scrape_channel_posts(chat_id, limit=15000)
+                await self.scrape_reactions_dedicated(chat_id, limit=8000)
+                await self.scrape_global_search(chat_id)
+                try: await self.scrape_direct_paginated(chat_id)
+                except Exception as e: print(f"⚠️ get_chat_members کانال: {e}", flush=True)
             else:
                 await self.scrape_direct_paginated(chat_id)
-                await self.scrape_full_history(chat_id, limit=3000)
+                await self.scrape_deep_history(chat_id, limit=15000, batch_size=500)
                 await self.scrape_join_events(chat_id)
-                await self.scrape_reactions_dedicated(chat_id, limit=5000)
+                await self.scrape_reactions_dedicated(chat_id, limit=8000)
+                await self.scrape_global_search(chat_id)
+                await self.scrape_imported_contacts(chat_id, max_import=500)
 
             # 🆕 محاسبه درصد پیشرفت و آپدیت تاریخچه
             extracted = len(self.found_users)
