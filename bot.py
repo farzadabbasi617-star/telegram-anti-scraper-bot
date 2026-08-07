@@ -66,6 +66,7 @@ from db import (
     delete_scanned_chat, toggle_chat_favorite, upsert_scanned_chat,
 )
 from bg_scraper import start_in_background as bg_scraper_start, _backup_session
+import instagram_scraper as ig_scraper
 
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
@@ -694,6 +695,132 @@ async def _show_source_filter_menu(q):
     await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
 
 
+
+# ═══════════════ 📸 Instagram UI ═══════════════
+async def _show_ig_menu(q):
+    """Show Instagram scraping menu"""
+    text = "📸 <b>اسکرپر اینستاگرام</b>\n━━━━━━━━━━━━━━━━━━\n"
+    text += "🔹 استخراج فالوورهای پیج‌های <b>عمومی</b>\n"
+    text += "🔹 ذخیره در دیتابیس مشترک با تلگرام\n"
+    text += "🔹 فیلتر و دسته‌بندی مثل تلگرام\n\n"
+    
+    # Check login status
+    logged_in = False
+    try:
+        L = ig_scraper.get_instaloader()
+        L.test_login()
+        logged_in = True
+    except:
+        pass
+    
+    if logged_in:
+        text += "🟢 <b>وضعیت:</b> به اینستاگرام متصلی\n"
+        text += f"👤 اکانت: <code>{ig_scraper.IG_USERNAME or '?'}</code>\n"
+    else:
+        text += "🔴 <b>وضعیت:</b> هنوز لاگین نشدی\n"
+    
+    text += "\n⚠️ <b>محدودیت‌ها:</b>\n"
+    text += "• سرعت: ~۲۰۰ فالوور در ساعت\n"
+    text += "• فقط پیج‌های عمومی\n"
+    text += "• ریسک Shadow ban در صورت استفاده سنگین\n"
+    
+    buttons = []
+    if logged_in:
+        buttons.append([InlineKeyboardButton("🔍 جستجو و اسکرپ یک پیج", callback_data="ig_scrape_prompt")])
+        buttons.append([InlineKeyboardButton("📋 نتایج قبلی", callback_data="ig_list")])
+        buttons.append([InlineKeyboardButton("🚪 خروج از اکانت", callback_data="ig_logout")])
+    else:
+        buttons.append([InlineKeyboardButton("🔐 تنظیم لاگین", callback_data="ig_login")])
+        buttons.append([InlineKeyboardButton("📥 آپلود سشن (2FA)", callback_data="ig_upload_session")])
+    
+    buttons.append(_sub_back_btn())
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+async def _handle_ig_login(q):
+    """Prompt for Instagram login credentials"""
+    atk_state["step"] = "ig_login_username"
+    await q.message.edit_text(
+        "🔐 <b>لاگین اینستاگرام</b>\n\n"
+        "⚠️ نکته مهم: اینستاگرام لاگین‌های متعدد رو تشخیص میده.\n"
+        "پیشنهاد میشه به جای وارد کردن پسورد، از روش «📥 آپلود سشن» استفاده کنی.\n\n"
+        "اگر می‌خوای ادامه بدی، اول <b>نام کاربری اینستاگرام</b> رو بفرست:",
+        reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+
+
+async def _start_ig_scrape(q, target):
+    """Start Instagram follower scraping"""
+    try:
+        L = ig_scraper.get_instaloader()
+        L.test_login()
+    except:
+        await q.answer("❌ اول باید لاگین کنی! از منوی اینستاگرام لاگین کن.", show_alert=True)
+        return
+    
+    prog = await q.message.edit_text(f"📸 در حال اسکرپ فالوورهای @{target}...\n⏳ این کار ممکنه چند دقیقه طول بکشه...")
+    
+    async def run_ig():
+        stop = [0]
+        found = 0
+        try:
+            loop = asyncio.get_running_loop()
+            def progress_cb(cnt, total, name):
+                nonlocal found
+                found = cnt
+            result = await loop.run_in_executor(
+                None, 
+                lambda: ig_scraper.scrape_followers(target, max_followers=300, progress_cb=progress_cb, stop_flag=stop)
+            )
+            if result.get("error"):
+                await prog.edit_text(
+                    f"❌ خطا در اسکرپ اینستاگرام:\n{result['error'][:300]}\n\n"
+                    f"👤 استخراج شده تا اینجا: {result['count']:,}",
+                    reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+            else:
+                await prog.edit_text(
+                    f"✅ اسکرپ @{target} تمام شد!\n\n"
+                    f"👤 فالوور استخراج شده: <b>{result['count']:,}</b>\n"
+                    f"💾 در دیتابیس ذخیره شد\n\n"
+                    f"از «📋 نتایج قبلی» یا «🗂️ مدیریت چت‌ها» ببین.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 مشاهده نتایج", callback_data="ig_list")],
+                        [_sub_back_btn(target="ig_menu")[0]]
+                    ]))
+        except Exception as e:
+            await prog.edit_text(f"❌ خطا: {str(e)[:300]}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+    
+    asyncio.create_task(run_ig())
+
+
+async def _show_ig_results(q):
+    """Show previously scraped Instagram accounts"""
+    from db import get_scanned_chats
+    ig_chats = [c for c in get_scanned_chats() if c.get("chat_type") == "instagram"]
+    
+    text = "📸 <b>نتایج اسکرپ اینستاگرام</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+    if not ig_chats:
+        text += "هنوز هیچ پیج اینستاگرامی اسکرپ نشده."
+    else:
+        for ch in ig_chats[:15]:
+            pct = ch.get("progress_pct") or 0
+            extracted = ch.get("extracted_count") or 0
+            total = ch.get("total_members_estimate") or "?"
+            text += f"📸 <b>{ch['chat_name']}</b>\n"
+            text += f"   👤 {extracted:,}/{total} | {pct}%\n"
+            text += f"   🕐 آخرین: {time.strftime('%Y-%m-%d', time.localtime(ch.get('last_scan',0))) if ch.get('last_scan') else '—'}\n\n"
+    
+    buttons = []
+    if ig_chats:
+        for ch in ig_chats[:10]:
+            buttons.append([InlineKeyboardButton(
+                f"🔍 اسکن مجدد {ch['chat_name']}",
+                callback_data=f"ig_scrape_{ch['chat_name'].replace('IG:@', '')}"
+            )])
+    
+    buttons.append(_sub_back_btn(target="ig_menu"))
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
 # ═══════════════ End of UI Functions ═══════════════
 
 # ═══════════════ 📥 Session file upload helper (bypass 2FA) ═══════════════
@@ -846,6 +973,10 @@ def main_menu():
         InlineKeyboardButton("⬇️ دانلودر رسانه", callback_data="downloader_menu"),
         InlineKeyboardButton(f"📱 اکانت‌ها ({acc_count})", callback_data="manage_accounts"),
     ])
+    # ===== دسته ۶.۵: اینستاگرام =====
+    buttons.append([
+        InlineKeyboardButton("📸 اینستاگرام", callback_data="ig_menu"),
+    ])
 
     # ===== دسته ۷: پشتیبان‌گیری =====
     buttons.append([
@@ -984,6 +1115,16 @@ async def _cb_impl(c, q):
         chat_id = int(d.split("_")[3])
         atk_state["target_chat_id"] = chat_id
         await _start_attack_from_chat(q, chat_id)
+        return
+
+    if d == "ig_scrape_prompt":
+        atk_state["step"] = "ig_target_username"
+        await q.message.edit_text(
+            "🔍 <b>اسکرپ فالوورهای اینستاگرام</b>\n\n"
+            "نام کاربری پیج عمومی مورد نظر رو بفرست:\n"
+            "مثال: <code>cristiano</code> یا <code>instagram</code>\n\n"
+            "⚠️ فقط پیج‌های <b>عمومی</b> قابل اسکرپ هستن.",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
         return
 
     if d == "categories_menu":
@@ -1330,10 +1471,46 @@ async def _cb_impl(c, q):
         text += "🐦 توییتر/X · 👽 ردیت · 📺 آپارات · 📌 پینترست\n"
         text += "🎵 ساوندکلاود · 🎬 ویمئو · 🔗 لینک مستقیم\n\n"
         text += "<i>بدون واترمارک · کیفیت بالا · بدون تبلیغ</i>"
-        atk_state["downloader_mode"] = True
-        await q.message.edit_text(text,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="menu_settings")]]))
+    if d == "ig_menu":
+        await _show_ig_menu(q)
         return
+
+    if d.startswith("ig_scrape_"):
+        target = d[10:]  # after "ig_scrape_"
+        await _start_ig_scrape(q, target)
+        return
+
+    if d == "ig_login":
+        await _handle_ig_login(q)
+        return
+
+    if d == "ig_logout":
+        atk_state["ig_username"] = ""
+        atk_state["ig_password"] = ""
+        await q.answer("📸 اطلاعات لاگین پاک شد", show_alert=True)
+        await _show_ig_menu(q)
+        return
+
+    if d == "ig_upload_session":
+        atk_state["step"] = "upload_ig_session"
+        await q.message.edit_text(
+            "📥 <b>آپلود فایل سشن اینستاگرام</b>\n\n"
+            "🔹 این روش برای اکانت‌های دارای <b>2FA</b> یا <b>Google Authenticator</b> عالیه\n"
+            "🔹 کافیه یه بار توی سیستم خودت با Instaloader لاگین کنی:\n\n"
+            "<pre>pip install instaloader\n"
+            "python3 -c \"\nimport instaloader\n"
+            "L = instaloader.Instaloader()\n"
+            "L.login('YOUR_USER', 'YOUR_PASS')\n"
+            "L.save_session_to_file('ig_session')\n\"</pre>\n\n"
+            "فایل <code>ig_session</code> رو همینجا آپلود کن.",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]),
+            disable_web_page_preview=True)
+        return
+
+    if d == "ig_list":
+        await _show_ig_results(q)
+        return
+
 
     if d == "select_group":
         groups = []
