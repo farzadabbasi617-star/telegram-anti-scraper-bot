@@ -29,7 +29,7 @@ sys.path.insert(0, '.')
 
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import SessionPasswordNeeded, AuthKeyDuplicated, AuthKeyUnregistered, FloodWait
+from pyrogram.errors import SessionPasswordNeeded, AuthKeyDuplicated, AuthKeyUnregistered, FloodWait, PhoneCodeExpired, PhoneCodeInvalid
 
 from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename, DEVICE_FP, _get_session_lock, _enable_wal_on_session
 # _global_connect_lock حالا از attacker میاد
@@ -4113,6 +4113,16 @@ def _validate_phone(phone):
                 "یا می‌تونی از منوی «📱 مدیریت اکانت‌ها» → «📤 آپلود فایل سشن» استفاده کنی تا کلاً نیاز به 2FA نباشه.",
                 disable_web_page_preview=True)
             return
+        except (PhoneCodeExpired, PhoneCodeInvalid):
+            # Auto-resend code
+            try:
+                sent = await acc_client.app.send_code(phone)
+                atk_state["hash"] = sent.phone_code_hash
+                await st.edit_text("⏰ کد منقضی شده بود — کد جدید ارسال شد!\n📱 کد ۵ رقمی جدید رو بفرست:")
+            except Exception as e2:
+                await st.edit_text(f"❌ خطا در ارسال مجدد کد: {str(e2)[:200]}\nلطفا از منو دوباره شروع کنید.", reply_markup=main_menu())
+                atk_state.clear()
+            return
         except Exception as e:
             await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
             return
@@ -4236,6 +4246,15 @@ def _validate_phone(phone):
                 "• یا از «📤 آپلود فایل سشن» استفاده کن\n\n"
                 "⚠️ کد TOTP هر ۳۰ ثانیه عوض میشه!",
                 disable_web_page_preview=True)
+            return
+        except (PhoneCodeExpired, PhoneCodeInvalid):
+            try:
+                sent = await new_client.app.send_code(phone)
+                atk_state["hash"] = sent.phone_code_hash
+                await st.edit_text("⏰ کد منقضی شده بود — کد جدید ارسال شد!\n📱 کد ۵ رقمی جدید رو بفرست:")
+            except Exception as e2:
+                await st.edit_text(f"❌ خطا در ارسال مجدد: {str(e2)[:200]}", reply_markup=main_menu())
+                atk_state.clear()
             return
         except Exception as e:
             await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
@@ -4384,6 +4403,15 @@ def _validate_phone(phone):
                 "⚠️ کد TOTP هر ۳۰ ثانیه عوض میشه، سریع باش!",
                 disable_web_page_preview=True)
             return
+        except (PhoneCodeExpired, PhoneCodeInvalid):
+            try:
+                sent = await atk.app.send_code(phone)
+                atk_state["hash"] = sent.phone_code_hash
+                await st.edit_text("⏰ کد جدید ارسال شد! کد ۵ رقمی رو بفرست:")
+            except Exception as e2:
+                await st.edit_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
+                atk_state.clear()
+            return
         except Exception as e:
             await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
             return
@@ -4515,6 +4543,15 @@ def _validate_phone(phone):
                 "✅ <b>رمز ثابت</b> یا <b>کد Google Authenticator</b> رو بفرست\n\n"
                 "⚠️ کد TOTP هر ۳۰ ثانیه عوض میشه، سریع باش!",
                 disable_web_page_preview=True)
+            return
+        except (PhoneCodeExpired, PhoneCodeInvalid):
+            try:
+                sent = await add_client.app.send_code(phone)
+                atk_state["hash"] = sent.phone_code_hash
+                await st.edit_text("⏰ کد جدید ارسال شد! کد ۵ رقمی رو بفرست:")
+            except Exception as e2:
+                await st.edit_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
+                atk_state.clear()
             return
         except Exception as e:
             await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
