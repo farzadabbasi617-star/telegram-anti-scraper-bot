@@ -638,6 +638,35 @@ async def _show_source_filter_menu(q):
 # ═══════════════ End of UI Functions ═══════════════
 
 
+# ═══════════════ 🚀 Fast dialog loader (no per-chat API calls) ═══════════════
+async def _fast_load_chats(client, chat_types=None):
+    """Quickly load all chats from dialogs WITHOUT calling get_chat_member for each.
+    The dialog list already only has chats the user is in. Returns list of (title, id, member_count)."""
+    chats = []
+    try:
+        async for dialog in client.app.get_dialogs(limit=2000):
+            cht = dialog.chat
+            if not cht:
+                continue
+            cht_type = str(cht.type).lower() if hasattr(cht, 'type') else ''
+            # Match groups, supergroups, and channels
+            is_group = 'group' in cht_type or 'supergroup' in cht_type
+            is_channel = 'channel' in cht_type
+            is_megagroup = getattr(cht, 'megagroup', False)
+            if not (is_group or is_channel):
+                continue
+            # Channels that are not megagroups have no "members" to add to, but
+            # can still be listable if admin
+            cnt = getattr(cht, 'members_count', 0) or 0
+            chats.append((cht.title or f"Chat {cht.id}", cht.id, cnt))
+            # Yield every 50 to let other tasks breathe
+            if len(chats) % 50 == 0:
+                await asyncio.sleep(0.01)
+    except Exception as e:
+        print(f"_fast_load_chats err: {e}", flush=True)
+    return chats
+
+
 def main_menu():
     """Main dashboard with two-column modern layout + categories."""
     saved_accs = list_saved_accounts()
@@ -1188,12 +1217,7 @@ async def _cb_impl(c, q):
         groups = []
         async for dialog in app.get_dialogs():
             if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
-                try:
-                    mem = await app.get_chat_member(dialog.chat.id, "me")
-                    if mem.status in ["administrator", "creator"]:
-                        groups.append((dialog.chat.title, dialog.chat.id))
-                except:
-                    pass
+                groups.append((dialog.chat.title, dialog.chat.id))
         buttons = []
         for name, gid in groups:
             buttons.append([InlineKeyboardButton(f"👥 {name}", callback_data=f"setg_{gid}")])
@@ -2521,19 +2545,7 @@ async def _cb_impl(c, q):
             atk_state["step"] = "after_login_attack"
             # حالا لیست گروه ها را نشان بده
             await prog.edit_text("✅ ورود با اکانت ذخیره شده موفق!\n🔄 در حال بارگذاری لیست گروه‌های شما...")
-            group_list = []
-            try:
-                async for dialog in atk.app.get_dialogs(limit=2000):
-                    if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
-                        try:
-                            mstat = await atk.app.get_chat_member(dialog.chat.id, "me")
-                            if mstat.status in ["administrator", "creator", "member", "restricted"]:
-                                group_list.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
-                        except:
-                            pass
-                    await asyncio.sleep(0.02)
-            except Exception as e:
-                print(f"خطا در بارگذاری لیست: {e}", flush=True)
+            group_list = await _fast_load_chats(atk)
             atk_state["available_groups"] = group_list
             if group_list:
                 buttons = []
@@ -2565,23 +2577,7 @@ async def _cb_impl(c, q):
             atk_state["st"] = prog
             me = await add_client.app.get_me()
             await prog.edit_text(f"✅ ورود با اکانت ذخیره شده موفق! ({me.first_name})\n🔄 در حال بارگذاری لیست گروه‌ها...")
-            add_groups = []
-            try:
-                async for dialog in add_client.app.get_dialogs(limit=2000):
-                    if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
-                        try:
-                            mstat = await add_client.app.get_chat_member(dialog.chat.id, "me")
-                            if mstat.status in ["administrator", "creator", "member"]:
-                                can_add = True
-                                if mstat.status == "administrator" and mstat.privileges:
-                                    can_add = mstat.privileges.can_invite_users
-                                if can_add:
-                                    add_groups.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
-                        except:
-                            pass
-                    await asyncio.sleep(0.02)
-            except Exception as e:
-                print(f"خطا در لیست ادد: {e}", flush=True)
+            add_groups = await _fast_load_chats(add_client)
             atk_state["available_add_groups"] = add_groups
             remaining = MAX_ADD_PER_ACCOUNT - already
             if add_groups:
@@ -2917,18 +2913,7 @@ async def _steps_impl(c, m):
                 atk_state["atk"] = atk
                 atk_state["st"] = st
                 atk_state["step"] = "after_login_attack"
-                group_list = []
-                try:
-                    async for dialog in atk.app.get_dialogs(limit=2000):
-                        if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
-                            try:
-                                mstat = await atk.app.get_chat_member(dialog.chat.id, "me")
-                                if mstat.status in ["administrator", "creator", "member", "restricted"]:
-                                    group_list.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
-                            except: pass
-                        await asyncio.sleep(0.02)
-                except Exception as e:
-                    print(f"خطای لیست: {e}", flush=True)
+                group_list = await _fast_load_chats(atk)
                 atk_state["available_groups"] = group_list
                 buttons = []
                 for gname, gid, gcount in sorted(group_list, key=lambda x:-x[2]):
@@ -2946,18 +2931,7 @@ async def _steps_impl(c, m):
                 await robust_connect(add_client)
                 atk_state["add_client"] = add_client
                 atk_state["st"] = st
-                add_groups = []
-                try:
-                    async for dialog in add_client.app.get_dialogs(limit=2000):
-                        if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
-                            try:
-                                mstat = await add_client.app.get_chat_member(dialog.chat.id, "me")
-                                if mstat.status in ["administrator", "creator", "member"]:
-                                    add_groups.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
-                            except: pass
-                        await asyncio.sleep(0.02)
-                except Exception as e:
-                    print(f"خطای لیست ادد: {e}", flush=True)
+                add_groups = await _fast_load_chats(add_client)
                 remaining = MAX_ADD_PER_ACCOUNT - already
                 buttons = []
                 for gname, gid, gcount in sorted(add_groups, key=lambda x:-x[2]):
@@ -3066,17 +3040,7 @@ async def _steps_impl(c, m):
         )
         # اسکن خودکار تمام دیالوگ ها برای گرم کردن کش تلگرام، جلوگیری از ارور CHAT_INVALID/عضو نیستی
         try:
-            group_list = []
-            async for dialog in atk.app.get_dialogs(limit=2000):
-                if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
-                    try:
-                        # چک کن که واقعا عضو باشی
-                        me = await atk.app.get_chat_member(dialog.chat.id, "me")
-                        if me.status in ["administrator", "creator", "member", "restricted"]:
-                            group_list.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
-                    except:
-                        pass
-                await asyncio.sleep(0.02)
+            group_list = await _fast_load_chats(atk)
             atk_state["available_groups"] = group_list
         except Exception as e:
             print(f"اسکن دیالوگ ها با خطا مواجه شد: {e}", flush=True)
@@ -3204,27 +3168,7 @@ async def _steps_impl(c, m):
         atk_state["step"] = "adder_target"
         await st.edit_text("✅ ورود موفق!\n🔄 در حال بارگذاری لیست گروه‌های شما...")
         # گرم کردن کش و تهیه لیست گروه ها
-        add_groups = []
-        try:
-            async for dialog in add_client.app.get_dialogs(limit=2000):
-                if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
-                    try:
-                        me = await add_client.app.get_chat_member(dialog.chat.id, "me")
-                        if me.status in ["administrator", "creator", "member"]:
-                            # برای اضافه کردن عضو باید توانایی ادد ممبر داشته باشی
-                            can_add = True
-                            if me.status == "administrator" and me.privileges:
-                                can_add = me.privileges.can_invite_users
-                            if me.status == "member":
-                                # در گروه های عمومی معمولی اعضا میتونن نفر اضافه کنن
-                                can_add = True
-                            if can_add:
-                                add_groups.append((dialog.chat.title, dialog.chat.id, dialog.chat.members_count or 0))
-                    except:
-                        pass
-                await asyncio.sleep(0.02)
-        except Exception as e:
-            print(f"خطا در بارگذاری لیست گروه برای ادد: {e}", flush=True)
+        add_groups = await _fast_load_chats(add_client)
         atk_state["available_add_groups"] = add_groups
         if add_groups:
             buttons = []
