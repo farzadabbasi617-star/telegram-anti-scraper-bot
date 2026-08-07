@@ -520,3 +520,32 @@ def migrate_json_to_db():
 
 # Initialize at import
 init_tables()
+
+
+# ---------------- Favorites / bookmarks ----------------
+def fav_add(url):
+    try:
+        cur = get_conn().cursor()
+        cur.execute("INSERT INTO kv_store (key, value, updated_at) VALUES ('favorites', %s, %s) ON CONFLICT (key) DO NOTHING",
+                    (Json([]), int(time.time())))
+        cur.execute("UPDATE kv_store SET value = value || %s::jsonb WHERE key='favorites' AND NOT value @> %s::jsonb",
+                    (Json([url]), Json([url])))
+        cur.close()
+    except Exception as e:
+        print(f"fav_add err: {e}", flush=True)
+
+def fav_remove(url):
+    try:
+        cur = get_conn().cursor()
+        cur.execute("UPDATE kv_store SET value = (SELECT jsonb_agg(elem) FROM jsonb_array_elements(value) elem WHERE elem::text <> %s::text) WHERE key='favorites'",
+                    (json.dumps(url),))
+        cur.close()
+    except Exception as e:
+        print(f"fav_remove err: {e}", flush=True)
+
+def fav_list():
+    v = kv_get("favorites", []) or []
+    return list(v)
+
+def is_fav(url):
+    return url in fav_list()

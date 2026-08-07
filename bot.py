@@ -945,9 +945,11 @@ async def cb(c, q):
                 cnt2 = len(cats.get(cid2, []))
                 row.append(InlineKeyboardButton(f"{info2['emoji']} {info2['name'][:14]} ({cnt2})", callback_data=f"pf_cat_{cid2}"))
             buttons.append(row)
-        # Saved custom searches
+        # Saved custom searches & favorites
         custom = [x for x in (cats.get("custom") or [])]
-        buttons.append([InlineKeyboardButton(f"⭐ لیست جستجوهای من ({len(custom)})", callback_data="pf_custom_list")])
+        favs = fav_list()
+        buttons.append([InlineKeyboardButton(f"⭐ علاقه‌مندی‌ها ({len(favs)})", callback_data="pf_favs"),
+                        InlineKeyboardButton(f"🔍 جستجوهای من ({len(custom)})", callback_data="pf_custom_list")])
         buttons.append([InlineKeyboardButton("📥 دانلود CSV", callback_data="pf_export"),
                         InlineKeyboardButton("🗑️ پاک‌کردن", callback_data="pf_clear")])
         buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
@@ -1052,11 +1054,59 @@ async def cb(c, q):
         if page < total_pages-1:
             nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"pf_next_{cat_id}"))
         if nav: buttons.append(nav)
+        # Star buttons for first 8 items
+        star_row1 = []
+        for idx, it in enumerate(chunk[:4]):
+            lbl = "⭐" if not is_fav(it['url']) else "🌟"
+            star_row1.append(InlineKeyboardButton(f"{lbl}{idx+1}", callback_data=f"pf_fav_{it['url']}"))
+        if star_row1: buttons.append(star_row1)
+        star_row2 = []
+        for idx, it in enumerate(chunk[4:8]):
+            lbl = "⭐" if not is_fav(it['url']) else "🌟"
+            star_row2.append(InlineKeyboardButton(f"{lbl}{idx+5}", callback_data=f"pf_fav_{it['url']}"))
+        if star_row2: buttons.append(star_row2)
         buttons.append([InlineKeyboardButton("🔄 اسکن این دسته", callback_data=f"pf_scan_{cat_id}"),
                         InlineKeyboardButton("🔍 جستجوی دلخواه", callback_data="pf_search")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu"),
+        buttons.append([InlineKeyboardButton("⭐ علاقه‌مندی‌ها", callback_data="pf_favs"),
+                        InlineKeyboardButton("🔙 منوی پروژه", callback_data="pf_menu"),
                         InlineKeyboardButton("🏠 خانه", callback_data="home")])
         await q.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("pf_fav_"):
+        url = d[len("pf_fav_"):]
+        if is_fav(url):
+            fav_remove(url)
+            await q.answer("از علاقه‌مندی‌ها حذف شد ⭕", show_alert=False)
+        else:
+            fav_add(url)
+            await q.answer("⭐ به علاقه‌مندی‌ها اضافه شد", show_alert=False)
+        return
+
+    if d == "pf_favs":
+        urls = fav_list()
+        all_proj = {p["url"]: p for p in pf_load()}
+        favs = [all_proj[u] for u in urls if u in all_proj]
+        favs.sort(key=lambda x: x.get("stars",0), reverse=True)
+        text = f"⭐ <b>علاقه‌مندی‌های من</b> ({len(favs)})\n━━━━━━━━━━━━━━━━━━\n\n"
+        if not favs:
+            text += "هنوز پروژه‌ای را ستاره‌دار نکردی ✨\n"
+            text += "در صفحات دسته‌بندی روی دکمه ⭐ کنار هر پروژه بزن تا ذخیره شود."
+        else:
+            for i, it in enumerate(favs[:20], 1):
+                plat = {"github":"🐙","gitlab":"🦊","codeberg":"🌿"}.get(it.get("platform",""),"")
+                desc = (it.get("description") or "").strip()
+                if len(desc) > 70: desc = desc[:70] + "…"
+                text += f"{i}. {plat} <a href=\"{it['url']}\"><b>{it.get('full_name','')}</b></a> ⭐{it.get('stars',0):,}\n"
+                if desc: text += f"   └ {desc}\n"
+                text += "\n"
+            if len(favs) > 20: text += f"... و {len(favs)-20} مورد دیگر"
+        btns = []
+        for it in favs[:8]:
+            nm = (it.get('full_name','') or '')[:28]
+            btns.append([InlineKeyboardButton(f"❌ حذف {nm}", callback_data=f"pf_fav_{it['url']}")])
+        btns.append([InlineKeyboardButton("🔙 بازگشت به منوی پروژه‌ها", callback_data="pf_menu")])
+        await q.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(btns))
         return
 
     if d.startswith("pf_next_") or d.startswith("pf_prev_"):
@@ -1104,9 +1154,21 @@ async def cb(c, q):
         if page < total_pages-1:
             nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"pf_next_{cat_id}"))
         if nav: buttons.append(nav)
+        # Star buttons for first 8 items
+        star_row1 = []
+        for idx, it in enumerate(chunk[:4]):
+            lbl = "⭐" if not is_fav(it['url']) else "🌟"
+            star_row1.append(InlineKeyboardButton(f"{lbl}{idx+1}", callback_data=f"pf_fav_{it['url']}"))
+        if star_row1: buttons.append(star_row1)
+        star_row2 = []
+        for idx, it in enumerate(chunk[4:8]):
+            lbl = "⭐" if not is_fav(it['url']) else "🌟"
+            star_row2.append(InlineKeyboardButton(f"{lbl}{idx+5}", callback_data=f"pf_fav_{it['url']}"))
+        if star_row2: buttons.append(star_row2)
         buttons.append([InlineKeyboardButton("🔄 اسکن این دسته", callback_data=f"pf_scan_{cat_id}"),
                         InlineKeyboardButton("🔍 جستجوی دلخواه", callback_data="pf_search")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu"),
+        buttons.append([InlineKeyboardButton("⭐ علاقه‌مندی‌ها", callback_data="pf_favs"),
+                        InlineKeyboardButton("🔙 منوی پروژه", callback_data="pf_menu"),
                         InlineKeyboardButton("🏠 خانه", callback_data="home")])
         await q.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(buttons))
         return
