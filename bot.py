@@ -273,14 +273,17 @@ def main_menu():
         InlineKeyboardButton(f"🔭 پروژه‌یاب ({pf_total})", callback_data="pf_menu"),
     ])
 
-    # ===== دسته ۶: مدیریت اکانت‌ها =====
+    # ===== دسته ۶: ابزارها =====
     buttons.append([
-        InlineKeyboardButton(f"📱 مدیریت اکانت‌ها ({acc_count})", callback_data="manage_accounts"),
-        InlineKeyboardButton("⚙️ تنظیمات ربات", callback_data="menu_settings"),
+        InlineKeyboardButton("⬇️ دانلودر رسانه", callback_data="downloader_menu"),
+        InlineKeyboardButton(f"📱 اکانت‌ها ({acc_count})", callback_data="manage_accounts"),
     ])
 
-    # Help row
-    buttons.append([InlineKeyboardButton("❓ راهنما / دستورات", callback_data="help_page")])
+    # ===== دسته ۷: تنظیمات و راهنما =====
+    buttons.append([
+        InlineKeyboardButton("⚙️ تنظیمات", callback_data="menu_settings"),
+        InlineKeyboardButton("❓ راهنما", callback_data="help_page"),
+    ])
 
     return InlineKeyboardMarkup(buttons)
 
@@ -460,8 +463,10 @@ async def cb(c, q):
              InlineKeyboardButton("⏱️ اسکن خودکار", callback_data="bg_menu")],
             [InlineKeyboardButton("🔄 ریست آمار ادد", callback_data="reset_adder_all"),
              InlineKeyboardButton("🗑️ پاک کردن لیست ممبر", callback_data="clear_users")],
-            [InlineKeyboardButton("📥 خروجی CSV ممبرها", callback_data="export_users_csv"),
-             InlineKeyboardButton("📥 CSV تاریخچه ادد", callback_data="export_added_csv")],
+            [InlineKeyboardButton("⬇️ دانلودر رسانه", callback_data="downloader_menu"),
+             InlineKeyboardButton("📥 CSV ممبرها", callback_data="export_users_csv")],
+            [InlineKeyboardButton("📥 CSV تاریخچه ادد", callback_data="export_added_csv"),
+             InlineKeyboardButton("🔝 منوی اصلی", callback_data="home")],
             _sub_back_btn()
         ]
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
@@ -560,6 +565,19 @@ async def cb(c, q):
                                 file_name=f"added_history_{int(time.time())}.csv",
                                 caption=f"📥 تاریخچه {len(rows)} مورد ادد")
         await q.answer("CSV ارسال شد ✅", show_alert=True)
+        return
+
+    if d == "downloader_menu":
+        text = "⬇️ <b>دانلودر همه‌کاره رسانه</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        text += "لینک مورد نظر را مستقیم در چت بفرستید.\n"
+        text += "<b>پلتفرم‌های پشتیبانی شده:</b>\n"
+        text += "🎵 تیک‌تاک · 📸 اینستاگرام (ریلز/پست) · ▶️ یوتوب شورت\n"
+        text += "🐦 توییتر/X · 👽 ردیت · 📺 آپارات · 📌 پینترست\n"
+        text += "🎵 ساوندکلاود · 🎬 ویمئو · 🔗 لینک مستقیم\n\n"
+        text += "<i>بدون واترمارک · کیفیت بالا · بدون تبلیغ</i>"
+        atk_state["downloader_mode"] = True
+        await q.message.edit_text(text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="menu_settings")]]))
         return
 
     if d == "select_group":
@@ -1948,6 +1966,47 @@ async def steps(c, m):
     step = atk_state.get("step")
     hstep = atk_state.get("hunter_step")
     pf_step = atk_state.get("pf_step")
+
+    # ========== Universal Downloader ==========
+    msg_text = (m.text or m.caption or "").strip()
+    urls_in_msg = URL_REGEX.findall(msg_text)
+    dl_mode = atk_state.get("downloader_mode", False)
+    if urls_in_msg and dl_mode:
+        url = urls_in_msg[0]
+        platform = detect_platform(url)
+        stat = await m.reply_text(f"⬇️ در حال دریافت از <b>{platform}</b>...\nچند لحظه صبر کنید ⏳")
+        try:
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, lambda: fetch_media(url))
+            if not res.get("ok"):
+                await stat.edit_text(f"❌ خطا: {res.get('error','نامشخص')}")
+                atk_state["downloader_mode"] = False
+                return
+            dl_url = res.get("download_url")
+            if dl_url:
+                await stat.edit_text("📥 در حال ارسال فایل به تلگرام...")
+                try:
+                    vid_plats = ("tiktok","instagram","youtube","twitter","reddit","aparat","coub","vimeo","pinterest")
+                    aud_plats = ("soundcloud",)
+                    caption = f"✅ دانلود از {platform}\n🔗 {url}"
+                    if platform in vid_plats:
+                        await app.send_video(ADMIN_ID, dl_url, caption=caption, supports_streaming=True)
+                    elif platform in aud_plats:
+                        await app.send_audio(ADMIN_ID, dl_url, caption=caption)
+                    else:
+                        await app.send_document(ADMIN_ID, dl_url, caption=caption)
+                    await stat.delete()
+                except Exception as e:
+                    await stat.edit_text(f"⚠️ لینک آماده شد اما ارسال مستقیم خطا داد:\n<code>{str(e)[:150]}</code>\n\n🔗 لینک دانلود:\n{dl_url}")
+            elif res.get("picker"):
+                text = f"📸 آلبوم چندتایی ({len(res['picker'])} مورد):\n\n"
+                for i, it in enumerate(res["picker"], 1):
+                    text += f"{i}. {it.get('type','?')}: {it.get('url','')}\n"
+                await stat.edit_text(text, disable_web_page_preview=True)
+        except Exception as e:
+            await stat.edit_text(f"❌ خطا در دانلود: {str(e)[:200]}")
+        atk_state["downloader_mode"] = False
+        return
 
     # ========== Project Finder custom search ==========
     if pf_step == "await_query":
