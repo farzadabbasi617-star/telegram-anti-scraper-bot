@@ -99,7 +99,7 @@ class AdvancedScraper:
             no_updates=True,
             takeout=False
         )
-        self.found_users = {}
+        self.found_users = {}  # will be populated from DB in run_full_scrape
         self.total_api_calls = 0
         self.start_time = None
         self._progress_cb = None
@@ -109,6 +109,7 @@ class AdvancedScraper:
         self._last_progress_val = 0
         self._incremental_save_cb = None  # ذخیره تدریجی
         self._stop_requested = False  # درخواست توقف از کاربر
+        self._existing_user_ids = set()  # کاربرایی که قبلاً استخراج شدن
 
     def request_stop(self):
         self._stop_requested = True
@@ -261,7 +262,7 @@ class AdvancedScraper:
         uid = getattr(user, 'id', None)
         if not uid or getattr(user, 'is_bot', False) or getattr(user, 'is_deleted', False):
             return
-        if uid in self.found_users:
+        if uid in self.found_users or uid in self._existing_user_ids:
             return
         fullname = user.first_name or ""
         if user.last_name:
@@ -867,13 +868,18 @@ class AdvancedScraper:
         await self._progress(force=True)
         msg_count = 0
         reaction_count = 0
-        async for msg in self.app.get_chat_history(chat_id, limit=limit):
+        try:
+            msg_iter = self.app.get_chat_history(chat_id, limit=limit)
+        except Exception as e:
+            print(f"⚠️ Reactions history error: {e}", flush=True)
+            return
+        
+        async for msg in msg_iter:
             if self._stop_requested:
                 return
             self.total_api_calls += 1
             msg_count += 1
 
-            # فقط پیام‌هایی که ری‌اکشن دارن رو پردازش کن
             if not msg.reactions or not msg.reactions.reactions:
                 if msg_count % 200 == 0:
                     self._stage = f"اسکن ری‌اکشن: {msg_count} پیام بررسی شد، {reaction_count} ری‌اکت پیدا شد"
@@ -945,7 +951,14 @@ class AdvancedScraper:
         authors_found = 0
         reactors_found = 0
 
-        async for msg in self.app.get_chat_history(chat_id, limit=limit):
+        try:
+            messages = self.app.get_chat_history(chat_id, limit=limit)
+        except Exception as e:
+            print(f"⚠️ Channel history access error: {e}", flush=True)
+            self._stage = "کانال: دسترسی به تاریخچه نشد"
+            return
+        
+        async for msg in messages:
             if self._stop_requested:
                 return
             self.total_api_calls += 1
@@ -1035,6 +1048,19 @@ class AdvancedScraper:
         self._last_progress = 0
         self.start_time = time.time()
         self._stage = "در حال اتصال..."
+        # 🆕 بارگذاری کاربران قبلاً استخراج شده از دیتابیس
+        # تا دیگه تکراری استخراج نشن
+        try:
+            import db as _db
+            existing = _db.load_users_dict()
+            self._existing_user_ids = {int(uid) for uid in existing.keys()}
+            if self._existing_user_ids:
+                self._last_added_name = f"({len(self._existing_user_ids):,} کاربر قبلی)"
+                print(f"📦 {len(self._existing_user_ids):,} کاربر قبلاً در DB هست — Skip میشن", flush=True)
+        except Exception as e:
+            self._existing_user_ids = set()
+            print(f"⚠️ load existing: {e}", flush=True)
+        
         print("="*60, flush=True)
         print("🚀 شروع حمله MAX MODE", flush=True)
         print("="*60, flush=True)
