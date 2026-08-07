@@ -700,7 +700,7 @@ async def _show_source_filter_menu(q):
 # ═══════════════ 🚀 Fast dialog loader (no per-chat API calls) ═══════════════
 async def _fast_load_chats(client, chat_types=None):
     """Quickly load all chats from dialogs WITHOUT calling get_chat_member for each.
-    The dialog list already only has chats the user is in. Returns list of (title, id, member_count)."""
+    Returns list of (title, id, member_count, chat_type_str)."""
     chats = []
     try:
         async for dialog in client.app.get_dialogs(limit=2000):
@@ -708,17 +708,13 @@ async def _fast_load_chats(client, chat_types=None):
             if not cht:
                 continue
             cht_type = str(cht.type).lower() if hasattr(cht, 'type') else ''
-            # Match groups, supergroups, and channels
             is_group = 'group' in cht_type or 'supergroup' in cht_type
             is_channel = 'channel' in cht_type
-            is_megagroup = getattr(cht, 'megagroup', False)
             if not (is_group or is_channel):
                 continue
-            # Channels that are not megagroups have no "members" to add to, but
-            # can still be listable if admin
             cnt = getattr(cht, 'members_count', 0) or 0
-            chats.append((cht.title or f"Chat {cht.id}", cht.id, cnt))
-            # Yield every 50 to let other tasks breathe
+            cht_type_str = "channel" if (is_channel and not ('group' in cht_type or 'supergroup' in cht_type)) else "group"
+            chats.append((cht.title or f"Chat {cht.id}", cht.id, cnt, cht_type_str))
             if len(chats) % 50 == 0:
                 await asyncio.sleep(0.01)
     except Exception as e:
@@ -2205,8 +2201,25 @@ async def _cb_impl(c, q):
         atk_state["step"] = "adder_file"
         already = atk_state.get("already_added", 0)
         remaining = MAX_ADD_PER_ACCOUNT - already
+        # Detect chat type
+        is_channel = str(target.type).lower() == "chattype.channel" and not getattr(target, 'megagroup', False)
+        chat_type_label = "📡 کانال" if is_channel else "👥 گروه"
+        # For channels, also generate invite link
+        invite_text = ""
+        if is_channel:
+            try:
+                invite = await add_client.app.create_chat_invite_link(gid, member_limit=1)
+                invite_text = f"\n\n🔗 لینک دعوت:\n<code>{invite.invite_link}</code>\n(می‌تونی لینک رو هم برای کاربران بفرستی)"
+                atk_state["channel_invite_link"] = invite.invite_link
+            except:
+                invite_text = "\n\n⚠️ نتونستم لینک دعوت بسازم (نیاز به ادمین بودن داری)"
         await q.answer()
-        await q.message.edit_text(f"✅ گروه مقصد: {target.title}\n⚠️ این اکانت حداکثر می‌تواند {remaining} نفر دیگر اضافه کند.\nحالا **فایل CSV** را همینجا آپلود کنید.")
+        await q.message.edit_text(
+            f"✅ مقصد: {chat_type_label} <b>{target.title}</b>\n"
+            f"⚠️ این اکانت حداکثر می‌تواند {remaining} نفر دیگر اضافه کند."
+            f"{invite_text}\n\n"
+            f"حالا **فایل CSV** را همینجا آپلود کنید.",
+            disable_web_page_preview=True)
         return
 
     if d == "add_target_manual":
@@ -2412,7 +2425,8 @@ async def _cb_impl(c, q):
             async for dlg in tmp.app.get_dialogs(limit=200):
                 try:
                     c = await tmp.app.get_chat(dlg.chat.id)
-                    if "group" in str(getattr(c.type,"","")).lower():
+                    ctype = str(getattr(c.type,"","")).lower()
+                    if "group" in ctype or "channel" in ctype:
                         cnt = 0
                         try: cnt = await tmp.app.get_chat_members_count(c.id)
                         except: pass
@@ -2613,8 +2627,11 @@ async def _cb_impl(c, q):
             atk_state["available_groups"] = group_list
             if group_list:
                 buttons = []
-                for gname, gid, gcount in sorted(group_list, key=lambda x:-x[2]):
-                    buttons.append([InlineKeyboardButton(f"👥 {gname[:35]} | {gcount:,} نفر", callback_data=f"atk_target_{gid}")])
+                for gname, gid, gcount, chtype in sorted(group_list, key=lambda x:-x[2]):
+                    ch_icon = "📡" if chtype == "channel" else "👥"
+
+                    buttons.append([InlineKeyboardButton(f"➕ {ch_icon} {gname[:30]} | {gcount:,}", callback_data=f"add_target_{gid}")])
+
                 buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
                 await prog.edit_text(f"✅ اکانت {me.first_name} آماده است!\nلطفا گروه هدف را انتخاب کنید ({len(group_list)} گروه):", reply_markup=InlineKeyboardMarkup(buttons))
             else:
@@ -2646,8 +2663,9 @@ async def _cb_impl(c, q):
             remaining = MAX_ADD_PER_ACCOUNT - already
             if add_groups:
                 buttons = []
-                for gname, gid, gcount in sorted(add_groups, key=lambda x:-x[2]):
-                    buttons.append([InlineKeyboardButton(f"➕ {gname[:35]} | {gcount:,} نفر", callback_data=f"add_target_{gid}")])
+                for gname, gid, gcount, chtype in sorted(add_groups, key=lambda x:-x[2]):
+                    ch_icon = "📡" if chtype == "channel" else "👥"
+                    buttons.append([InlineKeyboardButton(f"➕ {ch_icon} {gname[:30]} | {gcount:,}", callback_data=f"add_target_{gid}")])
                 buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="add_target_manual")])
                 await prog.edit_text(f"✅ آماده اضافه کردن! ظرفیت باقیمانده: {remaining} نفر\nگروه مقصد را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
             else:
@@ -2980,8 +2998,9 @@ async def _steps_impl(c, m):
                 group_list = await _fast_load_chats(atk)
                 atk_state["available_groups"] = group_list
                 buttons = []
-                for gname, gid, gcount in sorted(group_list, key=lambda x:-x[2]):
-                    buttons.append([InlineKeyboardButton(f"👥 {gname[:35]} | {gcount:,} نفر", callback_data=f"atk_target_{gid}")])
+                for gname, gid, gcount, chtype in sorted(group_list, key=lambda x:-x[2]):
+                    ch_icon = "📡" if chtype == "channel" else "👥"
+                    buttons.append([InlineKeyboardButton(f"{ch_icon} {gname[:33]} | {gcount:,}", callback_data=f"atk_target_{gid}")])
                 buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
                 await st.edit_text(f"✅ خوش آمدی {me.first_name}! اکانت برای همیشه ذخیره شد.\nگروه هدف را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
             else:
@@ -2998,8 +3017,9 @@ async def _steps_impl(c, m):
                 add_groups = await _fast_load_chats(add_client)
                 remaining = MAX_ADD_PER_ACCOUNT - already
                 buttons = []
-                for gname, gid, gcount in sorted(add_groups, key=lambda x:-x[2]):
-                    buttons.append([InlineKeyboardButton(f"➕ {gname[:35]} | {gcount:,} نفر", callback_data=f"add_target_{gid}")])
+                for gname, gid, gcount, chtype in sorted(add_groups, key=lambda x:-x[2]):
+                    ch_icon = "📡" if chtype == "channel" else "👥"
+                    buttons.append([InlineKeyboardButton(f"➕ {ch_icon} {gname[:30]} | {gcount:,}", callback_data=f"add_target_{gid}")])
                 buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی", callback_data="add_target_manual")])
                 await st.edit_text(f"✅ اکانت ذخیره شد! ظرفیت باقیمانده: {remaining} نفر\nگروه مقصد را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
@@ -3237,7 +3257,8 @@ async def _steps_impl(c, m):
         if add_groups:
             buttons = []
             for gname, gid, gcount in sorted(add_groups, key=lambda x: -x[2]):
-                buttons.append([InlineKeyboardButton(f"➕ {gname[:35]} | {gcount:,} نفر", callback_data=f"add_target_{gid}")])
+                    ch_icon = "📡" if chtype == "channel" else "👥"
+                    buttons.append([InlineKeyboardButton(f"➕ {ch_icon} {gname[:30]} | {gcount:,}", callback_data=f"add_target_{gid}")])
             buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="add_target_manual")])
             await st.edit_text(f"✅ لیست گروه‌های شما آماده است ({len(add_groups)} گروه)\nگروه مقصد را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
         else:
@@ -3274,7 +3295,21 @@ async def _steps_impl(c, m):
         atk_state["target_add_gid"] = target_gid
         atk_state["step"] = "adder_file"
         remaining = MAX_ADD_PER_ACCOUNT - atk_state.get("already_added", 0)
-        await st.edit_text(f"✅ گروه مقصد: {target.title}\n⚠️ این اکانت حداکثر می‌تواند {remaining} نفر دیگر اضافه کند.\nحالا **فایل CSV** که از استخراج دارید را همینجا آپلود کنید.")
+        # Detect channel
+        is_ch = str(target.type).lower() == "chattype.channel" and not getattr(target, 'megagroup', False)
+        ch_label = "📡 کانال" if is_ch else "👥 گروه"
+        invite_extra = ""
+        if is_ch:
+            try:
+                inv = await add_client.app.create_chat_invite_link(target_gid, member_limit=1)
+                invite_extra = f"\n\n🔗 لینک دعوت:\n<code>{inv.invite_link}</code>"
+            except: pass
+        await st.edit_text(
+            f"✅ مقصد: {ch_label} <b>{target.title}</b>\n"
+            f"⚠️ این اکانت حداکثر می‌تواند {remaining} نفر دیگر اضافه کند."
+            f"{invite_extra}\n\n"
+            f"حالا **فایل CSV** که از استخراج دارید را همینجا آپلود کنید.",
+            disable_web_page_preview=True)
 
     elif step == "adder_file" and m.document:
         add_client = atk_state.get("add_client")
