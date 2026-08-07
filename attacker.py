@@ -1203,42 +1203,20 @@ class AdvancedScraper:
 
             if is_channel:
                 print("📡 حالت کانال فعال شد", flush=True)
-                # Parallel: posts + reactions run together
-                t1 = asyncio.create_task(self.scrape_channel_posts(chat_id, limit=20000))
-                t2 = asyncio.create_task(self.scrape_reactions_dedicated(chat_id, limit=10000))
-                await asyncio.gather(t1, t2)
-                await self.scrape_global_search(chat_id)
-                await self.scrape_forwarded_messages(chat_id, limit=5000)
+                await self.scrape_channel_posts(chat_id, limit=5000)
+                await self.scrape_reactions_dedicated(chat_id, limit=3000)
                 try: await self.scrape_direct_paginated(chat_id)
                 except Exception as e: print(f"⚠️ get_chat_members کانال: {e}", flush=True)
             else:
-                print("⚡ حالت موازی فوق‌سریع", flush=True)
-                # ═══ PHASE 1+2: Run paginated + deep_history IN PARALLEL ═══
-                # These use different API endpoints so they don't conflict
-                t1 = asyncio.create_task(self.scrape_direct_paginated(chat_id))
-                t2 = asyncio.create_task(self.scrape_deep_history(chat_id, limit=20000, batch_size=500))
-                results = await asyncio.gather(t1, t2, return_exceptions=True)
-                
-                # ═══ PHASE 3+4: Run join_events + reactions IN PARALLEL ═══
-                t3 = asyncio.create_task(self.scrape_join_events(chat_id))
-                t4 = asyncio.create_task(self.scrape_reactions_dedicated(chat_id, limit=10000))
-                await asyncio.gather(t3, t4)
-                
-                # ═══ PHASE 5: Cross-reference (sequential - uses same API) ═══
-                await self.scrape_forwarded_messages(chat_id, limit=5000)
-                await self.scrape_global_search(chat_id)
-                await self.scrape_imported_contacts(chat_id, max_import=500)
-                
-                # ═══ PHASE 6: Ultimate Parallel ═══
-                t5 = asyncio.create_task(self.scrape_aggressive_pagination(chat_id, max_prefixes=80))
-                t6 = asyncio.create_task(self.scrape_group_intersection(chat_id, max_other_groups=6))
-                await asyncio.gather(t5, t6)
+                print("⚡ حالت سریع", flush=True)
+                await self.scrape_direct_paginated(chat_id)
+                await self.scrape_full_history(chat_id, limit=5000)
+                await self.scrape_join_events(chat_id)
 
-            # 🆕 محاسبه درصد پیشرفت و آپدیت تاریخچه
+            # محاسبه درصد پیشرفت و آپدیت تاریخچه
             extracted = len(self.found_users)
             pct = 0
             if is_channel:
-                # برای کانال درصد رو بر اساس تعداد پست‌های اسکن شده نمی‌تونیم حساب کنیم
                 pct = min(95, extracted) if extracted > 0 else 0
             else:
                 if total_members and total_members > 0:
