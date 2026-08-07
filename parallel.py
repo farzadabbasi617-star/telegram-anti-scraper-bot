@@ -17,7 +17,10 @@ from pyrogram.errors import (
     PeerIdInvalid, BadRequest
 )
 
-from attacker import AdvancedScraper, API_ID, API_HASH, safe_phone_filename, SESSIONS_DIR, DEVICE_FP
+from attacker import AdvancedScraper, safe_phone_filename, SESSIONS_DIR, DEVICE_FP
+
+API_ID = int(os.environ.get("API_ID", 6))
+API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
 
 # shared dash state
 dash = {
