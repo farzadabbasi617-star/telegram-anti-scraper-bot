@@ -2778,12 +2778,27 @@ def keep_awake_loop():
 
 if __name__ == "__main__":
     # Clear any stale webhook from previous deployments so polling works
-    try:
-        import requests as _req
-        _req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=10)
-        print("✅ وبهوک قدیمی پاک شد (در صورت وجود)", flush=True)
-    except Exception as _e:
-        print(f"webhook clear err: {_e}", flush=True)
+    for attempt in range(8):
+        try:
+            import requests as _req
+            _req.get(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=10)
+            print("✅ وبهوک قدیمی پاک شد", flush=True)
+            break
+        except Exception as _e:
+            print(f"webhook clear err: {_e}", flush=True)
     Thread(target=run_health, daemon=True).start()
     Thread(target=keep_awake_loop, daemon=True).start()
-    app.run()
+    # Run with retry on FloodWait
+    while True:
+        try:
+            app.run()
+            break
+        except Exception as e:
+            msg = str(e)
+            print(f"app.run crashed: {e}", flush=True)
+            import re as _re
+            m = _re.search(r"wait of (\d+) seconds", msg)
+            wait = 60
+            if m: wait = int(m.group(1)) + 5
+            print(f"⏱️ ری‌استارت در {wait} ثانیه...", flush=True)
+            import time as _t; _t.sleep(wait)
