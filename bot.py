@@ -85,6 +85,46 @@ def _log_err(e, where=""):
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
 
+def _cleanup_session_locks():
+    """پاک کردن فایل‌های قفل و ژورنال قدیمی Pyrogram/SQLite که از کرش قبلی مانده‌اند"""
+    try:
+        import glob as _g
+        for pat in [
+            os.path.join(SESSIONS_DIR, "*.session-journal"),
+            os.path.join(SESSIONS_DIR, "_newtmp_*.session"),
+            "antiscraper_bot.session-journal",
+            "*.session-journal",
+            "tmp_*.session",
+            "tmp_*.session-journal",
+        ]:
+            for f in _g.glob(pat):
+                try:
+                    os.remove(f)
+                    print(f"🧹 قفل قدیمی پاک شد: {os.path.basename(f)}", flush=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+# پاکسازی در لحظه ایمپورت
+_cleanup_session_locks()
+
+async def robust_connect(client, max_retries=4):
+    """اتصال با تلاش مجدد و پاک کردن قفل در صورت database is locked"""
+    for attempt in range(1, max_retries + 1):
+        try:
+            await client.connect()
+            return
+        except Exception as e:
+            msg = str(e).lower()
+            if ("locked" in msg or "database" in msg) and attempt < max_retries:
+                print(f"⚠️ قفل دیتابیس سشن، تلاش {attempt+1} بعد از پاکسازی...", flush=True)
+                await client.disconnect() if hasattr(client, 'disconnect') else None
+                await asyncio.sleep(2)
+                _cleanup_session_locks()
+                continue
+            raise
+
 async def robust_resolve_chat(client, raw, max_attempts=8):
     """تلاش چند باره برای پیدا کردن هر نوع گروه/سوپرگروه/کانال/مگاگروه
     با چند روش مختلف تا مطمئن شویم پیدا میشه."""
@@ -1567,7 +1607,7 @@ async def _cb_impl(c, q):
         if not atk:
             try:
                 atk = AdvancedScraper("atk_retry", API_ID, API_HASH, phone=phone)
-                await atk.connect()
+                await robust_connect(atk)
                 atk_state["atk"] = atk
             except Exception as e:
                 await q.message.edit_text(f"❌ خطا در اتصال مجدد: {str(e)}", reply_markup=main_menu())
@@ -1783,7 +1823,7 @@ async def _cb_impl(c, q):
             from attacker import safe_phone_filename as spfn
             sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone0)}")
             tmp = AdvancedScraper(sess_path, API_ID, API_HASH, device_fp=fp)
-            await tmp.connect()
+            await robust_connect(tmp)
             async for _ in tmp.app.get_dialogs(limit=2000):
                 pass
             await asyncio.sleep(2)
@@ -1841,7 +1881,7 @@ async def _cb_impl(c, q):
             from attacker import safe_phone_filename as spfn
             sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone0)}")
             tmp = AdvancedScraper(sess_path, API_ID, API_HASH, device_fp=fp)
-            await tmp.connect()
+            await robust_connect(tmp)
             async for _ in tmp.app.get_dialogs(limit=2000):
                 pass
             await asyncio.sleep(2)
@@ -1890,7 +1930,7 @@ async def _cb_impl(c, q):
             from attacker import safe_phone_filename as spfn
             sess_p = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone0)}")
             _tmp = AdvancedScraper(sess_p, API_ID, API_HASH, device_fp=fp)
-            await _tmp.connect()
+            await robust_connect(_tmp)
             _chat = await _tmp.app.get_chat(gid)
             gname = _chat.title or "گروه هدف"
             parallel.dash["chat_title"] = gname
@@ -1993,7 +2033,7 @@ async def _cb_impl(c, q):
                 working_client = AdvancedScraper("atk_session", API_ID, API_HASH, phone=phone, device_fp=saved_fp)
             else:
                 working_client = AdvancedScraper("add_session", API_ID, API_HASH, phone=phone, device_fp=saved_fp)
-            await working_client.connect()
+            await robust_connect(working_client)
             me = await working_client.app.get_me()
         except (AuthKeyDuplicated, AuthKeyUnregistered, ConnectionError) as e:
             # سشن واقعا خراب است
@@ -2009,7 +2049,7 @@ async def _cb_impl(c, q):
                     working_client = AdvancedScraper("atk_session2", API_ID, API_HASH, phone=phone, device_fp=alt_fp)
                 else:
                     working_client = AdvancedScraper("add_session2", API_ID, API_HASH, phone=phone, device_fp=alt_fp)
-                await working_client.connect()
+                await robust_connect(working_client)
                 me = await working_client.app.get_me()
                 # موفق شد، فینگرپرینت جدید را ذخیره کن
                 accs[phone]["device_fp"] = alt_fp
@@ -2257,7 +2297,7 @@ async def _steps_impl(c, m):
             atk_state["chosen_fp"] = chosen_fp
             tmp_name = f"tmp_add_{int(time.time())}_{random.randint(1000,9999)}"
             acc_client = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, device_fp=chosen_fp, force_fresh=True)
-            await acc_client.connect()
+            await robust_connect(acc_client)
             sent = await acc_client.app.send_code(phone)
             atk_state["new_acc_client"] = acc_client
             atk_state["acc_tmp_name"] = tmp_name
@@ -2369,7 +2409,7 @@ async def _steps_impl(c, m):
             atk_state["chosen_fp"] = chosen_fp
             tmp_name = f"tmp_login_{int(time.time())}_{random.randint(1000,9999)}"
             new_client = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, device_fp=chosen_fp, force_fresh=True)
-            await new_client.connect()
+            await robust_connect(new_client)
             sent = await new_client.app.send_code(phone)
             atk_state["new_client"] = new_client
             atk_state["new_tmp_name"] = tmp_name
@@ -2438,7 +2478,7 @@ async def _steps_impl(c, m):
                 atk_state["phone"] = phone
                 atk_state["reuse_account"] = True
                 atk = AdvancedScraper("atk_session", API_ID, API_HASH, phone=phone, device_fp=chosen_fp)
-                await atk.connect()
+                await robust_connect(atk)
                 atk_state["atk"] = atk
                 atk_state["st"] = st
                 atk_state["step"] = "after_login_attack"
@@ -2468,7 +2508,7 @@ async def _steps_impl(c, m):
                 already = limits.get(phone, {}).get("added", 0)
                 atk_state["already_added"] = already
                 add_client = AdvancedScraper("add_session", API_ID, API_HASH, phone=phone, device_fp=chosen_fp)
-                await add_client.connect()
+                await robust_connect(add_client)
                 atk_state["add_client"] = add_client
                 atk_state["st"] = st
                 add_groups = []
@@ -2540,7 +2580,7 @@ async def _steps_impl(c, m):
         try:
             tmp_name = f"tmp_phone_{int(time.time())}_{random.randint(1000,9999)}"
             atk = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, force_fresh=True)
-            await atk.connect()
+            await robust_connect(atk)
             sent = await atk.app.send_code(phone)
             atk_state["atk"] = atk
             atk_state["atk_tmp_name"] = tmp_name
@@ -2670,7 +2710,7 @@ async def _steps_impl(c, m):
         try:
             tmp_name = f"tmp_adder_{int(time.time())}_{random.randint(1000,9999)}"
             add_client = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, force_fresh=True)
-            await add_client.connect()
+            await robust_connect(add_client)
             sent = await add_client.app.send_code(phone)
             atk_state["add_client"] = add_client
             atk_state["adder_tmp_name"] = tmp_name
