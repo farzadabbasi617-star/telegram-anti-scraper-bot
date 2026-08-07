@@ -85,6 +85,78 @@ def _log_err(e, where=""):
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
 
+async def robust_resolve_chat(client, raw, max_attempts=8):
+    """تلاش چند باره برای پیدا کردن هر نوع گروه/سوپرگروه/کانال/مگاگروه
+    با چند روش مختلف تا مطمئن شویم پیدا میشه."""
+    raw = str(raw).strip()
+    uname = raw.replace("@", "").replace("https://t.me/", "").replace("http://t.me/", "").rstrip("/")
+    is_id = raw.lstrip('-').isdigit()
+    target = None
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # اول کش را کاملا گرم کن با لیست کامل دیالوگ ها
+            try:
+                async for _ in client.app.get_dialogs(limit=2000):
+                    pass
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+            # روش ۱: مستقیم با مقدار خام
+            if is_id:
+                tid = int(raw)
+                target = await client.app.get_chat(tid)
+            else:
+                target = await client.app.get_chat(uname)
+            if target:
+                return target
+        except Exception as e:
+            last_err = e
+        try:
+            # روش ۲: resolve_peer سپس get_chat
+            try:
+                if is_id:
+                    peer = await client.app.resolve_peer(int(raw))
+                else:
+                    peer = await client.app.resolve_peer(uname)
+                target = await client.app.get_chat(peer)
+                if target:
+                    return target
+            except Exception:
+                pass
+            # روش ۳: گشتن در لیست دیالوگ ها
+            async for d in client.app.get_dialogs(limit=2000):
+                cht = d.chat
+                if not cht: continue
+                if is_id and cht.id == int(raw):
+                    return cht
+                if not is_id:
+                    c_uname = (cht.username or "").lower()
+                    c_title = (cht.title or "").lower()
+                    if c_uname == uname.lower() or uname.lower() in c_title:
+                        return cht
+            # روش ۴: یک بار join_chat/export_chat_invite با لینک
+            if not is_id and ("t.me/" in raw or raw.startswith("+")):
+                try:
+                    await client.app.join_chat(raw)
+                    await asyncio.sleep(2)
+                    async for d in client.app.get_dialogs(limit=200):
+                        if d.chat and (d.chat.username or "").lower() == uname.lower():
+                            return d.chat
+                except Exception:
+                    pass
+            # روش ۵: get_dialogs دوباره با تاخیر
+            await asyncio.sleep(2)
+            try:
+                async for _ in client.app.get_dialogs(limit=200):
+                    pass
+            except:
+                pass
+        except Exception as e:
+            last_err = e
+        await asyncio.sleep(1.5 * attempt)
+    raise Exception(f"پس از {max_attempts} تلاش پیدا نشد: {last_err}")
+
 # One-time JSON->DB migration (harmless if already done)
 try:
     migrate_json_to_db()
@@ -2557,23 +2629,12 @@ async def _steps_impl(c, m):
         raw = m.text.strip()
         atk = atk_state["atk"]
         st = atk_state["st"]
-        await st.edit_text("🔍 در حال پیدا کردن گروه...")
-        # اطمینان از گرم بودن کش
+        await st.edit_text("🔍 در حال پیدا کردن گروه (چند بار تلاش میکنم، صبر کن)...")
         try:
-            async for _ in atk.app.get_dialogs(limit=2000):
-                pass
-        except:
-            pass
-        try:
-            if raw.lstrip('-').isdigit():
-                target_id = int(raw)
-                target = await atk.app.get_chat(target_id)
-            else:
-                uname = raw.replace("@", "").replace("https://t.me/", "").strip()
-                target = await atk.app.get_chat(uname)
-                target_id = target.id
+            target = await robust_resolve_chat(atk, raw)
+            target_id = target.id
         except Exception as e:
-            await st.edit_text(f"❌ گروه پیدا نشد:\n{str(e)}\nلطفا آیدی درست را وارد کنید، یا یک بار دستی آن گروه را در تلگرام باز کنید.")
+            await st.edit_text(f"❌ گروه پیدا نشد:\n{str(e)[:200]}\nلطفا یک بار دستی آن گروه/کانال را در اکانت تلگرام خود باز و چند پیامش را اسکرول کنید، بعد دوباره امتحان کنید.")
             return
 
         prog = await st.edit_text(f"🎯 هدف: {target.title}\n🚀 در حال شروع حمله...")
@@ -2695,22 +2756,11 @@ async def _steps_impl(c, m):
         raw = m.text.strip()
         add_client = atk_state["add_client"]
         st = atk_state["st"]
-        # برای ادد هم مانند حمله، اول کش رو گرم کنیم
         try:
-            async for _ in add_client.app.get_dialogs(limit=2000):
-                pass
-        except:
-            pass
-        try:
-            if raw.lstrip('-').isdigit():
-                target_gid = int(raw)
-            else:
-                uname = raw.replace("@", "").replace("https://t.me/", "").strip()
-                chat_info = await add_client.app.get_chat(uname)
-                target_gid = chat_info.id
-            target = await add_client.app.get_chat(target_gid)
+            target = await robust_resolve_chat(add_client, raw)
+            target_gid = target.id
         except Exception as e:
-            await st.edit_text(f"❌ گروه پیدا نشد: {str(e)}\nلطفا یک بار دستی با اکانت خود آن گروه را در تلگرام باز کنید و دوباره امتحان کنید.")
+            await st.edit_text(f"❌ گروه/کانال پیدا نشد: {str(e)[:200]}\nلطفا یک بار دستی با اکانت خود آن گروه را در تلگرام باز کنید و دوباره امتحان کنید.")
             return
         # چک عضویت
         is_member = False

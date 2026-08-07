@@ -31,23 +31,27 @@ class AdvancedScraper:
             fp = device_fp
         else:
             fp = random.choice(DEVICE_FP)
-        # force_fresh=True برای اولین لاگین (سشن کاملا موقت در حافظه)
-        # در غیر این صورت از مسیر دائمی phone استفاده میکند
-        use_memory = in_memory or force_fresh
-        if phone and not use_memory:
+        # force_fresh=True: استفاده از یک فایل سشن کاملا مجزا (نه در حافظه) تا بعد از لاگین
+        # با rename کردن بتوانیم آن را به دائمی تبدیل کنیم. این روش ۱۰۰٪ پایدار است و از export_session_string
+        # که ممکن است auth key را ابطال کند استفاده نمی کند.
+        self._tmp_finalize = False
+        self._perm_session_path = None
+        if phone and force_fresh:
+            import secrets
+            tmp_fname = f"_newtmp_{safe_phone_filename(phone)}_{int(time.time())}_{secrets.token_hex(3)}"
+            session_path = os.path.join(SESSIONS_DIR, tmp_fname)
+            self._perm_session_path = os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}")
+            # هر بار که force_fresh میایم اگر سشن دائمی قدیمی وجود دارد برای لاگین جدید از نو شروع میکنیم
+            # ولی قبلی رو پاک نمیکنیم مگر بعد از لاگین موفق
+        elif phone and not in_memory:
             fname = safe_phone_filename(phone)
             session_path = os.path.join(SESSIONS_DIR, f"acc_{fname}")
         else:
             session_path = session_name
         self.phone = phone
         self.fp_used = fp
-        self._perm_session_path = None
-        if phone and force_fresh:
-            # مسیر فایل دائمی را نگه میداریم تا بعد از لاگین بتوانیم سشن را در آن ذخیره کنیم
-            fname = safe_phone_filename(phone)
-            self._perm_session_path = os.path.join(SESSIONS_DIR, f"acc_{fname}")
         self.app = Client(
-            session_path if not use_memory else ":memory:",
+            session_path,
             api_id=api_id,
             api_hash=api_hash,
             phone_number=phone,
@@ -55,7 +59,7 @@ class AdvancedScraper:
             system_version=fp["system_version"],
             app_version=fp["app_version"],
             lang_code=fp["lang_code"],
-            in_memory=use_memory,
+            in_memory=False,
             sleep_threshold=30,
             workdir=".",
             no_updates=True,
@@ -74,39 +78,27 @@ class AdvancedScraper:
         return self.fp_used
 
     async def persist_to_permanent(self):
-        """سشن in-memory را به فایل دائمی acc_XXXXX منتقل میکند (بعد از لاگین موفق)"""
+        """سشن از فایل موقت را با rename به نام دائمی تبدیل میکند (۱۰۰٪ پایدار، auth key عوض نمیشود)"""
         if not self._perm_session_path:
             return
         try:
-            session_str = await self.app.export_session_string()
-            # یک کلاینت جدید با فایل دائمی بسازیم و با سشن استرینگ وصل شویم
-            perm_client = Client(
-                self._perm_session_path,
-                api_id=self.app.api_id,
-                api_hash=self.app.api_hash,
-                device_model=self.fp_used["device_model"],
-                system_version=self.fp_used["system_version"],
-                app_version=self.fp_used["app_version"],
-                lang_code=self.fp_used["lang_code"],
-                session_string=session_str,
-                no_updates=True,
-                sleep_threshold=30,
-                workdir="."
-            )
-            await perm_client.connect()
-            await perm_client.disconnect()
-            print(f"💾 سشن در {self._perm_session_path} ذخیره شد", flush=True)
+            await self.app.storage.close()
+            # Find actual temp session file paths (Pyrogram workdir is "." and app.name has full path)
+            tmp_base = self.app.name
+            perm_base = self._perm_session_path
+            # Rename all related session files
+            import glob as _glob
+            for tmpf in _glob.glob(tmp_base + ".session*"):
+                suf = tmpf[len(tmp_base):]
+                permf = perm_base + suf
+                if os.path.exists(permf):
+                    try: os.remove(permf)
+                    except: pass
+                os.replace(tmpf, permf)
+            print(f"💾 سشن به {perm_base} منتقل شد", flush=True)
         except Exception as e:
             print(f"⚠️ خطا در ذخیره دائمی سشن: {e}", flush=True)
-            # روش جایگزین: کپی مستقیم اگر فایل موقت ساخته شده بود (force_fresh but not in_memory)
-            try:
-                import shutil
-                tmp_session = self.app.name + ".session"
-                if os.path.exists(tmp_session):
-                    shutil.copy2(tmp_session, self._perm_session_path + ".session")
-                    print(f"💾 سشن با کپی مستقیم ذخیره شد", flush=True)
-            except Exception as e2:
-                print(f"⚠️ کپی مستقیم هم شکست: {e2}", flush=True)
+            import traceback; traceback.print_exc()
 
     async def connect(self):
         try:
