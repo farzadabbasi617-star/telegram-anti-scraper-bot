@@ -1026,6 +1026,235 @@ async def _show_ig_results(q):
 
 # ═══════════════ End of UI Functions ═══════════════
 
+# ═══════════════ ➕ Direct Add from Database ═══════════════
+async def _start_direct_add(q, target_gid):
+    """Start adding members directly from database with live progress"""
+    add_client = atk_state.get("add_client")
+    phone = atk_state.get("phone", "")
+    already_added = atk_state.get("already_added", 0)
+    remaining = MAX_ADD_PER_ACCOUNT - already_added
+    
+    if remaining <= 0:
+        await q.answer("ظرفیت این اکانت پر شده!", show_alert=True)
+        return
+    
+    # Get users from DB based on source filter
+    source = atk_state.get("add_source", "all")
+    source_id = atk_state.get("add_source_id")
+    
+    if source == "category":
+        user_records = get_users_by_source(category=source_id, limit=remaining)
+        total_avail = count_users_by_source(category=source_id)
+        src_label = f"دسته {source_id}"
+    elif source == "chat":
+        user_records = get_users_by_source(source_chat_id=source_id, limit=remaining)
+        total_avail = count_users_by_source(source_chat_id=source_id)
+        ch = get_scanned_chat(source_id)
+        src_label = ch["chat_name"] if ch else f"چت {source_id}"
+    else:
+        user_records = get_users_by_source(limit=remaining)
+        total_avail = _db_count_users()
+        src_label = "همه کاربران"
+    
+    # Filter out already-added users
+    uid_list = []
+    for u in user_records:
+        uid = int(u.get("user_id", 0) or 0)
+        if uid and not is_user_already_added(target_gid, uid):
+            uid_list.append(uid)
+    
+    if not uid_list:
+        await q.answer("همه کاربران قبلاً اضافه شدن!", show_alert=True)
+        return
+    
+    total = min(len(uid_list), remaining)
+    
+    # Get target name
+    try:
+        tgt = await add_client.app.get_chat(target_gid)
+        target_name = tgt.title
+    except:
+        target_name = atk_state.get("target_add_name", f"گروه {target_gid}")
+    
+    prog = await q.message.edit_text(
+        f"➕ <b>ادد مستقیم از دیتابیس</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📂 منبع: {src_label}\n"
+        f"🎯 مقصد: {target_name}\n"
+        f"👤 اکانت: <code>{phone}</code>\n"
+        f"📊 ظرفیت: {already_added}/{MAX_ADD_PER_ACCOUNT}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🎯 آماده ادد: <b>{total}</b> نفر\n"
+        f"⏱️ زمان تخمینی: ~{total * 12 // 60} دقیقه\n\n"
+        f"آماده‌ای؟",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"▶️ شروع ادد ({total} نفر)", callback_data=f"dir_add_go_{target_gid}")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data=f"add_target_{target_gid}")],
+        ]),
+        disable_web_page_preview=True)
+
+
+async def _execute_direct_add(q, target_gid):
+    """Execute the add operation with live progress tracking"""
+    add_client = atk_state.get("add_client")
+    phone = atk_state.get("phone", "")
+    already_added = atk_state.get("already_added", 0)
+    remaining = MAX_ADD_PER_ACCOUNT - already_added
+    
+    source = atk_state.get("add_source", "all")
+    source_id = atk_state.get("add_source_id")
+    
+    if source == "category":
+        user_records = get_users_by_source(category=source_id, limit=remaining)
+    elif source == "chat":
+        user_records = get_users_by_source(source_chat_id=source_id, limit=remaining)
+    else:
+        user_records = get_users_by_source(limit=remaining)
+    
+    uid_list = []
+    for u in user_records:
+        uid = int(u.get("user_id", 0) or 0)
+        if uid and not is_user_already_added(target_gid, uid):
+            uid_list.append(uid)
+    
+    uid_list = uid_list[:remaining]
+    total = len(uid_list)
+    
+    if total == 0:
+        await q.answer("کاربری برای ادد نیست!", show_alert=True)
+        return
+    
+    # Get target name
+    try:
+        tgt = await add_client.app.get_chat(target_gid)
+        target_name = tgt.title
+    except:
+        target_name = atk_state.get("target_add_name", f"Chat {target_gid}")
+    
+    prog_msg = q.message
+    added = 0; failed = 0; skipped = 0
+    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "banned": 0, "other": 0}
+    stop_req = [False]
+    
+    # Save adder state for stop/resume
+    atk_state["add_in_progress"] = True
+    atk_state["add_progress"] = {"added": 0, "failed": 0, "total": total, "phone": phone}
+    
+    # Build progress update function
+    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    
+    async def update_progress():
+        pct = int((added + failed + skipped) * 100 / total) if total > 0 else 0
+        filled = pct // 5
+        empty = 20 - filled
+        bar = "🟩" * filled + "⬜" * empty
+        elapsed = int(time.time() - start_t)
+        mins = elapsed // 60; secs = elapsed % 60
+        speed = int(added / (elapsed / 60)) if elapsed > 30 else 0
+        eta = int((total - added - failed - skipped) * 12 / 60) if speed > 0 else 0
+        
+        text = f"➕ <b>ادد مستقیم — {target_name}</b>\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"{bar} {pct}%\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"👤 اکانت: <code>{phone}</code>\n"
+        text += f"✅ ادد شده: <b>{added}</b>\n"
+        text += f"❌ ناموفق: <b>{failed}</b>\n"
+        text += f"⏭️ رد شده: <b>{skipped}</b>\n"
+        text += f"📊 پیشرفت: {added+failed+skipped}/{total}\n"
+        text += f"⏱️ زمان: {mins:02d}:{secs:02d} · ⚡ ~{speed} در دقیقه\n"
+        if eta > 0:
+            text += f"🕐 اتمام: ~{eta} دقیقه\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"🛑 دکمه توقف برای لغو عملیات"
+        
+        try:
+            await prog_msg.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")],
+                    [InlineKeyboardButton("🏠 خانه", callback_data="home")]
+                ]),
+                disable_web_page_preview=True)
+        except: pass
+    
+    start_t = time.time()
+    await update_progress()
+    
+    for i, uid in enumerate(uid_list):
+        if stop_req[0]:
+            skipped = total - added - failed
+            break
+        
+        try:
+            await add_client.app.add_chat_members(target_gid, uid)
+            added += 1
+            mark_user_as_added(target_gid, target_name, uid)
+            
+            # Update account limits
+            limits = load_adder_limits()
+            limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
+            save_adder_limits(limits)
+            
+            # Update progress in state
+            atk_state["add_progress"] = {"added": added, "failed": failed, "total": total, "phone": phone}
+            
+            await asyncio.sleep(random.randint(8, 15))
+        except FloodWait as fw:
+            failed += 1
+            errors_detail["flood"] += 1
+            await asyncio.sleep(fw.value + 5)
+        except Exception as e:
+            failed += 1
+            err_str = str(e).lower()
+            if "privacy" in err_str or "private" in err_str:
+                errors_detail["privacy"] += 1
+            elif "already" in err_str or "participant" in err_str:
+                errors_detail["already"] += 1
+                mark_user_as_added(target_gid, target_name, uid)
+            elif "banned" in err_str or "kick" in err_str:
+                errors_detail["banned"] += 1
+            else:
+                errors_detail["other"] += 1
+            await asyncio.sleep(random.randint(3, 8))
+        
+        if (added + failed) % 3 == 0:
+            await update_progress()
+    
+    # Final update
+    elapsed = int(time.time() - start_t)
+    mins = elapsed // 60; secs = elapsed % 60
+    
+    text = f"✅ <b>ادد تمام شد!</b> — {target_name}\n"
+    text += f"━━━━━━━━━━━━━━━━━━\n"
+    text += f"✅ ادد شده: <b>{added}</b>\n"
+    text += f"❌ ناموفق: <b>{failed}</b>\n"
+    text += f"⏭️ رد شده: <b>{skipped}</b>\n"
+    text += f"⏱️ زمان: {mins:02d}:{secs:02d}\n"
+    text += f"📊 مجموع با این اکانت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}\n"
+    if failed > 0:
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"🔍 <b>دلایل خطا:</b>\n"
+        if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
+        if errors_detail["flood"]: text += f"⏱️ Flood: {errors_detail['flood']}\n"
+        if errors_detail["already"]: text += f"👥 Already in chat: {errors_detail['already']}\n"
+        if errors_detail["banned"]: text += f"🚫 Banned: {errors_detail['banned']}\n"
+        if errors_detail["other"]: text += f"❓ Other: {errors_detail['other']}\n"
+    
+    atk_state["add_in_progress"] = False
+    atk_state["add_progress"] = {"added": added, "failed": failed, "total": total, "phone": phone}
+    
+    try:
+        await prog_msg.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 آمار اکانت‌ها", callback_data="adder_stats")],
+                [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
+            ]),
+            disable_web_page_preview=True)
+    except: pass
+
+
 # ═══════════════ 📥 Session file upload helper (bypass 2FA) ═══════════════
 async def _save_uploaded_session(st, phone, session_bytes, orig_fname):
     """Save an uploaded .session file and register the account"""
@@ -1348,6 +1577,11 @@ async def _cb_impl(c, q):
     if d.startswith("ai_analyze_"):
         chat_id = int(d.split("_")[2])
         await _handle_ai_analyze(q, chat_id)
+        return
+
+    if d.startswith("dir_add_go_"):
+        gid = int(d.split("_")[3])
+        asyncio.create_task(_execute_direct_add(q, gid))
         return
 
     if d.startswith("cat_apply_"):
@@ -2640,27 +2874,30 @@ async def _cb_impl(c, q):
             await q.answer(f"خطا: {str(e)}", show_alert=True)
             return
         atk_state["target_add_gid"] = gid
-        atk_state["step"] = "adder_file"
+        atk_state["target_add_name"] = target.title
         already = atk_state.get("already_added", 0)
         remaining = MAX_ADD_PER_ACCOUNT - already
-        # Detect chat type
         is_channel = str(target.type).lower() == "chattype.channel" and not getattr(target, 'megagroup', False)
         chat_type_label = "📡 کانال" if is_channel else "👥 گروه"
-        # For channels, also generate invite link
-        invite_text = ""
-        if is_channel:
-            try:
-                invite = await add_client.app.create_chat_invite_link(gid, member_limit=1)
-                invite_text = f"\n\n🔗 لینک دعوت:\n<code>{invite.invite_link}</code>\n(می‌تونی لینک رو هم برای کاربران بفرستی)"
-                atk_state["channel_invite_link"] = invite.invite_link
-            except:
-                invite_text = "\n\n⚠️ نتونستم لینک دعوت بسازم (نیاز به ادمین بودن داری)"
+        
+        # Count available users in DB
+        total_in_db = _db_count_users()
+        
         await q.answer()
         await q.message.edit_text(
             f"✅ مقصد: {chat_type_label} <b>{target.title}</b>\n"
-            f"⚠️ این اکانت حداکثر می‌تواند {remaining} نفر دیگر اضافه کند."
-            f"{invite_text}\n\n"
-            f"حالا **فایل CSV** را همینجا آپلود کنید.",
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📦 کاربران در دیتابیس: <b>{total_in_db:,}</b>\n"
+            f"⚠️ ظرفیت باقیمانده: <b>{remaining}</b> نفر\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"<b>منبع کاربران:</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"🌐 همه کاربران ({total_in_db:,})", callback_data=f"dir_add_all_{gid}")],
+                [InlineKeyboardButton("📂 انتخاب از دسته‌بندی", callback_data=f"dir_add_cat_{gid}")],
+                [InlineKeyboardButton("👥 انتخاب از چت خاص", callback_data=f"dir_add_chat_{gid}")],
+                [InlineKeyboardButton("📄 آپلود فایل CSV", callback_data=f"csv_add_{gid}")],
+                _sub_back_btn(target="home")[0],
+            ]),
             disable_web_page_preview=True)
         return
 
@@ -2668,6 +2905,81 @@ async def _cb_impl(c, q):
         await q.answer()
         atk_state["step"] = "adder_target_manual"
         await q.message.edit_text("✍️ آیدی عددی گروه مقصد را بفرستید (با -100 شروع می‌شود):")
+        return
+
+    # ==================== 🆕 Direct Add from Database ====================
+    if d.startswith("dir_add_all_"):
+        gid = int(d.split("_")[3])
+        atk_state["add_source"] = "all"
+        atk_state["add_source_id"] = None
+        await _start_direct_add(q, gid)
+        return
+
+    if d.startswith("dir_add_cat_"):
+        gid = int(d.split("_")[3])
+        cats = get_all_categories()
+        text = "📂 <b>انتخاب دسته‌بندی</b>\n\n"
+        buttons = []
+        for c in cats[:12]:
+            cnt = count_users_by_source(category=c)
+            if cnt > 0:
+                text += f"📁 {c}: {cnt:,} کاربر\n"
+                buttons.append([InlineKeyboardButton(f"📁 {c} ({cnt:,})", callback_data=f"dir_add_do_{gid}_cat_{c}")])
+        if not buttons:
+            await q.answer("هیچ دسته‌بندی با کاربر پیدا نشد!", show_alert=True)
+            q.data = f"add_target_{gid}"
+            return
+        buttons.append(_sub_back_btn(target=f"add_target_{gid}"))
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+        return
+
+    if d.startswith("dir_add_chat_"):
+        gid = int(d.split("_")[3])
+        chats = get_scanned_chats()
+        text = "👥 <b>انتخاب چت مبدا</b>\n\n"
+        buttons = []
+        for ch in chats[:15]:
+            cnt = count_users_by_source(source_chat_id=ch["chat_id"])
+            icon = _chat_type_icon(ch.get("chat_type",""))
+            if cnt > 0:
+                text += f"{icon} {ch['chat_name'][:30]}: {cnt:,} کاربر\n"
+                buttons.append([InlineKeyboardButton(
+                    f"{icon} {ch['chat_name'][:25]} ({cnt:,})",
+                    callback_data=f"dir_add_do_{gid}_src_{ch['chat_id']}"
+                )])
+        if not buttons:
+            await q.answer("هیچ چتی با کاربر پیدا نشد!", show_alert=True)
+            q.data = f"add_target_{gid}"
+            return
+        buttons.append(_sub_back_btn(target=f"add_target_{gid}"))
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+        return
+
+    if d.startswith("dir_add_do_"):
+        parts = d.split("_")
+        gid = int(parts[3])
+        src_type = parts[4]
+        if src_type == "cat":
+            cat_name = "_".join(parts[5:])
+            atk_state["add_source"] = "category"
+            atk_state["add_source_id"] = cat_name
+        elif src_type == "src":
+            src_id = int(parts[5])
+            atk_state["add_source"] = "chat"
+            atk_state["add_source_id"] = src_id
+        await _start_direct_add(q, gid)
+        return
+
+    if d == "csv_add":
+        gid = int(d.split("_")[2])
+        atk_state["step"] = "adder_file"
+        already = atk_state.get("already_added", 0)
+        remaining = MAX_ADD_PER_ACCOUNT - already
+        await q.message.edit_text(
+            f"📄 آپلود فایل CSV\n\n"
+            f"⚠️ ظرفیت: {remaining} نفر\n"
+            f"فایل CSV رو بفرست:",
+            reply_markup=InlineKeyboardMarkup([_sub_back_btn(target=f"add_target_{gid}")]))
         return
 
     # ==================== مدیریت اکانت های ذخیره شده ====================
