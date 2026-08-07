@@ -4082,7 +4082,7 @@ async def _steps_impl(c, m):
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "add_new_acc_code"
-            await st.edit_text("✅ کد تایید ارسال شد، کد ۵ رقمی را بفرست:")
+            await st.edit_text("✅ کد تایید ارسال شد!\n\n📱 <b>کد ۵ رقمی رو بفرست:</b>\n⏱️ ۵ دقیقه فرصت داری — کد توی SMS میاد", disable_web_page_preview=True)
         except FloodWait as fw:
             wait_h = fw.value // 3600
             wait_m = (fw.value % 3600) // 60
@@ -4119,7 +4119,12 @@ async def _steps_impl(c, m):
             try:
                 sent = await acc_client.app.send_code(phone)
                 atk_state["hash"] = sent.phone_code_hash
-                await st.edit_text("⏰ کد منقضی شده بود — کد جدید ارسال شد!\n📱 کد ۵ رقمی جدید رو بفرست:")
+                await st.edit_text(
+                    "⏰ کد قبلی منقضی شده بود — کد جدید ارسال شد!\n\n"
+                    "📱 <b>کد ۵ رقمی جدید رو وارد کن:</b>\n\n"
+                    "⏱️ <b>۵ دقیقه فرصت داری!</b> سریع باش\n"
+                    "💡 نکته: کد SMS ممکنه ۳۰-۶۰ ثانیه طول بکشه",
+                    disable_web_page_preview=True)
             except Exception as e2:
                 await st.edit_text(f"❌ خطا در ارسال مجدد کد: {str(e2)[:200]}\nلطفا از منو دوباره شروع کنید.", reply_markup=main_menu())
                 atk_state.clear()
@@ -4217,7 +4222,7 @@ async def _steps_impl(c, m):
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "code_new"
-            await st.edit_text("✅ کد تایید ارسال شد، کد ۵ رقمی را بفرست:\n⚠️ بعد از این بار دیگر نیازی به کد نخواهید داشت.")
+            await st.edit_text("✅ کد تایید ارسال شد!\n\n📱 <b>کد ۵ رقمی رو بفرست:</b>\n⏱️ ۵ دقیقه فرصت داری\n⚠️ بعد از این بار دیگه کد نمیخوای!", disable_web_page_preview=True)
         except FloodWait as fw:
             wait_h = fw.value // 3600
             wait_m = (fw.value % 3600) // 60
@@ -4383,7 +4388,7 @@ async def _steps_impl(c, m):
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "code"
-            await st.edit_text("✅ کد ارسال شد، کد ۵ رقمی را بفرست:")
+            await st.edit_text("✅ کد ارسال شد!\n\n📱 <b>کد ۵ رقمی رو بفرست:</b>\n⏱️ ۵ دقیقه فرصت داری", disable_web_page_preview=True)
         except Exception as e:
             await st.edit_text(f"❌ خطا: {str(e)[:300]}")
             atk_state.clear()
@@ -4524,7 +4529,7 @@ async def _steps_impl(c, m):
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "adder_code"
-            await st.edit_text("✅ کد تایید به اکانت ارسال شد، کد ۵ رقمی را بفرست:")
+            await st.edit_text("✅ کد تایید به اکانت ارسال شد!\n\n📱 <b>کد ۵ رقمی رو بفرست:</b>\n⏱️ ۵ دقیقه فرصت داری", disable_web_page_preview=True)
         except Exception as e:
             await st.edit_text(f"❌ خطا: {str(e)[:300]}")
             atk_state.clear()
