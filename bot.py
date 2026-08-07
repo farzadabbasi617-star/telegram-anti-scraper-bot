@@ -3456,7 +3456,7 @@ async def _cb_impl(c, q):
     if d == "add_new_account":
         atk_state.clear()
         atk_state["step"] = "add_new_acc_phone"
-        await q.message.edit_text("➕ افزودن اکانت جدید دائمی\n\n⚠️ نکته: درخواست کد زیاد پشت سر هم باعث فلود ۱۸ ساعته تلگرام میشود!\nاگر اکانت از قبل در لیست هست از آن استفاده کنید.\n\nشماره تلفن را با فرمت +98 بفرستید:",
+        await q.message.edit_text("➕ افزودن اکانت جدید دائمی\n\n📱 شماره تلفن با <b>فرمت بین‌المللی</b> بفرستید:\n\n✅ <b>فرمت‌های قابل قبول:</b>\n• <code>+989123456789</code>\n• <code>09123456789</code>\n• <code>9123456789</code>\n\n⚠️ نکته: درخواست کد زیاد پشت سر هم باعث فلود ۱۸ ساعته تلگرام میشود!\nاگر اکانت از قبل در لیست هست از آن استفاده کنید.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="manage_accounts")]]))
         return
 
@@ -3959,6 +3959,42 @@ async def _steps_impl(c, m):
         await m.reply_text("⚠️ ماژول شکارچی کیف‌پول/اکانت با «پروژه‌یاب اوپن‌سورس» جایگزین شد. از منوی اصلی استفاده کن.", reply_markup=main_menu())
         return
 
+
+# ═══════════════ 📱 Phone Number Validator ═══════════════
+def _normalize_phone(raw):
+    """Normalize phone number to international format (+98...)"""
+    phone = raw.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    # Already has +
+    if phone.startswith("+"):
+        return phone
+    # Starts with 00
+    if phone.startswith("00"):
+        return "+" + phone[2:]
+    # Iranian number starting with 0 (e.g. 0912...)
+    if phone.startswith("0") and len(phone) >= 10:
+        return "+98" + phone[1:]
+    # Iranian number without 0 (e.g. 9123456789)
+    if phone.isdigit() and len(phone) == 10 and phone[0] == "9":
+        return "+98" + phone
+    # Just digits but long enough
+    if phone.isdigit() and len(phone) >= 11:
+        return "+" + phone
+    # Can't normalize
+    return phone
+
+
+def _validate_phone(phone):
+    """Check if phone looks valid. Returns (is_valid, error_message)."""
+    if not phone:
+        return False, "شماره خالی است"
+    if not phone.startswith("+"):
+        return False, f"شماره باید با + شروع شود\nمثال: <code>+989123456789</code>\n\nشما وارد کردید: <code>{phone[:20]}</code>"
+    digits = ''.join(c for c in phone if c.isdigit())
+    if len(digits) < 7 or len(digits) > 15:
+        return False, f"طول شماره نامعتبر است ({len(digits)} رقم)\nمثال: <code>+989123456789</code>\n\nشما وارد کردید: <code>{phone[:20]}</code>"
+    return True, ""
+
+
     if not step: return
 
     # ==================== آپلود مستقیم فایل سشن (دور زدن 2FA) ====================
@@ -4013,14 +4049,26 @@ async def _steps_impl(c, m):
 
     # ==================== افزودن اکانت جدید از منوی مدیریت ====================
     if step == "add_new_acc_phone":
-        phone = m.text.strip()
+        phone = _normalize_phone(m.text)
         # چک کن اکانت از قبل وجود نداشته باشه
         if phone in list_saved_accounts():
             await m.reply_text(f"⚠️ اکانت {phone} از قبل در لیست ذخیره شده است! نیازی به افزودن مجدد نیست، از لیست اکانت ها انتخاب کنید.", reply_markup=main_menu())
             atk_state.clear()
             return
+        # Validate phone
+        valid, err = _validate_phone(phone)
+        if not valid:
+            await m.reply_text(
+                f"❌ شماره نامعتبر!\n\n{err}\n\n"
+                "فرمت‌های قابل قبول:\n"
+                "• <code>+989123456789</code> (بین‌المللی)\n"
+                "• <code>09123456789</code> (با صفر)\n"
+                "• <code>9123456789</code> (بدون صفر)", 
+                reply_markup=main_menu())
+            atk_state.clear()
+            return
         atk_state["phone"] = phone
-        st = await m.reply_text("📡 در حال ارسال کد تایید...")
+        st = await m.reply_text(f"📡 شماره: <code>{phone}</code>\nدر حال ارسال کد...")
         try:
             chosen_fp = random.choice(DEVICE_FP)
             atk_state["chosen_fp"] = chosen_fp
@@ -4133,14 +4181,19 @@ async def _steps_impl(c, m):
 
     # ==================== لاگین اکانت جدید هنگام شروع عملیات ====================
     if step == "phone_new":
-        phone = m.text.strip()
+        phone = _normalize_phone(m.text)
         if phone in list_saved_accounts():
             await m.reply_text(f"⚠️ اکانت {phone} از قبل ذخیره شده است! لطفا از منوی انتخاب اکانت استفاده کنید.", reply_markup=main_menu())
             atk_state.clear()
             return
+        valid, err = _validate_phone(phone)
+        if not valid:
+            await m.reply_text(f"❌ شماره نامعتبر!\n\n{err}", reply_markup=main_menu())
+            atk_state.clear()
+            return
         atk_state["phone"] = phone
         after_mode = atk_state.get("after_auth_mode", "attack")
-        st = await m.reply_text("📡 در حال ارسال کد تایید...")
+        st = await m.reply_text(f"📡 شماره: <code>{phone}</code>\nدر حال ارسال کد...")
         try:
             chosen_fp = random.choice(DEVICE_FP)
             atk_state["chosen_fp"] = chosen_fp
@@ -4297,7 +4350,7 @@ async def _steps_impl(c, m):
     # ==================== مراحل قدیمی - دیگر مستقیم استفاده نمی‌شوند ====================
 
     if step == "phone":
-        phone = m.text.strip()
+        phone = _normalize_phone(m.text)
         atk_state["phone"] = phone
         st = await m.reply_text("📡 در حال اتصال...")
         try:
@@ -4420,7 +4473,7 @@ async def _steps_impl(c, m):
 
     # ==================== مراحل اضافه کردن اعضا ====================
     elif step == "adder_phone":
-        phone = m.text.strip()
+        phone = _normalize_phone(m.text)
         # چک محدودیت قبل از اتصال
         limits = load_adder_limits()
         already = limits.get(phone, {}).get("added", 0)
