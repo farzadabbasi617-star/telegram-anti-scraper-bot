@@ -1483,6 +1483,76 @@ async def _execute_parallel_direct_add(q):
 
 
 # ═══════════════ 📥 Session file upload helper (bypass 2FA) ═══════════════\n\n# ═══════════════ 📥 Session file upload helper (bypass 2FA) ═══════════════
+async def _start_bulk_scan(q, chat_type):
+    """Start scanning all groups or all channels"""
+    atk = atk_state.get("atk")
+    if not atk:
+        await q.answer("اول اکانت انتخاب کن!", show_alert=True)
+        return
+    
+    label = "گروه‌ها" if chat_type == "groups" else "کانال‌ها"
+    prog = await q.message.edit_text(f"🔥 شروع اسکن دسته‌جمعی همه {label}...")
+    
+    async def run():
+        stop_btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")]])
+        async def on_progress(text):
+            try: await prog.edit_text(text, reply_markup=stop_btn, disable_web_page_preview=True)
+            except: pass
+        async def inc_save(ul):
+            try: save_scraped(ul, f"Bulk {label}", 0)
+            except: pass
+        try:
+            users = await atk.scan_all_chats(
+                chat_type=chat_type,
+                progress_cb=on_progress,
+                incremental_save_cb=inc_save
+            )
+            save_scraped(users, f"Bulk {label}", 0)
+            await prog.edit_text(
+                f"✅ اسکن همه {label} تمام شد!\n👥 {len(users):,} کاربر جدید",
+                reply_markup=main_menu())
+        except Exception as e:
+            await prog.edit_text(f"❌ خطا: {str(e)[:300]}", reply_markup=main_menu())
+        try: await atk.disconnect()
+        except: pass
+    
+    asyncio.create_task(run())
+
+
+async def _handle_dedup(q):
+    """Remove duplicate users from database"""
+    try:
+        cur = db.get_conn().cursor()
+        # Find and delete duplicates, keeping the one with most data
+        cur.execute("""
+            DELETE FROM scraped_users WHERE user_id IN (
+                SELECT user_id FROM scraped_users 
+                GROUP BY user_id HAVING COUNT(*) > 1
+            ) AND ctid NOT IN (
+                SELECT MIN(ctid) FROM scraped_users 
+                GROUP BY user_id HAVING COUNT(*) > 1
+            )
+        """)
+        deleted = cur.rowcount
+        cur.close()
+        # Also dedup scanned_chats
+        await q.answer(f"🧹 {deleted} کاربر تکراری حذف شد!", show_alert=True)
+    except Exception as e:
+        # PostgreSQL-compatible approach
+        try:
+            cur = db.get_conn().cursor()
+            cur.execute("""
+                DELETE FROM scraped_users a USING scraped_users b
+                WHERE a.user_id = b.user_id AND a.ctid > b.ctid
+            """)
+            deleted = cur.rowcount
+            cur.close()
+            await q.answer(f"🧹 {deleted} کاربر تکراری حذف شد!", show_alert=True)
+        except Exception as e2:
+            await q.answer(f"خطا: {str(e2)[:100]}", show_alert=True)
+    await q.message.edit_text(build_welcome_text(), reply_markup=main_menu())
+
+
 async def _save_uploaded_session(st, phone, session_bytes, orig_fname):
     """Save an uploaded .session file and register the account"""
     import random as _r
@@ -1739,6 +1809,19 @@ async def _cb_impl(c, q):
     # ==================== خانه و منوهای دسته‌بندی ====================
     if d == "noop":
         await q.answer(cache_time=3)
+        return
+
+    # ==================== 🆕 Bulk scan + Dedup ====================
+    if d == "bulk_scan_groups":
+        await _start_bulk_scan(q, "groups")
+        return
+
+    if d == "bulk_scan_channels":
+        await _start_bulk_scan(q, "channels")
+        return
+
+    if d == "dedup_users":
+        await _handle_dedup(q)
         return
 
     # ==================== 🆕 مدیریت چت‌ها ====================
@@ -2028,7 +2111,8 @@ async def _cb_impl(c, q):
             [InlineKeyboardButton("📱 مدیریت اکانت‌ها", callback_data="manage_accounts"),
              InlineKeyboardButton("⏱️ اسکن خودکار", callback_data="bg_menu")],
             [InlineKeyboardButton("🔄 ریست آمار ادد", callback_data="reset_adder_all"),
-             InlineKeyboardButton("🗑️ پاک کردن لیست ممبر", callback_data="clear_users")],
+             InlineKeyboardButton("🧹 حذف تکراری‌ها", callback_data="dedup_users")],
+            [InlineKeyboardButton("🗑️ پاک کردن لیست ممبر", callback_data="clear_users"),],
             [InlineKeyboardButton("⬇️ دانلودر رسانه", callback_data="downloader_menu"),
              InlineKeyboardButton("📥 CSV ممبرها", callback_data="export_users_csv")],
             [InlineKeyboardButton("📥 CSV تاریخچه ادد", callback_data="export_added_csv"),
@@ -3712,6 +3796,9 @@ async def _cb_impl(c, q):
                     ch_icon = "📡" if chtype == "channel" else "👥"
                     buttons.append([InlineKeyboardButton(f"{ch_icon} {gname[:33]} | {gcount:,}", callback_data=f"atk_target_{gid}")])
                 buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
+                # Bulk scan buttons
+                buttons.append([InlineKeyboardButton("🔥 اسکن همه گروه‌ها", callback_data="bulk_scan_groups"),
+                                InlineKeyboardButton("📡 اسکن همه کانال‌ها", callback_data="bulk_scan_channels")])
                 await prog.edit_text(f"✅ اکانت {me.first_name} آماده است!\nلطفا گروه هدف را انتخاب کنید ({len(group_list)} گروه):", reply_markup=InlineKeyboardMarkup(buttons))
             else:
                 atk_state["step"] = "target"

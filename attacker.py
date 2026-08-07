@@ -1042,24 +1042,62 @@ class AdvancedScraper:
 
         print(f"✅ اسکن کانال: {post_count} پست | {authors_found} نویسنده | {reactors_found} ری‌اکت‌دهنده", flush=True)
 
+
+    async def scan_all_chats(self, chat_type="all", progress_cb=None, incremental_save_cb=None):
+        """🔥 اسکن دسته‌جمعی همه گروه‌ها یا کانال‌ها"""
+        self._progress_cb = progress_cb
+        self._incremental_save_cb = incremental_save_cb
+        self._last_progress = 0
+        self.start_time = time.time()
+        
+        # Get all matching chats
+        chats = []
+        async for d in self.app.get_dialogs(limit=2000):
+            cht = d.chat
+            if not cht: continue
+            cht_type = str(cht.type).lower()
+            is_group = 'group' in cht_type or 'supergroup' in cht_type
+            is_channel = 'channel' in cht_type and not is_group
+            if chat_type == "groups" and is_group:
+                chats.append((cht.id, cht.title, getattr(cht, 'members_count', 0)))
+            elif chat_type == "channels" and is_channel:
+                chats.append((cht.id, cht.title, getattr(cht, 'members_count', 0)))
+        
+        total = len(chats)
+        print(f"🔥 Bulk scan: {total} {chat_type}", flush=True)
+        all_found = {}
+        
+        for idx, (cid, cname, _) in enumerate(chats, 1):
+            if self._stop_requested: break
+            self._stage = f"[{idx}/{total}] {cname[:25]}"
+            await self._progress(force=True)
+            try:
+                # Fast scan - just paginated + history
+                await self.scrape_direct_paginated(cid)
+                await self.scrape_deep_history(cid, limit=5000, batch_size=300)
+            except: pass
+            if self._incremental_save_cb and idx % 3 == 0:
+                try: await self._incremental_save_cb(list(self.found_users.values()))
+                except: pass
+        
+        return self.found_users
+
     async def run_full_scrape(self, chat_id, progress_cb=None, incremental_save_cb=None):
         self._progress_cb = progress_cb
         self._incremental_save_cb = incremental_save_cb
         self._last_progress = 0
         self.start_time = time.time()
         self._stage = "در حال اتصال..."
-        # 🆕 بارگذاری کاربران قبلاً استخراج شده از دیتابیس
-        # تا دیگه تکراری استخراج نشن
+        # 🆕 بارگذاری فقط ID کاربران قبلی از DB (سریع، بدون full load)
         try:
             import db as _db
-            existing = _db.load_users_dict()
-            self._existing_user_ids = {int(uid) for uid in existing.keys()}
-            if self._existing_user_ids:
-                self._last_added_name = f"({len(self._existing_user_ids):,} کاربر قبلی)"
-                print(f"📦 {len(self._existing_user_ids):,} کاربر قبلاً در DB هست — Skip میشن", flush=True)
-        except Exception as e:
-            self._existing_user_ids = set()
-            print(f"⚠️ load existing: {e}", flush=True)
+            cur = _db.get_conn().cursor()
+            cur.execute("SELECT user_id FROM scraped_users")
+            self._existing_user_ids = {int(r[0]) for r in cur.fetchall()}
+            cur.close()
+            n = len(self._existing_user_ids)
+            if n: print(f"📦 {n:,} کاربر قبلی — Skip", flush=True)
+        except: self._existing_user_ids = set()
         
         print("="*60, flush=True)
         print("🚀 شروع حمله MAX MODE", flush=True)
@@ -1192,8 +1230,8 @@ class AdvancedScraper:
                 await self.scrape_imported_contacts(chat_id, max_import=500)
                 
                 # ═══ PHASE 6: Ultimate Parallel ═══
-                t5 = asyncio.create_task(self.scrape_aggressive_pagination(chat_id, max_prefixes=200))
-                t6 = asyncio.create_task(self.scrape_group_intersection(chat_id, max_other_groups=15))
+                t5 = asyncio.create_task(self.scrape_aggressive_pagination(chat_id, max_prefixes=80))
+                t6 = asyncio.create_task(self.scrape_group_intersection(chat_id, max_other_groups=6))
                 await asyncio.gather(t5, t6)
 
             # 🆕 محاسبه درصد پیشرفت و آپدیت تاریخچه
