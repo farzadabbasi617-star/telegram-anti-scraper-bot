@@ -69,8 +69,17 @@ from bg_scraper import start_in_background as bg_scraper_start, _backup_session
 try:
     import instagram_scraper as ig_scraper
 except Exception as e:
-    print(f"⚠️ instagram_scraper import failed (bot will work without IG): {e}", flush=True)
-    ig_scraper = None
+    print(f"IG import failed (OK): {e}", flush=True)
+    ig_scraper = type('_',(),{
+        '__getattr__':lambda s,n:lambda *a,**kw:None,
+        'IG_USERNAME':'','IG_PASSWORD':'',
+        'get_instaloader':lambda s=None:None,
+        'login_instagram':lambda s=None,*a,**kw:False,
+        'get_ig_follow_stats':lambda s=None:{'today':0,'total_ever':0,'daily_limit':60},
+        'scrape_followers':lambda *a,**kw:{'followers':[],'error':'IG not available','count':0},
+        'follow_users':lambda *a,**kw:{'followed':0,'failed':0,'skipped':0,'error':'IG not available'},
+        'upload_ig_session':lambda *a,**kw:False,
+    })()
 
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
