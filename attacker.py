@@ -660,6 +660,16 @@ class AdvancedScraper:
                     extracted_new=0,
                     progress_pct=0
                 )
+                # 🆕 تحلیل خودکار موضوع چت
+                try:
+                    from chat_analyzer import smart_analyze
+                    desc = getattr(target_found, 'description', '') or ''
+                    analysis = smart_analyze(target_found.title, desc)
+                    if analysis.get("category"):
+                        _db.update_chat_category(chat_id, analysis["category"])
+                        print(f"🏷️ دسته خودکار: {analysis['category']} ({analysis['method']}, اطمینان: {analysis['confidence']}%)", flush=True)
+                except Exception as e:
+                    print(f"auto analyze err: {e}", flush=True)
             except Exception as e:
                 print(f"save chat history err: {e}", flush=True)
 

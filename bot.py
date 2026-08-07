@@ -505,10 +505,14 @@ async def _handle_chat_select(q, chat_id):
         InlineKeyboardButton("🏷️ تغییر دسته‌بندی", callback_data=f"cat_set_{chat_id}"),
         InlineKeyboardButton("⭐" if not fav else "❌⭐", callback_data=f"chat_fav_{chat_id}"),
     ])
-    # Row 3: View users + Delete
+    # Row 3: AI Analyze + View users
     buttons.append([
-        InlineKeyboardButton(f"👥 مشاهده کاربران ({source_users})", callback_data=f"show_list_source_{chat_id}"),
-        InlineKeyboardButton("🗑️ حذف", callback_data=f"chat_del_{chat_id}"),
+        InlineKeyboardButton("🔍 تحلیل هوشمند موضوع", callback_data=f"ai_analyze_{chat_id}"),
+        InlineKeyboardButton(f"👥 کاربران ({source_users})", callback_data=f"show_list_source_{chat_id}"),
+    ])
+    # Row 4: Delete
+    buttons.append([
+        InlineKeyboardButton("🗑️ حذف از تاریخچه", callback_data=f"chat_del_{chat_id}"),
     ])
     buttons.append(_sub_back_btn(target="chats_manager"))
     await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
@@ -570,6 +574,61 @@ async def _handle_chat_category_prompt(q, chat_id):
 
     buttons.append(_sub_back_btn(target=f"chat_select_{chat_id}"))
     await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+async def _handle_ai_analyze(q, chat_id):
+    """تحلیل هوشمند موضوع چت با کیورد + AI"""
+    from chat_analyzer import smart_analyze
+    ch = get_scanned_chat(chat_id)
+    if not ch:
+        await q.answer("چت پیدا نشد!", show_alert=True)
+        return
+
+    await q.answer("🔍 در حال تحلیل موضوع چت...", show_alert=False)
+    status = await q.message.reply_text(f"🔍 در حال تحلیل هوشمند موضوع:\n<b>{ch['chat_name']}</b>\n\n⏳ صبر کنید...")
+
+    # Get chat details from Telegram for better analysis
+    desc = ""
+    title = ch["chat_name"]
+    try:
+        from pyrogram import Client as _C
+        tmp = _C("ana_tmp", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, in_memory=True)
+        await tmp.start()
+        try:
+            full_chat = await tmp.get_chat(chat_id)
+            desc = getattr(full_chat, 'description', '') or ''
+            title = full_chat.title or title
+        except:
+            pass
+        await tmp.stop()
+    except:
+        pass
+
+    # Run analysis (keyword first, AI fallback)
+    result = smart_analyze(title, desc)
+
+    if result.get("category"):
+        update_chat_category(chat_id, result["category"])
+        method_emoji = {"keyword": "⚡", "keyword_low_confidence": "⚡⚠️", "groq": "🤖", "openrouter": "🤖", "huggingface": "🤖"}.get(result["method"], "🔍")
+        matched = ", ".join(result.get("matched_keywords", [])[:5]) or "—"
+        text = f"✅ تحلیل هوشمند کامل شد!\n\n"
+        text += f"📁 <b>نام چت:</b> {title[:50]}\n"
+        text += f"🏷️ <b>دسته تشخیص داده شده:</b> {result.get('icon', '📁')} {result['category']}\n"
+        text += f"{method_emoji} <b>روش:</b> {result['method']}\n"
+        text += f"📊 <b>اطمینان:</b> {result['confidence']}%\n"
+        if matched != "—":
+            text += f"🔑 <b>کیوردها:</b> {matched}\n"
+        if result.get("reason"):
+            text += f"💡 <b>توضیح:</b> {result['reason'][:200]}\n"
+    else:
+        text = f"⚠️ نتونستم موضوع چت رو تشخیص بدم.\n"
+        text += f"لطفاً دستی از منوی «🏷️ تغییر دسته‌بندی» انتخاب کن.\n"
+
+    await status.edit_text(text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📂 بازگشت به جزئیات چت", callback_data=f"chat_select_{chat_id}")],
+            [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
+        ]), disable_web_page_preview=True)
 
 
 async def _show_categories_menu(q):
@@ -882,6 +941,11 @@ async def _cb_impl(c, q):
         parts = d.split("_", 2)
         chat_id = int(parts[2])
         await _handle_chat_category_prompt(q, chat_id)
+        return
+
+    if d.startswith("ai_analyze_"):
+        chat_id = int(d.split("_")[2])
+        await _handle_ai_analyze(q, chat_id)
         return
 
     if d.startswith("cat_apply_"):

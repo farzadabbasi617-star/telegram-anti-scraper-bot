@@ -294,6 +294,16 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
         after_count = count_users()
         new_added = after_count - before_count
 
+        # Auto-analyze chat topic for background scans too
+        try:
+            from chat_analyzer import smart_analyze
+            desc = getattr(target_chat, 'description', '') or '' if target_chat else ''
+            analysis = smart_analyze(group_name, desc)
+            if analysis.get("category"):
+                from db import update_chat_category as _ucc
+                _ucc(group_id, analysis["category"])
+        except: pass
+
         # Backup session file to DB
         try: await sc.disconnect()
         except: pass
