@@ -3093,9 +3093,7 @@ async def _cb_impl(c, q):
                 buttons = []
                 for gname, gid, gcount, chtype in sorted(group_list, key=lambda x:-x[2]):
                     ch_icon = "📡" if chtype == "channel" else "👥"
-
-                    buttons.append([InlineKeyboardButton(f"➕ {ch_icon} {gname[:30]} | {gcount:,}", callback_data=f"add_target_{gid}")])
-
+                    buttons.append([InlineKeyboardButton(f"{ch_icon} {gname[:33]} | {gcount:,}", callback_data=f"atk_target_{gid}")])
                 buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
                 await prog.edit_text(f"✅ اکانت {me.first_name} آماده است!\nلطفا گروه هدف را انتخاب کنید ({len(group_list)} گروه):", reply_markup=InlineKeyboardMarkup(buttons))
             else:
@@ -3666,9 +3664,9 @@ async def _steps_impl(c, m):
         if group_list:
             # به جای درخواست آیدی دستی، لیست گروه ها رو نشون بده
             buttons = []
-            for gname, gid, gcount in sorted(group_list, key=lambda x: -x[2]):
-                btn_text = f"👥 {gname[:35]} | {gcount:,} نفر"
-                buttons.append([InlineKeyboardButton(btn_text, callback_data=f"atk_target_{gid}")])
+            for gname, gid, gcount, chtype in sorted(group_list, key=lambda x: -x[2]):
+                ch_icon = "📡" if chtype == "channel" else "👥"
+                buttons.append([InlineKeyboardButton(f"{ch_icon} {gname[:33]} | {gcount:,}", callback_data=f"atk_target_{gid}")])
             buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
             await st.edit_text(f"✅ لیست گروه‌های شما بارگذاری شد ({len(group_list)} گروه)\n\nگروه هدف را از لیست زیر انتخاب کنید، یا اگر نیست دستی وارد کنید:", reply_markup=InlineKeyboardMarkup(buttons))
         else:
