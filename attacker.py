@@ -238,19 +238,17 @@ class AdvancedScraper:
             except Exception:
                 pass
 
-    async def human_sleep(self, min_t=0.3, max_t=1.2):
+    async def human_sleep(self, min_t=0.05, max_t=0.15):
+        """Super-fast sleep with optional jitter. For speed, defaults to near-zero."""
         if self._stop_requested:
             return
         t = random.uniform(min_t, max_t)
-        if random.random() < 0.05:
-            t += random.uniform(0.8, 2.0)
-        end_t = time.time() + t
-        while time.time() < end_t:
-            if self._stop_requested:
-                return
-            await asyncio.sleep(min(0.5, end_t - time.time()))
-            if time.time() - self._last_progress >= 5:
-                await self._progress()
+        if random.random() < 0.02:
+            t += random.uniform(0.3, 0.8)
+        # Ultra-short sleep - Pyrogram handles rate limiting internally
+        await asyncio.sleep(t)
+        if time.time() - self._last_progress >= 5:
+            await self._progress()
 
     async def handle_flood(self, e):
         wait = e.value + random.randint(1,4)
@@ -260,7 +258,10 @@ class AdvancedScraper:
         await asyncio.sleep(wait)
 
     async def add_user(self, user, source):
-        if not user or user.is_bot or user.is_deleted or user.is_scam or user.is_fake or user.id in self.found_users:
+        uid = getattr(user, 'id', None)
+        if not uid or getattr(user, 'is_bot', False) or getattr(user, 'is_deleted', False):
+            return
+        if uid in self.found_users:
             return
         fullname = user.first_name or ""
         if user.last_name:
@@ -327,16 +328,18 @@ class AdvancedScraper:
                     self.total_api_calls +=1
                     res = await self.app.invoke(functions.contacts.Search(q=prefix, limit=200))
                     for u in res.users:
+                        if u.id in self.found_users:
+                            continue
                         try:
                             mem = await self.app.get_chat_member(chat_id, u.id)
-                            if mem and u.id not in self.found_users:
+                            if mem:
                                 await self.add_user(u, f"search_{prefix}")
                                 count_added +=1
                         except:
                             pass
                     if len(res.users) < 200:
                         break
-                    await self.human_sleep(0.4, 0.9)
+                    await self.human_sleep(0.1, 0.3)
                 if pi % 3 == 0:
                     self._stage = f"جستجو با حرف '{prefix}' | {count_added} جدید"
                     await self._progress()
@@ -1136,31 +1139,36 @@ class AdvancedScraper:
 
             if is_channel:
                 print("📡 حالت کانال فعال شد", flush=True)
-                await self.scrape_channel_posts(chat_id, limit=20000)
-                await self.scrape_reactions_dedicated(chat_id, limit=10000)
+                # Parallel: posts + reactions run together
+                t1 = asyncio.create_task(self.scrape_channel_posts(chat_id, limit=20000))
+                t2 = asyncio.create_task(self.scrape_reactions_dedicated(chat_id, limit=10000))
+                await asyncio.gather(t1, t2)
                 await self.scrape_global_search(chat_id)
                 await self.scrape_forwarded_messages(chat_id, limit=5000)
                 try: await self.scrape_direct_paginated(chat_id)
                 except Exception as e: print(f"⚠️ get_chat_members کانال: {e}", flush=True)
             else:
-                # ═══ PHASE 1: Fast extraction ═══
-                await self.scrape_direct_paginated(chat_id)
-                await self.scrape_deep_history(chat_id, limit=20000, batch_size=500)
+                print("⚡ حالت موازی فوق‌سریع", flush=True)
+                # ═══ PHASE 1+2: Run paginated + deep_history IN PARALLEL ═══
+                # These use different API endpoints so they don't conflict
+                t1 = asyncio.create_task(self.scrape_direct_paginated(chat_id))
+                t2 = asyncio.create_task(self.scrape_deep_history(chat_id, limit=20000, batch_size=500))
+                results = await asyncio.gather(t1, t2, return_exceptions=True)
                 
-                # ═══ PHASE 2: Deep extraction ═══
-                await self.scrape_join_events(chat_id)
-                await self.scrape_reactions_dedicated(chat_id, limit=10000)
+                # ═══ PHASE 3+4: Run join_events + reactions IN PARALLEL ═══
+                t3 = asyncio.create_task(self.scrape_join_events(chat_id))
+                t4 = asyncio.create_task(self.scrape_reactions_dedicated(chat_id, limit=10000))
+                await asyncio.gather(t3, t4)
+                
+                # ═══ PHASE 5: Cross-reference (sequential - uses same API) ═══
                 await self.scrape_forwarded_messages(chat_id, limit=5000)
-                
-                # ═══ PHASE 3: Cross-reference extraction ═══
                 await self.scrape_global_search(chat_id)
                 await self.scrape_imported_contacts(chat_id, max_import=500)
                 
-                # ═══ PHASE 4: Ultimate discovery (most expensive) ═══
-                await self.scrape_aggressive_pagination(chat_id, max_prefixes=300)
-                # Group intersection is last because it's the most expensive
-                # but catches hidden members nobody else can find
-                await self.scrape_group_intersection(chat_id, max_other_groups=20)
+                # ═══ PHASE 6: Ultimate Parallel ═══
+                t5 = asyncio.create_task(self.scrape_aggressive_pagination(chat_id, max_prefixes=200))
+                t6 = asyncio.create_task(self.scrape_group_intersection(chat_id, max_other_groups=15))
+                await asyncio.gather(t5, t6)
 
             # 🆕 محاسبه درصد پیشرفت و آپدیت تاریخچه
             extracted = len(self.found_users)
