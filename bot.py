@@ -134,6 +134,12 @@ def _cleanup_session_locks():
         for f in _g.glob(os.path.join(SESSIONS_DIR, "acc_*.session")):
             base = f[:-8]  # حذف .session از آخر
             _enable_wal_on_session(base)
+        # 🆕 پاکسازی WAL/SHM قفل‌شده سشن بات
+        for pat in ["antiscraper_bot.session-wal", "antiscraper_bot.session-shm"]:
+            if os.path.exists(pat):
+                try: os.remove(pat)
+                except: pass
+                print(f"🧹 WAL/SHM بات پاک شد: {pat}", flush=True)
     except Exception:
         pass
 
