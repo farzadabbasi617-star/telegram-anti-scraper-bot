@@ -69,31 +69,40 @@ def login_instagram(L=None) -> bool:
         return False
 
     try:
-        # Test if already logged in
         L.test_login()
         return True
     except Exception:
         pass
 
-    try:
-        L.login(IG_USERNAME, IG_PASSWORD)
-        # Save session for future use
-        os.makedirs(SESSION_DIR, exist_ok=True)
-        L.save_session_to_file(IG_SESSION_FILE)
-        print(f"📸 IG logged in as {IG_USERNAME}", flush=True)
-        return True
-    except iex.BadCredentialsException:
-        print("❌ IG login failed: bad credentials", flush=True)
-        return False
-    except iex.TwoFactorAuthRequiredException:
-        print("⚠️ IG 2FA required - use session file upload instead", flush=True)
-        return False
-    except iex.ConnectionException as e:
-        print(f"⚠️ IG connection error: {e}", flush=True)
-        return False
-    except Exception as e:
-        print(f"⚠️ IG login error: {e}", flush=True)
-        return False
+    # Try with primary password, fallback to shortened version
+    passwords_to_try = [IG_PASSWORD]
+    # If password ends with digits after '$', also try the shorter version
+    if '$' in IG_PASSWORD:
+        parts = IG_PASSWORD.rsplit('$', 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            passwords_to_try.append(parts[0] + '$')
+
+    for pwd in passwords_to_try:
+        try:
+            L.login(IG_USERNAME, pwd)
+            os.makedirs(SESSION_DIR, exist_ok=True)
+            L.save_session_to_file(IG_SESSION_FILE)
+            print(f"📸 IG logged in as {IG_USERNAME}", flush=True)
+            return True
+        except iex.BadCredentialsException:
+            print(f"❌ IG login failed: bad credentials (attempt with password ending ...{pwd[-6:]})", flush=True)
+            continue
+        except iex.TwoFactorAuthRequiredException:
+            print("⚠️ IG 2FA required - use session file upload instead", flush=True)
+            return False
+        except iex.ConnectionException as e:
+            print(f"⚠️ IG connection error: {e}", flush=True)
+            return False
+        except Exception as e:
+            print(f"⚠️ IG login error: {e}", flush=True)
+            return False
+
+    return False
 
 
 def scrape_followers(target_username: str, max_followers: int = 500,
