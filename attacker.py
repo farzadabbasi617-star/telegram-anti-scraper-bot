@@ -239,17 +239,14 @@ class AdvancedScraper:
             except Exception:
                 pass
 
-    async def human_sleep(self, min_t=0.05, max_t=0.15):
-        """Super-fast sleep with optional jitter. For speed, defaults to near-zero."""
+    async def human_sleep(self, min_t=0.0, max_t=0.0):
+        """No-op sleep — Pyrogram handles rate limiting. For stop check only."""
         if self._stop_requested:
             return
-        t = random.uniform(min_t, max_t)
-        if random.random() < 0.02:
-            t += random.uniform(0.3, 0.8)
-        # Ultra-short sleep - Pyrogram handles rate limiting internally
-        await asyncio.sleep(t)
+        # Check progress every 5s without sleeping
         if time.time() - self._last_progress >= 5:
             await self._progress()
+        await asyncio.sleep(0)  # yield to event loop
 
     async def handle_flood(self, e):
         wait = e.value + random.randint(1,4)
@@ -297,16 +294,15 @@ class AdvancedScraper:
         await self._progress(force=True)
         count_added = 0
         try:
-            async for member in self.app.get_chat_members(chat_id, limit=10000):
+            async for member in self.app.get_chat_members(chat_id, limit=50000):
                 if self._stop_requested:
                     return True
                 self.total_api_calls +=1
                 await self.add_user(member.user, "direct_list")
                 count_added +=1
-                if count_added % 10 == 0:
+                if count_added % 100 == 0:
                     self._stage = f"📋 لیست مستقیم اعضا، {count_added} نفر..."
                     await self._progress()
-                await self.human_sleep(0.1, 0.3)
             print(f"✅ لیست اولیه {count_added} عضو", flush=True)
         except ChatAdminRequired:
             print("❌ لیست اعضا مخفی است", flush=True)
@@ -340,11 +336,9 @@ class AdvancedScraper:
                             pass
                     if len(res.users) < 200:
                         break
-                    await self.human_sleep(0.1, 0.3)
-                if pi % 3 == 0:
-                    self._stage = f"جستجو با حرف '{prefix}' | {count_added} جدید"
-                    await self._progress()
-                await self.human_sleep(0.2, 0.5)
+                        if pi % 3 == 0:
+                            self._stage = f"جستجو با حرف '{prefix}' | {count_added} جدید"
+                            await self._progress()
             except FloodWait as e:
                 await self.handle_flood(e)
             except Exception:
@@ -383,10 +377,9 @@ class AdvancedScraper:
                                     await self.add_user(u, "ری اکشن")
                                 except: pass
                     except: pass
-            if msg_count % 100 == 0:
+            if msg_count % 500 == 0:
                 self._stage = f"بررسی تاریخچه، {msg_count} پیام اسکن شد"
                 await self._progress()
-            await self.human_sleep(0.05, 0.15)
         print(f"✅ اسکن پیام: {msg_count}", flush=True)
 
     async def scrape_join_events(self, chat_id):
@@ -402,10 +395,9 @@ class AdvancedScraper:
             if msg.new_chat_members:
                 for u in msg.new_chat_members:
                     await self.add_user(u, "ورود عضو")
-            if cnt % 200 == 0:
+            if cnt % 1000 == 0:
                 self._stage = f"بررسی پیام های ورود: {cnt} پیام"
                 await self._progress()
-            await self.human_sleep(0.05, 0.1)
         print(f"✅ پیام ورود اسکن شد", flush=True)
 
     async def scrape_imported_contacts(self, chat_id, max_import=500):
