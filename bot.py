@@ -183,35 +183,113 @@ bg_started = False
 hunter_bg_started = False
 pf_scanning = False  # project finder progress lock
 
-def main_menu():
-    buttons = []
-    if CURRENT_GROUP_ID:
-        buttons.append([InlineKeyboardButton("📊 وضعیت دفاع", callback_data="status")])
-        buttons.append([InlineKeyboardButton("⚙️ فعال/غیرفعال دفاع", callback_data="toggledef")])
-        buttons.append([InlineKeyboardButton("🔄 تغییر گروه محافظت شده", callback_data="select_group")])
-    else:
-        buttons.append([InlineKeyboardButton("🔍 انتخاب گروه برای محافظت", callback_data="select_group")])
+def build_welcome_text():
+    """Build the rich status/welcome text shown at top of main menu."""
     saved_accs = list_saved_accounts()
     acc_count = len(saved_accs)
-    buttons.append([InlineKeyboardButton("🚀 تست حمله (تک‌اکانت)", callback_data="pick_account_attack")])
-    buttons.append([InlineKeyboardButton("➕ اضافه کردن اعضا (تک‌اکانت)", callback_data="pick_account_add")])
-    if acc_count >= 2:
-        buttons.append([InlineKeyboardButton(f"⚡ حمله موازی ({acc_count} اکانت)", callback_data="par_pick_target_attack")])
-        buttons.append([InlineKeyboardButton(f"⚡ ادد موازی ({acc_count} اکانت)", callback_data="par_pick_target_add")])
-    buttons.append([InlineKeyboardButton("📋 لیست مخاطبان استخراج شده", callback_data="show_list_0")])
-    buttons.append([InlineKeyboardButton("📈 آمار اکانت‌های اضافه کننده", callback_data="adder_stats")])
+    users, gname, _ = load_scraped()
+    total_users = len(users)
     total_added = _db_count_added()
-    buttons.append([InlineKeyboardButton(f"✅ تاریخچه اعضای اضافه شده ({total_added})", callback_data="added_history_menu")])
-    # --- اسکن خودکار پس‌زمینه ---
+    pf_total = count_projects()
+    bg_st = get_bg_scan()
+    bg_state_txt = "🟢 روشن" if bg_st.get("enabled") else "🔴 خاموش"
+    bg_target_txt = gname or "—"
+    def_state_txt = "🟢 فعال" if (CURRENT_GROUP_ID and defender and defender.MIN_ACCOUNT_AGE_DAYS > 0) else ("⚪ تنظیم نشده" if not CURRENT_GROUP_ID else "🔴 غیرفعال")
+    owner_p = get_owner_phone()
+    txt = "🛡️ <b>پنل مدیریتی ضد اسکریپت تلگرام</b>\n"
+    txt += "━━━━━━━━━━━━━━━━━━\n"
+    txt += f"🎯 گروه محافظت: <b>{gname if CURRENT_GROUP_ID else 'انتخاب نشده'}</b>\n"
+    txt += f"🛡️ وضعیت دفاع: <b>{def_state_txt}</b>\n"
+    txt += f"📱 اکانت‌های فعال: <b>{acc_count}</b>"
+    if owner_p: txt += f" · 👤 مالک: <code>{owner_p}</code>"
+    txt += "\n"
+    txt += f"👥 ممبرهای استخراج شده: <b>{total_users:,}</b>\n"
+    txt += f"✅ مجموع ادد شده‌ها: <b>{total_added:,}</b>\n"
+    txt += f"⏱️ اسکن خودکار: <b>{bg_state_txt}</b>\n"
+    txt += f"🔭 پروژه‌های اوپن‌سورس: <b>{pf_total:,}</b>\n"
+    txt += "━━━━━━━━━━━━━━━━━━\n"
+    txt += "<i>از دکمه‌های زیر بخش مورد نظر را انتخاب کنید:</i>"
+    return txt
+
+
+def _back_btn(target="home", text="🏠 منوی اصلی"):
+    return [InlineKeyboardButton(text, callback_data=target)]
+
+def _sub_back_btn(target="home"):
+    return [InlineKeyboardButton("🔙 بازگشت", callback_data=target),
+            InlineKeyboardButton("🏠 خانه", callback_data="home")]
+
+
+def main_menu():
+    """Main dashboard with two-column modern layout + categories."""
+    saved_accs = list_saved_accounts()
+    acc_count = len(saved_accs)
+    total_added = _db_count_added()
+    pf_total = count_projects()
     bg_st = get_bg_scan()
     bg_icon = "🟢" if bg_st.get("enabled") else "🔴"
-    acc_sel = "✓" if bg_st.get("account_phone") and bg_st.get("target_group_id") else "⚠"
-    buttons.append([InlineKeyboardButton(f"{bg_icon} ⏱️ اسکن خودکار پس‌زمینه", callback_data="bg_menu")])
-    # --- پروژه یاب اوپن‌سورس ---
-    pf_total = count_projects()
-    buttons.append([InlineKeyboardButton(f"🔭 پروژه‌یاب اوپن‌سورس ({pf_total})", callback_data="pf_menu")])
-    buttons.append([InlineKeyboardButton(f"📱 مدیریت اکانت‌های من ({acc_count})", callback_data="manage_accounts")])
+    banned = len(defender.banned_scrapers) if defender else 0
+
+    buttons = []
+
+    # ===== دسته ۱: داشبورد و دفاع =====
+    buttons.append([
+        InlineKeyboardButton("🛡️ پنل دفاع و گروه", callback_data="menu_defense"),
+        InlineKeyboardButton("📊 آمار کلی", callback_data="menu_stats"),
+    ])
+
+    # ===== دسته ۲: حمله/اسکرپ =====
+    if acc_count >= 1:
+        row = [InlineKeyboardButton("🚀 حمله تک‌اکانت", callback_data="pick_account_attack")]
+        if acc_count >= 2:
+            row.append(InlineKeyboardButton(f"⚡ حمله موازی ({acc_count})", callback_data="par_pick_target_attack"))
+        else:
+            row.append(InlineKeyboardButton("➕ اکانت جدید", callback_data="add_new_account_start"))
+        buttons.append(row)
+    else:
+        buttons.append([InlineKeyboardButton("🆕 افزودن اولین اکانت تلگرام", callback_data="add_new_account_start")])
+
+    # ===== دسته ۳: اضافه کردن اعضا =====
+    if acc_count >= 1:
+        row = [InlineKeyboardButton("➕ ادد تک‌اکانت", callback_data="pick_account_add")]
+        if acc_count >= 2:
+            row.append(InlineKeyboardButton(f"⚡ ادد موازی ({acc_count})", callback_data="par_pick_target_add"))
+        buttons.append(row)
+
+    # ===== دسته ۴: لیست‌ها و داده =====
+    buttons.append([
+        InlineKeyboardButton(f"👥 لیست ممبرها ({total_added if False else _db_count_users()})", callback_data="show_list_0"),
+        InlineKeyboardButton("📈 آمار ادد", callback_data="adder_stats"),
+    ])
+    buttons.append([
+        InlineKeyboardButton(f"✅ تاریخچه اددها ({total_added})", callback_data="added_history_menu"),
+        InlineKeyboardButton(f"🚫 لیست بن‌شده‌ها ({banned})", callback_data="banned_list"),
+    ])
+
+    # ===== دسته ۵: اسکن خودکار و پروژه‌یاب =====
+    buttons.append([
+        InlineKeyboardButton(f"{bg_icon} ⏱️ اسکن خودکار", callback_data="bg_menu"),
+        InlineKeyboardButton(f"🔭 پروژه‌یاب ({pf_total})", callback_data="pf_menu"),
+    ])
+
+    # ===== دسته ۶: مدیریت اکانت‌ها =====
+    buttons.append([
+        InlineKeyboardButton(f"📱 مدیریت اکانت‌ها ({acc_count})", callback_data="manage_accounts"),
+        InlineKeyboardButton("⚙️ تنظیمات ربات", callback_data="menu_settings"),
+    ])
+
+    # Help row
+    buttons.append([InlineKeyboardButton("❓ راهنما / دستورات", callback_data="help_page")])
+
     return InlineKeyboardMarkup(buttons)
+
+
+def _db_count_users():
+    try:
+        return count_users()
+    except:
+        users, _, _ = load_scraped()
+        return len(users)
 
 bg_scraper_started = False
 
@@ -229,19 +307,7 @@ async def start_cmd(c, m):
         await app.set_bot_commands([])
     except:
         pass
-    welcome = "✅ ربات ضد اسکریپت آماده است!\n\n"
-    if CURRENT_GROUP_ID:
-        welcome += "🛡️ سیستم دفاع فعال است.\n"
-    users, gname, _ = load_scraped()
-    if users:
-        welcome += f"📋 {len(users):,} مخاطب در دیتابیس دائمی ذخیره شده.\n"
-    total_proj = count_projects()
-    if total_proj:
-        welcome += f"🔭 پروژه‌یاب: {total_proj} پروژه در بایگانی.\n"
-    bg_st = get_bg_scan()
-    if bg_st.get("enabled"):
-        welcome += "⏱️ اسکن خودکار پس‌زمینه روشن است.\n"
-    await m.reply_text(welcome, reply_markup=main_menu())
+    await m.reply_text(build_welcome_text(), reply_markup=main_menu(), disable_web_page_preview=True)
 
 # Honeypot callback watcher (catches non-admin users in protected group clicking trap buttons)
 @app.on_callback_query(~filters.user(ADMIN_ID))
@@ -258,6 +324,207 @@ async def hp_cb(c, q):
 async def cb(c, q):
     global CURRENT_GROUP_ID, defender, bg_started, config
     d = q.data
+
+    # ==================== خانه و منوهای دسته‌بندی ====================
+    if d == "home":
+        atk_state.clear()
+        await q.message.edit_text(build_welcome_text(), reply_markup=main_menu(), disable_web_page_preview=True)
+        return
+
+    if d == "menu_defense":
+        cname = (config.get("group_name") or "انتخاب نشده") if CURRENT_GROUP_ID else "هنوز انتخاب نشده"
+        def_state = "🟢 فعال" if defender and defender.MIN_ACCOUNT_AGE_DAYS>0 else "🔴 خاموش"
+        is_adm_txt = "—"
+        mcount = "—"
+        hidden = "—"
+        if CURRENT_GROUP_ID:
+            try:
+                chat = await app.get_chat(CURRENT_GROUP_ID)
+                try:
+                    bot_mem = await app.get_chat_member(CURRENT_GROUP_ID, "me")
+                    is_adm_txt = "✅ هستم" if bot_mem.status in ["administrator","creator"] else "❌ نیستم"
+                except: is_adm_txt = "❓"
+                mcount = f"{chat.members_count:,}" if getattr(chat, "members_count", None) else "—"
+                hidden = "✅ مخفی" if getattr(chat, "has_hidden_members", False) else "❌ قابل مشاهده"
+            except: pass
+        banned = len(defender.banned_scrapers) if defender else 0
+        text = f"🛡️ <b>پنل دفاع و گروه</b>\n━━━━━━━━━━━━━━━━━━\n"
+        text += f"🎯 گروه هدف: <b>{cname}</b>\n"
+        text += f"🛡️ وضعیت دفاع: <b>{def_state}</b>\n"
+        text += f"👑 دسترسی ادمین ربات: <b>{is_adm_txt}</b>\n"
+        text += f"👥 تعداد اعضا: <b>{mcount}</b>\n"
+        text += f"🙈 حالت لیست اعضا مخفی: <b>{hidden}</b>\n"
+        text += f"🚫 مجموع بن‌شده‌ها: <b>{banned}</b>\n"
+        text += f"⏱️ سن حداقل اکانت تازه‌وارد: <b>۲۵ روز</b>\n"
+        text += f"🍯 هانی‌پات نامرئی: <b>✅ فعال (هر ۱۰ دقیقه)</b>\n"
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        btns = []
+        if CURRENT_GROUP_ID:
+            btns.append([
+                InlineKeyboardButton("⚙️ خاموش/روشن دفاع", callback_data="toggledef"),
+                InlineKeyboardButton("🔄 تغییر گروه", callback_data="select_group"),
+            ])
+            btns.append([
+                InlineKeyboardButton("📊 نمایش وضعیت کامل", callback_data="status"),
+                InlineKeyboardButton("🚫 لیست بن‌شده‌ها", callback_data="banned_list"),
+            ])
+        else:
+            btns.append([InlineKeyboardButton("🔍 انتخاب گروه برای محافظت", callback_data="select_group")])
+        btns.append(_sub_back_btn())
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+        return
+
+    if d == "menu_stats":
+        users, gname, _ = load_scraped()
+        accs = list_saved_accounts()
+        limits = load_adder_limits()
+        total_added = _db_count_added()
+        total_proj = count_projects()
+        bg_st = get_bg_scan()
+        # Sum remaining capacity
+        total_cap = 0; used_cap = 0
+        for p in accs:
+            a = limits.get(p, {}).get("added", 0)
+            used_cap += a
+            total_cap += MAX_ADD_PER_ACCOUNT
+        text = f"📊 <b>داشبورد آماری ربات</b>\n━━━━━━━━━━━━━━━━━━\n"
+        text += f"👥 تعداد اکانت‌های ذخیره: <b>{len(accs)}</b>\n"
+        text += f"📦 مجموع ظرفیت ادد: <b>{used_cap}/{total_cap}</b>\n"
+        text += f"🗂️ تعداد ممبر استخراج شده: <b>{len(users):,}</b>\n"
+        text += f"✅ مجموع اددشده‌ها: <b>{total_added:,}</b>\n"
+        text += f"🚫 مجموع بن‌شده‌ها: <b>{len(defender.banned_scrapers) if defender else 0}</b>\n"
+        text += f"🔭 پروژه‌های اوپن‌سورس: <b>{total_proj:,}</b>\n"
+        text += f"⏱️ اسکن خودکار: <b>{'🟢 روشن' if bg_st.get('enabled') else '🔴 خاموش'}</b>\n"
+        if bg_st.get("last_run"):
+            import time as _t
+            dt = _t.strftime("%Y-%m-%d %H:%M", _t.localtime(bg_st["last_run"]))
+            text += f"🕐 آخرین اسکن خودکار: <b>{dt}</b>\n"
+            text += f"👥 مجموع پیدا شده توسط اسکن خودکار: <b>{bg_st.get('total_found',0):,}</b>\n"
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        text += "<i>در حال کار بدون وقفه...</i>"
+        btns = [
+            [InlineKeyboardButton("📈 آمار اکانت‌های اددکننده", callback_data="adder_stats")],
+            [InlineKeyboardButton("📜 تاریخچه اددها", callback_data="added_history_menu")],
+            [InlineKeyboardButton("🚫 لیست بن‌شده‌ها", callback_data="banned_list")],
+            _sub_back_btn()
+        ]
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+        return
+
+    if d == "menu_settings":
+        text = "⚙️ <b>تنظیمات ربات</b>\n━━━━━━━━━━━━━━━━━━\n"
+        text += "در این بخش ابزارهای پیکربندی ربات قرار دارد:\n\n"
+        text += "🔸 <b>مدیریت اکانت‌ها</b> — افزودن، حذف، بکاپ سشن\n"
+        text += "🔸 <b>اسکن خودکار</b> — زمان‌بندی و فعالسازی\n"
+        text += "🔸 <b>ریست آمار</b> — پاک کردن شمارنده‌های ادد\n"
+        text += "🔸 <b>پاک کردن لیست ممبر</b> — خالی کردن دیتابیس اسکرپ\n"
+        text += "🔸 <b>دانلود CSV</b> — خروجی اکسل از داده‌ها\n"
+        btns = [
+            [InlineKeyboardButton("📱 مدیریت اکانت‌ها", callback_data="manage_accounts"),
+             InlineKeyboardButton("⏱️ اسکن خودکار", callback_data="bg_menu")],
+            [InlineKeyboardButton("🔄 ریست آمار ادد", callback_data="reset_adder_all"),
+             InlineKeyboardButton("🗑️ پاک کردن لیست ممبر", callback_data="clear_users")],
+            [InlineKeyboardButton("📥 خروجی CSV ممبرها", callback_data="export_users_csv"),
+             InlineKeyboardButton("📥 CSV تاریخچه ادد", callback_data="export_added_csv")],
+            _sub_back_btn()
+        ]
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+        return
+
+    if d == "help_page":
+        text = "❓ <b>راهنمای ربات ضد اسکریپت</b>\n━━━━━━━━━━━━━━━━━━\n\n"
+        text += "🛡️ <b>بخش دفاع:</b>\n"
+        text += "• کپچای خودکار برای اعضای جدید\n"
+        text += "• تشخیص خروج سریع زیر ۴ دقیقه\n"
+        text += "• مسدود کردن اکانت‌های زیر ۲۵ روز\n"
+        text += "• هانی‌پات نامرئی برای فریب اسکرپرها\n\n"
+        text += "🚀 <b>بخش حمله/اسکرپ:</b>\n"
+        text += "• با یک یا چند اکانت به صورت همزمان\n"
+        text += "• پنج استراتژی ترکیبی: الفبا، تاریخچه، تازه‌وارد، گروه مشترک، لیست مستقیم\n"
+        text += "• فینگرپرینت ثابت هر اکانت (جلوگیری از انقضای سشن)\n\n"
+        text += "➕ <b>بخش اضافه کردن اعضا:</b>\n"
+        text += "• سقف ۵۰ نفر در هر اکانت (جلوگیری از بن)\n"
+        text += "• به صورت تک یا موازی\n"
+        text += "• تاخیر هوشمند بین درخواست‌ها\n\n"
+        text += "⏱️ <b>اسکن خودکار پس‌زمینه:</b>\n"
+        text += "• بدون نیاز به روشن گذاشتن\n"
+        text += "• ذخیره مستقیم در دیتابیس ابری\n"
+        text += "• بدون نیاز به کد مجدد\n\n"
+        text += "💾 تمام داده‌ها در دیتابیس Neon ابری ذخیره می‌شوند و با ریست رندر پاک نمی‌شوند.\n"
+        btns = [_sub_back_btn()]
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(btns))
+        return
+
+    if d == "banned_list":
+        if not defender:
+            await q.answer("هنوز گروه محافظت انتخاب نشده!", show_alert=True)
+            return
+        ids = list(defender.banned_scrapers)
+        text = f"🚫 <b>{len(ids)} کاربر مسدود شده</b>\n\n"
+        if not ids:
+            text += "هنوز کسی مسدود نشده ✨"
+        else:
+            for i, uid in enumerate(ids[-40:], 1):
+                text += f"{i}. <code>{uid}</code>\n"
+            if len(ids) > 40:
+                text += f"\n... و {len(ids)-40} مورد دیگر"
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([_sub_back_btn(target="menu_defense")]))
+        return
+
+    if d == "add_new_account_start":
+        atk_state["step"] = "phone_new"
+        atk_state["after_auth_mode"] = "attack"
+        await q.message.edit_text(
+            "📱 <b>افزودن اکانت جدید تلگرام</b>\n\n"
+            "شماره موبایل اکانت را با فرمت بین‌المللی بفرستید، مثلا:\n"
+            "<code>+989123456789</code>\n\n"
+            "⚠️ این شماره یک بار کد می‌گیرد و برای همیشه در دیتابیس ذخیره می‌شود و دیگر کد نمی‌خواهد.",
+            reply_markup=InlineKeyboardMarkup([_sub_back_btn()]))
+        return
+
+    if d == "clear_users":
+        try:
+            cur = db.get_conn().cursor()
+            cur.execute("TRUNCATE scraped_users")
+            cur.close()
+        except: pass
+        try:
+            with open(SCRAPED_FILE,"w",encoding="utf-8") as f: json.dump({"users":[],"group_name":"","group_id":0}, f)
+        except: pass
+        await q.answer("لیست ممبرها پاک شد.", show_alert=True)
+        await q.message.edit_text("✅ لیست ممبرهای استخراج شده از دیتابیس پاک شد.", reply_markup=main_menu())
+        return
+
+    if d == "export_users_csv":
+        users, gname, gid = load_scraped()
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["user_id","username","first_name","last_name","phone"])
+        for u in users:
+            w.writerow([u.get("user_id",""), u.get("username",""), u.get("first_name",""), u.get("last_name",""), u.get("phone","")])
+        await app.send_document(ADMIN_ID, io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+                                file_name=f"scraped_members_{int(time.time())}.csv",
+                                caption=f"📥 لیست {len(users)} ممبر استخراج شده")
+        await q.answer("CSV ارسال شد ✅", show_alert=True)
+        return
+
+    if d == "export_added_csv":
+        try:
+            cur = db.get_conn().cursor()
+            cur.execute("SELECT group_id, user_id, added_at, account_phone FROM added_history_tbl ORDER BY added_at DESC")
+            rows = cur.fetchall()
+            cur.close()
+        except: rows = []
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["group_id","user_id","added_at","account_phone"])
+        for r in rows:
+            w.writerow(r)
+        await app.send_document(ADMIN_ID, io.BytesIO(buf.getvalue().encode("utf-8-sig")),
+                                file_name=f"added_history_{int(time.time())}.csv",
+                                caption=f"📥 تاریخچه {len(rows)} مورد ادد")
+        await q.answer("CSV ارسال شد ✅", show_alert=True)
+        return
 
     if d == "select_group":
         groups = []
@@ -291,32 +558,33 @@ async def cb(c, q):
         await q.message.edit_text("✅ گروه محافظت انتخاب شد.", reply_markup=main_menu())
         return
 
-    if d == "home":
-        await q.message.edit_text("منوی اصلی:", reply_markup=main_menu())
-        return
-
     if d == "status" and CURRENT_GROUP_ID:
         try:
             chat = await app.get_chat(CURRENT_GROUP_ID)
             bot_mem = await app.get_chat_member(CURRENT_GROUP_ID, "me")
             is_adm = bot_mem.status in ["administrator", "creator"]
-            text = "📊 وضعیت:\n\n"
-            text += f"🛡️ دفاع: {'✅ روشن' if defender.MIN_ACCOUNT_AGE_DAYS>0 else '❌ خاموش'}\n"
-            text += f"👑 ادمین: {'✅' if is_adm else '❌'}\n"
-            text += f"🙈 لیست اعضا مخفی: {'✅' if chat.has_hidden_members else '❌ لطفا فعال کنید'}\n"
-            text += f"👥 اعضا: {chat.members_count}\n"
-            text += f"🚫 مسدود شده: {len(defender.banned_scrapers)}"
+            text = "📊 <b>وضعیت کامل گروه و دفاع</b>\n━━━━━━━━━━━━━━━━━━\n"
+            text += f"🎯 گروه: <b>{chat.title}</b>\n"
+            text += f"🛡️ دفاع: <b>{'✅ روشن' if defender.MIN_ACCOUNT_AGE_DAYS>0 else '❌ خاموش'}</b>\n"
+            text += f"👑 ربات ادمین: <b>{'✅ هستم' if is_adm else '❌ نیستم!'}</b>\n"
+            text += f"🙈 لیست اعضا مخفی: <b>{'✅ مخفی' if chat.has_hidden_members else '❌ لطفا در تنظیمات فعال کنید'}</b>\n"
+            text += f"👥 تعداد اعضا: <b>{chat.members_count:,}</b>\n"
+            text += f"🔞 حداقل سن اکانت: <b>{defender.MIN_ACCOUNT_AGE_DAYS} روز</b>\n"
+            text += f"🍯 هانی‌پات نامرئی: <b>✅ فعال</b>\n"
+            text += f"🚫 مجموع مسدودشده: <b>{len(defender.banned_scrapers)}</b>\n"
+            text += f"🤖 کپچای خودکار: <b>✅ فعال</b>\n"
+            text += "━━━━━━━━━━━━━━━━━━"
         except Exception as e:
             text = f"❌ خطا: {str(e)}"
-        await q.message.edit_text(text, reply_markup=main_menu())
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([_sub_back_btn(target="menu_defense")]))
         return
 
     if d == "toggledef" and defender:
         defender.MIN_ACCOUNT_AGE_DAYS = 0 if defender.MIN_ACCOUNT_AGE_DAYS>0 else 25
         config["defense_enabled"] = defender.MIN_ACCOUNT_AGE_DAYS >0
         save_config(config)
-        await q.answer("تغییر کرد", show_alert=True)
-        await q.message.edit_text("✅ وضعیت تغییر کرد", reply_markup=main_menu())
+        await q.answer("وضعیت دفاع تغییر کرد", show_alert=True)
+        await q.message.edit_text(build_welcome_text(), reply_markup=main_menu())
         return
 
     # ==================== نمایش لیست مخاطبان ====================
@@ -374,24 +642,39 @@ async def cb(c, q):
 
     # ==================== تاریخچه اعضای اضافه شده ====================
     if d == "added_history_menu":
-        hist = load_added_history()
-        text = f"✅ **تاریخچه اعضای اضافه شده**\n\n"
-        total_all = sum(len(g.get("added_user_ids", [])) for g in hist.values())
-        text += f"🔢 مجموع کل ادد شده ها: {total_all} نفر\n\n"
-        if not hist:
-            text += "هنوز هیچ کس به هیچ گروهی اضافه نشده."
+        # Load from DB
+        try:
+            cur = db.get_conn().cursor()
+            cur.execute("SELECT group_id, COUNT(*) as cnt, MAX(added_at) as last_t FROM added_history_tbl GROUP BY group_id ORDER BY cnt DESC")
+            rows = cur.fetchall()
+            cur.close()
+        except: rows = []
+        total_all = sum(r[1] for r in rows) if rows else 0
+        text = f"✅ <b>تاریخچه اعضای اضافه شده</b>\n━━━━━━━━━━━━━━━━━━\n"
+        text += f"🔢 مجموع کل اددشده‌ها: <b>{total_all:,}</b> نفر\n\n"
+        if not rows:
+            text += "هنوز هیچ‌کس به هیچ گروهی اضافه نشده ✨"
         else:
-            for gid, ginfo in hist.items():
-                cnt = len(ginfo.get("added_user_ids", []))
-                title = ginfo.get("group_title", "گروه ناشناخته")
-                last = ginfo.get("last_added_at", 0)
-                date_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last)) if last else "-"
-                text += f"👥 {title}\n   └ تعداد ادد شده: {cnt} نفر\n   └ آخرین ادد: {date_str}\n\n"
+            for gid, cnt, last_t in rows:
+                # try to get group name
+                gname = f"گروه {gid}"
+                try:
+                    chat = await app.get_chat(int(gid))
+                    gname = chat.title or gname
+                except: pass
+                date_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_t)) if last_t else "-"
+                text += f"👥 <b>{gname}</b>\n   └ تعداد اددشده: {cnt:,}\n   └ آخرین ادد: {date_str}\n\n"
         buttons = []
-        for gid in hist:
-            buttons.append([InlineKeyboardButton(f"👁️ مشاهده لیست: {hist[gid].get('group_title','?')[:25]}", callback_data=f"view_added_{gid}_0")])
-        buttons.append([InlineKeyboardButton("🗑️ پاک کردن تاریخچه تکراری برای یک گروه", callback_data="clear_added_pick")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت به منو", callback_data="home")])
+        if rows:
+            for gid, cnt, _ in rows[:20]:
+                try:
+                    chat = await app.get_chat(int(gid))
+                    gname = chat.title or str(gid)
+                except:
+                    gname = f"گروه {gid}"
+                buttons.append([InlineKeyboardButton(f"👁️ لیست {gname[:28]} ({cnt})", callback_data=f"view_added_{gid}_0")])
+        buttons.append([InlineKeyboardButton("🗑️ پاک کردن تاریخچه", callback_data="clear_added_pick")])
+        buttons.append(_sub_back_btn(target="menu_stats"))
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
 
@@ -485,27 +768,33 @@ async def cb(c, q):
     # ==================== آمار اکانت‌های اضافه کننده ====================
     if d == "adder_stats":
         limits = load_adder_limits()
-        text = f"📈 **آمار اکانت‌های اضافه کننده**\n\n"
-        text += f"🚨 سقف مجاز هر اکانت: **{MAX_ADD_PER_ACCOUNT} نفر**\n\n"
+        text = f"📈 <b>آمار اکانت‌های اضافه کننده</b>\n━━━━━━━━━━━━━━━━━━\n"
+        text += f"🚨 سقف مجاز هر اکانت: <b>{MAX_ADD_PER_ACCOUNT} نفر</b>\n\n"
+        total_used = 0; total_cap = 0
         if not limits:
-            text += "هنوز هیچ اکانت برای اضافه کردن استفاده نشده."
+            text += "هنوز هیچ اکانت برای اضافه کردن استفاده نشده ✨"
         else:
+            accs = load_accounts()
             for phone, info in limits.items():
                 count = info.get("added", 0)
+                total_used += count; total_cap += MAX_ADD_PER_ACCOUNT
                 remaining = MAX_ADD_PER_ACCOUNT - count
-                status = "✅ سالم" if remaining > 0 else "⚠️ به سقف رسید"
+                status = "✅ سالم" if remaining > 0 else "⚠️ پر شد"
                 last_use = info.get("last_used", 0)
                 last_str = time.strftime("%Y-%m-%d %H:%M", time.localtime(last_use)) if last_use else "-"
-                bar_len = 10
+                name = accs.get(phone, {}).get("name", "")
+                bar_len = 12
                 filled = int(bar_len * min(count, MAX_ADD_PER_ACCOUNT) / MAX_ADD_PER_ACCOUNT)
-                bar = "█" * filled + "░" * (bar_len - filled)
-                text += f"📱 {phone}\n"
+                bar = "🟩" * filled + "⬜" * (bar_len - filled)
+                text += f"📱 <code>{phone}</code>"
+                if name: text += f" ({name})"
+                text += "\n"
                 text += f"   {bar} {count}/{MAX_ADD_PER_ACCOUNT}\n"
-                text += f"   وضعیت: {status}\n"
-                text += f"   آخرین استفاده: {last_str}\n\n"
+                text += f"   └ وضعیت: {status} · آخرین استفاده: {last_str}\n\n"
+            text += f"📊 مجموع ظرفیت استفاده شده: <b>{total_used}/{total_cap}</b>"
         buttons = [[InlineKeyboardButton("🔄 ریست آمار یک اکانت", callback_data="reset_adder_pick")]]
         buttons.append([InlineKeyboardButton("🗑️ ریست کامل همه آمار", callback_data="reset_adder_all")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
+        buttons.append(_sub_back_btn(target="menu_stats"))
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
 
@@ -1013,25 +1302,31 @@ async def cb(c, q):
     # ==================== مدیریت اکانت های ذخیره شده ====================
     if d == "manage_accounts":
         accounts = list_saved_accounts()
-        text = f"📱 **اکانت های ذخیره شده شما** ({len(accounts)} اکانت)\n\n"
+        text = f"📱 <b>مدیریت اکانت‌های ذخیره شده</b>\n━━━━━━━━━━━━━━━━━━\n"
+        text += f"تعداد: <b>{len(accounts)}</b> اکانت فعال\n"
+        text += f"💾 سشن‌ها در دیتابیس ابری بکاپ هستند\n\n"
         if not accounts:
-            text += "⚠️ هنوز هیچ اکانتی به صورت دائمی ذخیره نشده.\nوقتی اولین بار لاگین کنی خودکار ذخیره میشه."
+            text += "⚠️ هنوز هیچ اکانتی ذخیره نشده.\nاولین اکانت خود را با دکمه زیر اضافه کن:\n"
         else:
             for phone, info in accounts.items():
                 added_count = load_adder_limits().get(phone, {}).get("added", 0)
-                name = info.get("name", phone)
+                name = info.get("name", "")
                 added_at = info.get("added_at", 0)
                 date_str = time.strftime("%Y-%m-%d", time.localtime(added_at)) if added_at else "-"
-                text += f"🔹 {name}\n   📱 {phone}\n   📅 اضافه شده: {date_str}\n   ➕ تا کنون {added_count} نفر اد کرده\n\n"
-        text += "\n💡 نکته: سشن‌ها روی سرور ذخیره دائمی هستند و فقط برای استفاده خودت هست."
+                cap = min(added_count, MAX_ADD_PER_ACCOUNT)
+                filled = int(10 * cap / MAX_ADD_PER_ACCOUNT)
+                bar = "🟩"*filled + "⬜"*(10-filled)
+                own = "👈 شما" if phone == get_owner_phone() else ""
+                text += f"📱 <code>{phone}</code> {own}\n"
+                if name: text += f"   └ نام: {name}\n"
+                text += f"   └ اضافه شده: {date_str}\n"
+                text += f"   └ ادد: {bar} {added_count}/{MAX_ADD_PER_ACCOUNT}\n\n"
         buttons = []
+        buttons.append([InlineKeyboardButton("➕ افزودن اکانت جدید", callback_data="add_new_account"),
+                        InlineKeyboardButton("📤 بک‌آپ سشن", callback_data="acc_backup_pick")])
         if accounts:
             buttons.append([InlineKeyboardButton("🗑️ حذف یک اکانت", callback_data="acc_delete_pick")])
-            for phone in accounts:
-                pass
-        buttons.append([InlineKeyboardButton("➕ افزودن اکانت جدید", callback_data="add_new_account")])
-        buttons.append([InlineKeyboardButton("📤 دانلود فایل سشن (بک آپ)", callback_data="acc_backup_pick")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت به منو", callback_data="home")])
+        buttons.append(_sub_back_btn(target="menu_settings"))
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
 
