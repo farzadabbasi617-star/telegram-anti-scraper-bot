@@ -333,7 +333,7 @@ async def project_tracker_loop():
 
 @app.on_message(filters.command("start") & filters.private & filters.user(ADMIN_ID))
 async def start_cmd(c, m):
-    global bg_started, hunter_bg_started, bg_scraper_started
+    global bg_started, hunter_bg_started, bg_scraper_started, proj_tracker_started
     if defender and not bg_started:
         asyncio.create_task(defender.bg_scan())
         bg_started = True
