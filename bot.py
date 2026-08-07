@@ -3870,6 +3870,41 @@ async def steps(c, m):
         except: pass
         atk_state.clear()
 
+
+
+def _normalize_phone(raw):
+    """Normalize phone number to international format (+98...)"""
+    phone = raw.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    # Already has +
+    if phone.startswith("+"):
+        return phone
+    # Starts with 00
+    if phone.startswith("00"):
+        return "+" + phone[2:]
+    # Iranian number starting with 0 (e.g. 0912...)
+    if phone.startswith("0") and len(phone) >= 10:
+        return "+98" + phone[1:]
+    # Iranian number without 0 (e.g. 9123456789)
+    if phone.isdigit() and len(phone) == 10 and phone[0] == "9":
+        return "+98" + phone
+    # Just digits but long enough
+    if phone.isdigit() and len(phone) >= 11:
+        return "+" + phone
+    # Can't normalize
+    return phone
+
+
+def _validate_phone(phone):
+    """Check if phone looks valid. Returns (is_valid, error_message)."""
+    if not phone:
+        return False, "شماره خالی است"
+    if not phone.startswith("+"):
+        return False, f"شماره باید با + شروع شود\nمثال: <code>+989123456789</code>\n\nشما وارد کردید: <code>{phone[:20]}</code>"
+    digits = ''.join(c for c in phone if c.isdigit())
+    if len(digits) < 7 or len(digits) > 15:
+        return False, f"طول شماره نامعتبر است ({len(digits)} رقم)\nمثال: <code>+989123456789</code>\n\nشما وارد کردید: <code>{phone[:20]}</code>"
+    return True, ""
+
 async def _steps_impl(c, m):
     step = atk_state.get("step")
     hstep = atk_state.get("hunter_step")
@@ -3961,40 +3996,6 @@ async def _steps_impl(c, m):
 
 
 # ═══════════════ 📱 Phone Number Validator ═══════════════
-def _normalize_phone(raw):
-    """Normalize phone number to international format (+98...)"""
-    phone = raw.strip().replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-    # Already has +
-    if phone.startswith("+"):
-        return phone
-    # Starts with 00
-    if phone.startswith("00"):
-        return "+" + phone[2:]
-    # Iranian number starting with 0 (e.g. 0912...)
-    if phone.startswith("0") and len(phone) >= 10:
-        return "+98" + phone[1:]
-    # Iranian number without 0 (e.g. 9123456789)
-    if phone.isdigit() and len(phone) == 10 and phone[0] == "9":
-        return "+98" + phone
-    # Just digits but long enough
-    if phone.isdigit() and len(phone) >= 11:
-        return "+" + phone
-    # Can't normalize
-    return phone
-
-
-def _validate_phone(phone):
-    """Check if phone looks valid. Returns (is_valid, error_message)."""
-    if not phone:
-        return False, "شماره خالی است"
-    if not phone.startswith("+"):
-        return False, f"شماره باید با + شروع شود\nمثال: <code>+989123456789</code>\n\nشما وارد کردید: <code>{phone[:20]}</code>"
-    digits = ''.join(c for c in phone if c.isdigit())
-    if len(digits) < 7 or len(digits) > 15:
-        return False, f"طول شماره نامعتبر است ({len(digits)} رقم)\nمثال: <code>+989123456789</code>\n\nشما وارد کردید: <code>{phone[:20]}</code>"
-    return True, ""
-
-
     if not step: return
 
     # ==================== آپلود مستقیم فایل سشن (دور زدن 2FA) ====================
