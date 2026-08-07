@@ -239,14 +239,14 @@ class AdvancedScraper:
             except Exception:
                 pass
 
-    async def human_sleep(self, min_t=0.0, max_t=0.0):
-        """No-op sleep — Pyrogram handles rate limiting. For stop check only."""
+    async def human_sleep(self, min_t=0.01, max_t=0.05):
+        """Micro-sleep: just enough to avoid triggering Telegram flood control."""
         if self._stop_requested:
             return
-        # Check progress every 5s without sleeping
+        t = random.uniform(min_t, max_t)
+        await asyncio.sleep(t)
         if time.time() - self._last_progress >= 5:
             await self._progress()
-        await asyncio.sleep(0)  # yield to event loop
 
     async def handle_flood(self, e):
         wait = e.value + random.randint(1,4)
@@ -388,6 +388,8 @@ class AdvancedScraper:
                 speed = int(found / max(1, now - t0) * 60)
                 self._stage = f"📜 {msg_count} پیام | {found} جدید | ⚡{speed}/min"
                 await self._progress()
+            if msg_count % 50 == 0:
+                await asyncio.sleep(0.02)
         
         elapsed = int(time.time() - t0)
         print(f"✅ تاریخچه: {msg_count} پیام | {found} جدید در {elapsed}s", flush=True)
@@ -1216,11 +1218,9 @@ class AdvancedScraper:
                 except Exception as e: print(f"⚠️ get_chat_members کانال: {e}", flush=True)
             else:
                 print("⚡ حالت سریع", flush=True)
-                # اگر لیست مستقیم جواب داد، تاریخچه و join دیگه لازم نیست
-                got_members = await self.scrape_direct_paginated(chat_id)
-                if not got_members:
-                    # لیست مخفی بود — اسکن تاریخچه و join
-                    await self.scrape_full_history(chat_id, limit=20000)
+                # اسکن اصلی: paginated + history + join  
+                await self.scrape_direct_paginated(chat_id)
+                await self.scrape_full_history(chat_id, limit=5000)
                 await self.scrape_join_events(chat_id)
 
             # محاسبه درصد پیشرفت و آپدیت تاریخچه
