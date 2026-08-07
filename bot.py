@@ -279,7 +279,13 @@ def main_menu():
         InlineKeyboardButton(f"📱 اکانت‌ها ({acc_count})", callback_data="manage_accounts"),
     ])
 
-    # ===== دسته ۷: تنظیمات و راهنما =====
+    # ===== دسته ۷: پشتیبان‌گیری =====
+    buttons.append([
+        InlineKeyboardButton("💾 بک‌آپ کامل", callback_data="backup_all"),
+        InlineKeyboardButton("♻️ وضعیت سلامت", callback_data="health_check"),
+    ])
+
+    # ===== دسته ۸: تنظیمات و راهنما =====
     buttons.append([
         InlineKeyboardButton("⚙️ تنظیمات", callback_data="menu_settings"),
         InlineKeyboardButton("❓ راهنما", callback_data="help_page"),
@@ -565,6 +571,83 @@ async def cb(c, q):
                                 file_name=f"added_history_{int(time.time())}.csv",
                                 caption=f"📥 تاریخچه {len(rows)} مورد ادد")
         await q.answer("CSV ارسال شد ✅", show_alert=True)
+        return
+
+    if d == "backup_all":
+        # Build a full JSON backup of all data and send
+        try:
+            cur = db.get_conn().cursor(cursor_factory=db.psycopg2.extras.RealDictCursor) if hasattr(db,"psycopg2") else None
+        except: cur = None
+        try:
+            c = db.get_conn().cursor()
+            backup = {
+                "exported_at": int(time.time()),
+                "version": 2,
+            }
+            # Users
+            c.execute("SELECT user_id, username, first_name, last_name, phone, source_group_id, source_group_name, added_at FROM scraped_users")
+            backup["scraped_users"] = [dict(zip([d[0] for d in c.description], row)) for row in c.fetchall()]
+            # Accounts
+            c.execute("SELECT phone, name, username, device_fp, created_at, last_used, added_count FROM saved_accounts_tbl")
+            backup["accounts"] = [dict(zip([d[0] for d in c.description], row)) for row in c.fetchall()]
+            # Adder limits
+            c.execute("SELECT phone, added, last_used FROM adder_limits_tbl")
+            backup["adder_limits"] = [dict(zip([d[0] for d in c.description], row)) for row in c.fetchall()]
+            # Added history
+            c.execute("SELECT group_id, user_id, added_at, account_phone FROM added_history_tbl")
+            backup["added_history"] = [dict(zip([d[0] for d in c.description], row)) for row in c.fetchall()]
+            # Config
+            c.execute("SELECT group_id, group_name, defense_enabled, owner_phone FROM config_tbl")
+            backup["config"] = [dict(zip([d[0] for d in c.description], row)) for row in c.fetchall()]
+            # Projects
+            c.execute("SELECT url, platform, full_name, category, data, found_at FROM projects_tbl")
+            backup["projects"] = [dict(zip([d[0] for d in c.description], row)) for row in c.fetchall()]
+            # KV
+            c.execute("SELECT key, value FROM kv_store")
+            backup["kv"] = {row[0]: row[1] for row in c.fetchall()}
+            c.close()
+            data = json.dumps(backup, ensure_ascii=False, indent=2, default=str)
+            import io as _io
+            await app.send_document(ADMIN_ID, _io.BytesIO(data.encode("utf-8")),
+                                    file_name=f"backup_{int(time.time())}.json",
+                                    caption=f"💾 بک‌آپ کامل\n"
+                                            f"👥 کاربران: {len(backup['scraped_users'])}\n"
+                                            f"📱 اکانت‌ها: {len(backup['accounts'])}\n"
+                                            f"✅ تاریخچه ادد: {len(backup['added_history'])}\n"
+                                            f"🔭 پروژه‌ها: {len(backup['projects'])}")
+            await q.answer("بک‌آپ کامل ساخته و ارسال شد ✅", show_alert=True)
+        except Exception as e:
+            await q.answer(f"خطا: {e}", show_alert=True)
+        return
+
+    if d == "health_check":
+        try:
+            import platform as _pl
+            c = db.get_conn().cursor()
+            c.execute("SELECT (SELECT COUNT(*) FROM scraped_users), (SELECT COUNT(*) FROM saved_accounts_tbl), (SELECT COUNT(*) FROM projects_tbl), (SELECT COUNT(*) FROM added_history_tbl)")
+            u,a,p,ah = c.fetchone()
+            c.close()
+            try:
+                import psutil
+                mem = psutil.virtual_memory()
+                mem_pct = mem.percent
+                disk = psutil.disk_usage("/").percent
+            except:
+                mem_pct = "-"; disk = "-"
+            text = "♻️ <b>وضعیت سلامت ربات</b>\n━━━━━━━━━━━━━━━━━━\n"
+            text += f"🟢 وضعیت: آنلاین\n"
+            text += f"🐍 پایتون: {_pl.python_version()}\n"
+            text += f"💾 حافظه رم: {mem_pct}% · دیسک: {disk}%\n"
+            text += f"🗄️ دیتابیس: متصل ✅\n"
+            text += f"━━━━━━━━━━━━━━━━━━\n"
+            text += f"👥 ممبر در دیتابیس: <b>{u:,}</b>\n"
+            text += f"📱 اکانت‌های ذخیره: <b>{a}</b>\n"
+            text += f"🔭 پروژه‌ها: <b>{p:,}</b>\n"
+            text += f"✅ کل اددشده‌ها: <b>{ah:,}</b>\n"
+            text += f"⏱️ اسکن خودکار: <b>{'روشن' if get_bg_scan().get('enabled') else 'خاموش'}</b>\n"
+        except Exception as e:
+            text = f"❌ خطا در بررسی: {e}"
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup([_sub_back_btn()]))
         return
 
     if d == "downloader_menu":
