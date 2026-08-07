@@ -1133,7 +1133,7 @@ async def _execute_direct_add(q, target_gid):
     
     prog_msg = q.message
     added = 0; failed = 0; skipped = 0
-    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "banned": 0, "other": 0}
+    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "banned": 0, "other": 0, "no_add": 0}
     stop_req = [False]
     
     # Save adder state for stop/resume
@@ -1207,13 +1207,15 @@ async def _execute_direct_add(q, target_gid):
         except Exception as e:
             failed += 1
             err_str = str(e).lower()
-            if "privacy" in err_str or "private" in err_str:
+            if "privacy" in err_str or "private" in err_str or "user_privacy_restricted" in err_str.replace("_",""):
                 errors_detail["privacy"] += 1
             elif "already" in err_str or "participant" in err_str:
                 errors_detail["already"] += 1
                 mark_user_as_added(target_gid, target_name, uid)
             elif "banned" in err_str or "kick" in err_str:
                 errors_detail["banned"] += 1
+            elif "not_mutual_contact" in err_str.replace("_","") or "not mutual" in err_str:
+                errors_detail["no_add"] += 1
             else:
                 errors_detail["other"] += 1
             await asyncio.sleep(random.randint(3, 8))
@@ -1236,6 +1238,7 @@ async def _execute_direct_add(q, target_gid):
         text += f"━━━━━━━━━━━━━━━━━━\n"
         text += f"🔍 <b>دلایل خطا:</b>\n"
         if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
+        if errors_detail["no_add"]: text += f"🚫 تنظیمات ادد بسته: {errors_detail['no_add']}\n"
         if errors_detail["flood"]: text += f"⏱️ Flood: {errors_detail['flood']}\n"
         if errors_detail["already"]: text += f"👥 Already in chat: {errors_detail['already']}\n"
         if errors_detail["banned"]: text += f"🚫 Banned: {errors_detail['banned']}\n"

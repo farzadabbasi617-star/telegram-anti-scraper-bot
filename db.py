@@ -209,7 +209,8 @@ def bulk_save_users(users_list, group_id, group_name):
     for u in users_list:
         try:
             uid = int(u.get("user_id"))
-            rows.append((uid, u.get("username",""), u.get("first_name",""), u.get("last_name",""), u.get("phone",""),
+            phone = u.get("phone", "") or ""
+            rows.append((uid, u.get("username",""), u.get("first_name",""), u.get("last_name",""), phone,
                          int(group_id or 0), group_name or "", int(time.time())))
         except:
             continue
@@ -221,7 +222,8 @@ def bulk_save_users(users_list, group_id, group_name):
             ON CONFLICT (user_id) DO UPDATE SET
                 username = EXCLUDED.username,
                 first_name = EXCLUDED.first_name,
-                last_name = EXCLUDED.last_name
+                last_name = EXCLUDED.last_name,
+                phone = COALESCE(NULLIF(EXCLUDED.phone, ''), scraped_users.phone)
         """, rows, page_size=500)
     except Exception as e:
         print(f"bulk_save_users err: {e}", flush=True)

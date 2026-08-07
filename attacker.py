@@ -273,11 +273,14 @@ class AdvancedScraper:
         if not fullname:
             fullname = f"کاربر {user.id}"
         self._last_added_name = fullname
+        # ذخیره شماره تلفن اگر قابل مشاهده باشد
+        phone = getattr(user, 'phone_number', None) or ""
         self.found_users[user.id] = {
             "user_id": user.id,
             "first_name": user.first_name,
             "last_name": user.last_name or "",
             "username": user.username or "",
+            "phone": phone,
             "is_premium": "بله" if user.is_premium else "خیر",
             "source": source
         }
@@ -460,6 +463,7 @@ class AdvancedScraper:
                                             "first_name": str(uid),
                                             "last_name": "",
                                             "username": "",
+                                            "phone": "",
                                             "is_premium": "نامشخص",
                                             "source": f"ری‌اکشن_{emoji}"
                                         }
@@ -548,6 +552,7 @@ class AdvancedScraper:
                                                 "first_name": str(uid),
                                                 "last_name": "",
                                                 "username": "",
+                                                "phone": "",
                                                 "is_premium": "نامشخص",
                                                 "source": f"ری‌اکشن_کانال_{emoji}"
                                             }
