@@ -5,6 +5,7 @@ import asyncio
 import sys
 import os
 import json
+import re
 import traceback
 
 # Pyrogram 2.x needs an event loop set at import time (Python 3.10+ deprecates auto-loop)
@@ -73,6 +74,8 @@ ACCOUNTS_FILE = "saved_accounts.json"
 MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر اکانت
 
 LAST_ERROR = ""  # آخرین خطای رخ داده برای دیباگ
+# Regex for detecting URLs in messages
+URL_REGEX = re.compile(r"https?://[^\s<>\"')]+")
 
 def _log_err(e, where=""):
     global LAST_ERROR
