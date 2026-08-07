@@ -5,13 +5,10 @@ import asyncio
 import sys
 import os
 import json
+import traceback
 
-# Ensure an event loop exists (fix for Python 3.12+ deprecation in Pyrogram)
-try:
-    asyncio.get_running_loop()
-except RuntimeError:
-    _loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(_loop)
+# Monkey patch for compatibility: do NOT create loop at import time
+# (This was causing "different event loop" errors with Pyrogram sub-clients)
 
 import io
 import csv
@@ -70,6 +67,14 @@ ADDER_LIMIT_FILE = "adder_limits.json"
 ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
 MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر اکانت
+
+LAST_ERROR = ""  # آخرین خطای رخ داده برای دیباگ
+
+def _log_err(e, where=""):
+    global LAST_ERROR
+    LAST_ERROR = f"[{where}] {type(e).__name__}: {str(e)[:400]}"
+    print(f"❌ ERROR {where}: {LAST_ERROR}", flush=True)
+    traceback.print_exc()
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
 
@@ -363,6 +368,18 @@ async def hp_cb(c, q):
 
 @app.on_callback_query(filters.user(ADMIN_ID))
 async def cb(c, q):
+    try:
+        await _cb_impl(c, q)
+    except Exception as e:
+        _log_err(e, "callback handler")
+        try:
+            await q.answer(f"خطا: {str(e)[:100]}", show_alert=True)
+            if q.message:
+                await q.message.edit_text(f"❌ خطای داخلی:\n{type(e).__name__}: {str(e)[:300]}\n\nلطفا /start بزنید.", reply_markup=main_menu())
+        except: pass
+        atk_state.clear()
+
+async def _cb_impl(c, q):
     global CURRENT_GROUP_ID, defender, bg_started, config
     d = q.data
 
@@ -2046,6 +2063,16 @@ async def cb(c, q):
 
 @app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.text | filters.document) & ~filters.command("start"))
 async def steps(c, m):
+    try:
+        await _steps_impl(c, m)
+    except Exception as e:
+        _log_err(e, "steps handler")
+        try:
+            await m.reply_text(f"❌ خطای داخلی:\n{type(e).__name__}: {str(e)[:300]}\n\nلطفا /start را بزنید.", reply_markup=main_menu())
+        except: pass
+        atk_state.clear()
+
+async def _steps_impl(c, m):
     step = atk_state.get("step")
     hstep = atk_state.get("hunter_step")
     pf_step = atk_state.get("pf_step")
@@ -2837,6 +2864,8 @@ class Health(BaseHTTPRequestHandler):
         status = "OK"
         if atk_state:
             status += f" | task={atk_state.get('step','idle')}"
+        if LAST_ERROR:
+            status += f"\nLAST_ERR: {LAST_ERROR}"
         self.wfile.write(f"OK - {time.ctime()} | {status}".encode())
     def do_HEAD(self):
         self.send_response(200)
