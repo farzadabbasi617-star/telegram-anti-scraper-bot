@@ -39,7 +39,7 @@ from hunter import (
 # new project finder module
 from project_finder import (
     CATEGORIES as PF_CATS, scan_category, scan_trending, search_trending_github,
-    merge_new, to_jalali_age,
+    scan_custom_query, merge_new, to_jalali_age,
     load_found as pf_load, load_state as pf_state, save_state as pf_save_state,
     projects_by_category, export_csv as pf_export, clear_all as pf_clear,
 )
@@ -326,6 +326,10 @@ async def cb(c, q):
     d = q.data
 
     # ==================== خانه و منوهای دسته‌بندی ====================
+    if d == "noop":
+        await q.answer(cache_time=3)
+        return
+
     if d == "home":
         atk_state.clear()
         await q.message.edit_text(build_welcome_text(), reply_markup=main_menu(), disable_web_page_preview=True)
@@ -604,27 +608,34 @@ async def cb(c, q):
         start = page * PER_PAGE
         end = min(start + PER_PAGE, total)
         chunk = users[start:end]
-        add_hist = load_added_history()
-        all_added_ids = set()
-        for ginfo in add_hist.values():
-            all_added_ids.update(ginfo.get("added_user_ids", []))
-        added_in_list = sum(1 for u in users if u.get("user_id") in all_added_ids)
-        text = f"📋 **لیست مخاطبان استخراج شده**\n"
+        # Load added IDs from DB
+        try:
+            cur = db.get_conn().cursor()
+            cur.execute("SELECT user_id FROM added_history_tbl")
+            all_added_ids = {int(r[0]) for r in cur.fetchall()}
+            cur.close()
+        except:
+            all_added_ids = set()
+        added_in_list = sum(1 for u in users if int(u.get("user_id",0) or 0) in all_added_ids)
+        text = f"📋 <b>لیست مخاطبان استخراج شده</b>\n━━━━━━━━━━━━━━━━━━\n"
         if gname:
-            text += f"👥 گروه: {gname}\n"
-        text += f"🔢 تعداد کل: {total} نفر\n"
-        text += f"✅ تا کنون ادد شده: {added_in_list} نفر\n"
-        text += f"📄 صفحه {page+1} از {total_pages}\n\n"
+            text += f"👥 گروه: <b>{gname}</b>\n"
+        text += f"🔢 تعداد کل: <b>{total:,}</b> نفر\n"
+        text += f"✅ اددشده: <b>{added_in_list:,}</b> نفر\n"
+        text += f"📄 صفحه {page+1} از {total_pages}\n━━━━━━━━━━━━━━━━━━\n"
         for i, u in enumerate(chunk, start=start+1):
-            name = u.get("first_name","") or "بدون نام"
+            name = (u.get("first_name","") or "بدون نام").strip()
             if u.get("last_name"):
-                name += " " + u["last_name"]
+                name += " " + (u["last_name"] or "").strip()
             uname = f"@{u['username']}" if u.get("username") else "(بدون یوزرنیم)"
             uid = u.get("user_id", "?")
-            prem = "⭐" if u.get("is_premium") == "بله" else ""
-            added = "✅" if uid in all_added_ids else ""
-            src = u.get("source", "")
-            text += f"{i}. {added}{prem}{name}\n   └ {uname} | `{uid}`\n   └ منبع: {src}\n"
+            added = " ✅" if int(uid or 0) in all_added_ids else ""
+            phone = u.get("phone","")
+            text += f"{i}. <b>{name}</b>{added}\n"
+            text += f"   └ {uname} · <code>{uid}</code>"
+            if phone:
+                text += f" · 📱 {phone}"
+            text += "\n\n"
         if len(text) > 3800:
             text = text[:3800] + "\n...(ادامه در صفحه بعد)"
         nav_buttons = []
@@ -636,7 +647,8 @@ async def cb(c, q):
             nav_row.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"show_list_{page+1}"))
         nav_buttons.append(nav_row)
         nav_buttons.append([InlineKeyboardButton("📥 دانلود CSV کامل", callback_data="download_csv")])
-        nav_buttons.append([InlineKeyboardButton("🔙 بازگشت به منو", callback_data="home")])
+        nav_buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="menu_stats"),
+                            InlineKeyboardButton("🏠 خانه", callback_data="home")])
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(nav_buttons), disable_web_page_preview=True)
         return
 
@@ -906,27 +918,73 @@ async def cb(c, q):
         cats = projects_by_category()
         st = pf_state()
         total = sum(len(v) for v in cats.values())
-        text = f"🔭 <b>پروژه‌یاب اوپن‌سورس</b>\n\n"
+        text = f"🔭 <b>پروژه‌یاب اوپن‌سورس</b>\n━━━━━━━━━━━━━━━━━━\n"
         text += f"🌐 در <b>گیت‌هاب</b> + <b>گیت‌لب</b> + <b>کدبرگ</b> می‌گردد\n"
         text += f"📦 لایسنس‌های آزاد و بدون‌لایسنس\n"
-        text += f"📂 مجموع پروژه‌های بایگانی شده: <b>{total}</b>\n"
+        text += f"📂 مجموع بایگانی: <b>{total}</b>\n"
         if st.get("last_scan"):
             from datetime import datetime, timezone
             dt = datetime.fromtimestamp(st["last_scan"], tz=timezone.utc)
             text += f"⏱️ آخرین اسکن: {dt.strftime('%Y-%m-%d %H:%M')} UTC\n"
-        text += "\n<b>🗂️ دسته‌بندی‌ها:</b>"
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        text += "<b>⚡ سریع:</b>"
         buttons = [
-            [InlineKeyboardButton("🔥 ترند روز گیت‌هاب", callback_data="pf_scan_trending")],
+            [InlineKeyboardButton("🔥 ترند روز", callback_data="pf_scan_trending"),
+             InlineKeyboardButton("🔍 جستجوی دلخواه", callback_data="pf_search")],
         ]
-        for cid, info in PF_CATS.items():
-            cnt = len(cats.get(cid, []))
-            buttons.append([InlineKeyboardButton(f"{info['emoji']} {info['name']} ({cnt})", callback_data=f"pf_cat_{cid}")])
         buttons.append([InlineKeyboardButton("🚀 اسکن همه دسته‌ها", callback_data="pf_scan_all")])
-        buttons.append([InlineKeyboardButton("📥 دانلود CSV کامل", callback_data="pf_export")])
-        buttons.append([InlineKeyboardButton("🗑️ پاک کردن بایگانی", callback_data="pf_clear")])
+        # Categories in two columns
+        cat_list = list(PF_CATS.items())
+        for i in range(0, len(cat_list), 2):
+            row = []
+            cid, info = cat_list[i]
+            cnt = len(cats.get(cid, []))
+            row.append(InlineKeyboardButton(f"{info['emoji']} {info['name'][:14]} ({cnt})", callback_data=f"pf_cat_{cid}"))
+            if i+1 < len(cat_list):
+                cid2, info2 = cat_list[i+1]
+                cnt2 = len(cats.get(cid2, []))
+                row.append(InlineKeyboardButton(f"{info2['emoji']} {info2['name'][:14]} ({cnt2})", callback_data=f"pf_cat_{cid2}"))
+            buttons.append(row)
+        # Saved custom searches
+        custom = [x for x in (cats.get("custom") or [])]
+        buttons.append([InlineKeyboardButton(f"⭐ لیست جستجوهای من ({len(custom)})", callback_data="pf_custom_list")])
+        buttons.append([InlineKeyboardButton("📥 دانلود CSV", callback_data="pf_export"),
+                        InlineKeyboardButton("🗑️ پاک‌کردن", callback_data="pf_clear")])
         buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
+
+    if d == "pf_search":
+        atk_state["pf_step"] = "await_query"
+        await q.message.edit_text(
+            "🔍 <b>جستجوی دلخواه پروژه</b>\n\n"
+            "کلمه کلیدی مورد نظر را بفرست (مثال: <code>voice changer</code>، <code>telegram ai bot</code>، <code>persian font</code>)،\n"
+            "ربات در گیت‌هاب + گیت‌لب + کدبرگ می‌گردد و بهترین‌ها را مرتب بر اساس ستاره نمایش می‌دهد.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")]]))
+        return
+
+    if d == "pf_custom_list":
+        custom = list({x["url"]:x for x in pf_load() if x.get("category")=="custom"}.values())
+        custom.sort(key=lambda x: x.get("stars",0), reverse=True)
+        if not custom:
+            await q.answer("هنوز جستجوی دلخواهی نداشتی. از «🔍 جستجوی دلخواه» استفاده کن.", show_alert=True)
+            return
+        text = f"⭐ <b>لیست جستجوهای شما ({len(custom)})</b>\n\n"
+        for i, it in enumerate(custom[:20], 1):
+            plat = {"github":"🐙","gitlab":"🦊","codeberg":"🌿"}.get(it.get("platform",""),"")
+            desc = (it.get("description") or "").strip()
+            if len(desc) > 80: desc = desc[:80] + "…"
+            qname = (it.get("query") or "")[:25]
+            text += f"{i}. {plat} <a href=\"{it['url']}\"><b>{it.get('full_name','')}</b></a>\n"
+            text += f"   ⭐ {it.get('stars',0):,} · {it.get('language','—')}\n"
+            if qname: text += f"   🔎 {qname}\n"
+            if desc: text += f"   └ {desc}\n\n"
+        if len(custom) > 20:
+            text += f"... و {len(custom)-20} مورد دیگر"
+        buttons = [[InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")]]
+        await q.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
 
     if d == "pf_scan_trending":
         global pf_scanning
@@ -994,8 +1052,10 @@ async def cb(c, q):
         if page < total_pages-1:
             nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"pf_next_{cat_id}"))
         if nav: buttons.append(nav)
-        buttons.append([InlineKeyboardButton("🔄 اسکن این دسته", callback_data=f"pf_scan_{cat_id}")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")])
+        buttons.append([InlineKeyboardButton("🔄 اسکن این دسته", callback_data=f"pf_scan_{cat_id}"),
+                        InlineKeyboardButton("🔍 جستجوی دلخواه", callback_data="pf_search")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu"),
+                        InlineKeyboardButton("🏠 خانه", callback_data="home")])
         await q.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(buttons))
         return
 
@@ -1044,8 +1104,10 @@ async def cb(c, q):
         if page < total_pages-1:
             nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"pf_next_{cat_id}"))
         if nav: buttons.append(nav)
-        buttons.append([InlineKeyboardButton("🔄 اسکن این دسته", callback_data=f"pf_scan_{cat_id}")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")])
+        buttons.append([InlineKeyboardButton("🔄 اسکن این دسته", callback_data=f"pf_scan_{cat_id}"),
+                        InlineKeyboardButton("🔍 جستجوی دلخواه", callback_data="pf_search")])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu"),
+                        InlineKeyboardButton("🏠 خانه", callback_data="home")])
         await q.message.edit_text(text, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup(buttons))
         return
 
@@ -1791,6 +1853,44 @@ async def cb(c, q):
 async def steps(c, m):
     step = atk_state.get("step")
     hstep = atk_state.get("hunter_step")
+    pf_step = atk_state.get("pf_step")
+
+    # ========== Project Finder custom search ==========
+    if pf_step == "await_query":
+        query = (m.text or "").strip()
+        atk_state["pf_step"] = None
+        if not query or len(query) < 2:
+            await m.reply_text("❌ عبارت جستجو خیلی کوتاه است.", reply_markup=main_menu())
+            return
+        status = await m.reply_text(f"🔍 در حال جستجو برای: <b>{query}</b>\n(گیت‌هاب + گیت‌لب + کدبرگ)\nچند لحظه صبر کن...")
+        loop = asyncio.get_running_loop()
+        try:
+            items = await loop.run_in_executor(None, lambda: scan_custom_query(query, per_platform=10))
+            new_items = merge_new(items)
+            text = f"🔍 <b>نتایج جستجو: {query}</b>\n\n"
+            text += f"✅ پیدا شد: {len(items)} مورد · {len(new_items)} مورد جدید\n\n"
+            if not items:
+                text += "چیزی پیدا نشد، عبارت دیگری امتحان کن."
+            else:
+                for i, it in enumerate(items[:15], 1):
+                    plat = {"github":"🐙","gitlab":"🦊","codeberg":"🌿"}.get(it.get("platform",""),"")
+                    desc = (it.get("description") or "").strip()
+                    if len(desc) > 80: desc = desc[:80] + "…"
+                    text += f"{i}. {plat} <a href=\"{it['url']}\"><b>{it.get('full_name','')}</b></a>\n"
+                    text += f"   ⭐ {it.get('stars',0):,} · {it.get('language','—')}\n"
+                    if desc: text += f"   └ {desc}\n\n"
+                if len(items) > 15:
+                    text += f"... و {len(items)-15} مورد دیگر در بایگانی ذخیره شد."
+            await status.edit_text(text, disable_web_page_preview=True,
+                                   reply_markup=InlineKeyboardMarkup([
+                                       [InlineKeyboardButton("🔍 جستجوی مجدد", callback_data="pf_search"),
+                                        InlineKeyboardButton("📂 لیست همه جستجوها", callback_data="pf_custom_list")],
+                                       [InlineKeyboardButton("🔙 منوی پروژه‌یاب", callback_data="pf_menu")],
+                                   ]))
+        except Exception as e:
+            await status.edit_text(f"❌ خطا در جستجو: {e}",
+                                   reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="pf_menu")]]))
+        return
 
     # ========== Hunter manual scan (deprecated - hunter replaced by project finder) ==========
     if hstep == "await_text":

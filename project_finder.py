@@ -388,6 +388,34 @@ def scan_category(cat_id: str, min_stars=0, per_platform=8) -> List[Dict]:
     return found
 
 
+def scan_custom_query(query: str, per_platform=10, min_stars=0) -> List[Dict]:
+    """Search for a custom user-provided keyword across GitHub/GitLab/Codeberg."""
+    found = []
+    seen_urls = set()
+    q = query.strip()
+    if not q:
+        return []
+    for fn in (search_github, search_gitlab, search_codeberg):
+        try:
+            items = fn(q, max_results=per_platform)
+            for it in items:
+                if it["url"] in seen_urls:
+                    continue
+                if it.get("stars",0) < min_stars:
+                    continue
+                it["category"] = "custom"
+                it["category_name"] = f"🔍 جستجو: {q[:30]}"
+                it["query"] = q
+                it["found_at"] = int(time.time())
+                seen_urls.add(it["url"])
+                found.append(it)
+            time.sleep(random.uniform(0.8, 1.8))
+        except Exception as e:
+            print(f"custom search fail {fn.__name__}: {e}", flush=True)
+    found.sort(key=lambda x: x.get("stars",0), reverse=True)
+    return found
+
+
 def scan_trending() -> List[Dict]:
     """Return trending repos on GitHub (cross category)."""
     items = search_trending_github()
