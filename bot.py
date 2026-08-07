@@ -141,46 +141,41 @@ def _cleanup_session_locks():
 _cleanup_session_locks()
 
 async def robust_connect(client, max_retries=6):
-    """اتصال با تلاش مجدد و پاک کردن قفل در صورت database is locked"""
-    async with _connect_lock:
-        for attempt in range(1, max_retries + 1):
+    """اتصال با تلاش مجدد. قفل داخل AdvancedScraper.connect() هست — اینجا دیگه قفل نمیگیریم"""
+    for attempt in range(1, max_retries + 1):
+        try:
             try:
-                # مطمئن شویم که Client کاملا بسته است قبل از اتصال
+                await client.disconnect()
+            except Exception:
+                pass
+            await asyncio.sleep(0.3)
+            try:
+                sess_name = client.app.name if hasattr(client, 'app') else client.name
+                _enable_wal_on_session(sess_name)
+            except:
+                pass
+            await client.connect()
+            try:
+                sess_name = client.app.name if hasattr(client, 'app') else client.name
+                _enable_wal_on_session(sess_name)
+            except:
+                pass
+            return
+        except Exception as e:
+            msg = str(e).lower()
+            if ("locked" in msg or "database" in msg) and attempt < max_retries:
+                print(f"⚠️ قفل دیتابیس سشن، تلاش {attempt+1}/{max_retries}", flush=True)
                 try:
-                    await client.disconnect()
+                    client_name = client.app.name if hasattr(client, 'app') else client.name
+                    for pat in [client_name + ".session-journal", client_name + ".session-wal", client_name + ".session-shm", "*.session-journal", "*.session-wal", "*.session-shm"]:
+                        for f in _glob.glob(pat):
+                            try: os.remove(f)
+                            except: pass
                 except Exception:
                     pass
-                await asyncio.sleep(0.3)
-                # فعال کردن WAL mode قبل از connect
-                try:
-                    sess_name = client.app.name if hasattr(client, 'app') else client.name
-                    _enable_wal_on_session(sess_name)
-                except:
-                    pass
-                await client.connect()
-                # WAL mode بعد از connect
-                try:
-                    sess_name = client.app.name if hasattr(client, 'app') else client.name
-                    _enable_wal_on_session(sess_name)
-                except:
-                    pass
-                return
-            except Exception as e:
-                msg = str(e).lower()
-                if ("locked" in msg or "database" in msg) and attempt < max_retries:
-                    print(f"⚠️ قفل دیتابیس سشن، تلاش {attempt+1}/{max_retries} بعد از پاکسازی...", flush=True)
-                    # تمام فایل های قفل را پاک کن
-                    try:
-                        client_name = client.app.name if hasattr(client, 'app') else client.name
-                        for pat in [client_name + ".session-journal", client_name + ".session-wal", client_name + ".session-shm", "*.session-journal", "*.session-wal", "*.session-shm"]:
-                            for f in _glob.glob(pat):
-                                try: os.remove(f)
-                                except: pass
-                    except Exception:
-                        pass
-                    await asyncio.sleep(2 * attempt)
-                    continue
-                raise
+                await asyncio.sleep(2 * attempt)
+                continue
+            raise
 
 async def robust_resolve_chat(client, raw, max_attempts=8):
     """تلاش چند باره برای پیدا کردن هر نوع گروه/سوپرگروه/کانال/مگاگروه
