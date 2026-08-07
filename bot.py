@@ -2149,10 +2149,12 @@ async def steps(c, m):
         try:
             chosen_fp = random.choice(DEVICE_FP)
             atk_state["chosen_fp"] = chosen_fp
-            acc_client = AdvancedScraper(f"newacc_tmp_{int(time.time())}", API_ID, API_HASH, phone=phone, device_fp=chosen_fp)
+            tmp_name = f"tmp_add_{int(time.time())}_{random.randint(1000,9999)}"
+            acc_client = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, device_fp=chosen_fp, force_fresh=True)
             await acc_client.connect()
             sent = await acc_client.app.send_code(phone)
             atk_state["new_acc_client"] = acc_client
+            atk_state["acc_tmp_name"] = tmp_name
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "add_new_acc_code"
@@ -2181,9 +2183,12 @@ async def steps(c, m):
             await st.edit_text("🔐 اکانت شما رمز دو عاملی دارد، لطفا پسورد 2FA را بفرستید:")
             return
         except Exception as e:
-            await m.reply_text(f"❌ خطا در کد: {str(e)}")
+            await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
             return
         me = await acc_client.app.get_me()
+        # ذخیره دائمی سشن از حافظه به فایل
+        try: await acc_client.persist_to_permanent()
+        except Exception as e: print(f"persist err: {e}", flush=True)
         # ذخیره اکانت + فینگرپرینت
         accs = load_accounts()
         accs[phone] = {
@@ -2195,6 +2200,12 @@ async def steps(c, m):
         }
         save_accounts(accs)
         await acc_client.disconnect()
+        # پاک کردن فایل موقت (اگر بود)
+        try:
+            tmp = atk_state.get("acc_tmp_name", "")
+            if tmp and os.path.exists(tmp + ".session"):
+                os.remove(tmp + ".session")
+        except: pass
         # Backup session bytes to DB for persistence across render wipes
         try: _backup_session(phone)
         except: pass
@@ -2211,9 +2222,11 @@ async def steps(c, m):
         try:
             await acc_client.app.check_password(pwd)
         except Exception as e:
-            await m.reply_text(f"❌ رمز اشتباه: {str(e)}")
+            await m.reply_text(f"❌ رمز اشتباه: {str(e)[:200]}")
             return
         me = await acc_client.app.get_me()
+        try: await acc_client.persist_to_permanent()
+        except Exception as e: print(f"persist err: {e}", flush=True)
         accs = load_accounts()
         accs[phone] = {
             "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
@@ -2224,6 +2237,11 @@ async def steps(c, m):
         }
         save_accounts(accs)
         await acc_client.disconnect()
+        try:
+            tmp = atk_state.get("acc_tmp_name", "")
+            if tmp and os.path.exists(tmp + ".session"):
+                os.remove(tmp + ".session")
+        except: pass
         try: _backup_session(phone)
         except: pass
         atk_state.clear()
@@ -2243,10 +2261,12 @@ async def steps(c, m):
         try:
             chosen_fp = random.choice(DEVICE_FP)
             atk_state["chosen_fp"] = chosen_fp
-            new_client = AdvancedScraper(f"login_tmp_{int(time.time())}", API_ID, API_HASH, phone=phone, device_fp=chosen_fp, in_memory=False)
+            tmp_name = f"tmp_login_{int(time.time())}_{random.randint(1000,9999)}"
+            new_client = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, device_fp=chosen_fp, force_fresh=True)
             await new_client.connect()
             sent = await new_client.app.send_code(phone)
             atk_state["new_client"] = new_client
+            atk_state["new_tmp_name"] = tmp_name
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "code_new"
@@ -2276,10 +2296,12 @@ async def steps(c, m):
             await st.edit_text("🔐 رمز دو عاملی لازم است، پسورد را بفرستید:")
             return
         except Exception as e:
-            await m.reply_text(f"❌ خطا در کد: {str(e)}")
+            await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
             return
         # ذخیره اکانت
         me = await new_client.app.get_me()
+        try: await new_client.persist_to_permanent()
+        except Exception as e: print(f"persist err: {e}", flush=True)
         accs = load_accounts()
         accs[phone] = {
             "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
@@ -2293,6 +2315,11 @@ async def steps(c, m):
             await new_client.disconnect()
         except:
             pass
+        try:
+            tmp = atk_state.get("new_tmp_name", "")
+            if tmp and os.path.exists(tmp + ".session"):
+                os.remove(tmp + ".session")
+        except: pass
         try: _backup_session(phone)
         except: pass
         await asyncio.sleep(1)
@@ -2369,9 +2396,11 @@ async def steps(c, m):
         try:
             await new_client.app.check_password(pwd)
         except Exception as e:
-            await m.reply_text(f"❌ رمز اشتباه: {str(e)}")
+            await m.reply_text(f"❌ رمز اشتباه: {str(e)[:200]}")
             return
         me = await new_client.app.get_me()
+        try: await new_client.persist_to_permanent()
+        except Exception as e: print(f"persist err: {e}", flush=True)
         accs = load_accounts()
         accs[phone] = {
             "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
@@ -2385,6 +2414,11 @@ async def steps(c, m):
             await new_client.disconnect()
         except:
             pass
+        try:
+            tmp = atk_state.get("new_tmp_name", "")
+            if tmp and os.path.exists(tmp + ".session"):
+                os.remove(tmp + ".session")
+        except: pass
         try: _backup_session(phone)
         except: pass
         atk_state.clear()
@@ -2398,16 +2432,18 @@ async def steps(c, m):
         atk_state["phone"] = phone
         st = await m.reply_text("📡 در حال اتصال...")
         try:
-            atk = AdvancedScraper("atk", API_ID, API_HASH, phone=phone)
+            tmp_name = f"tmp_phone_{int(time.time())}_{random.randint(1000,9999)}"
+            atk = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, force_fresh=True)
             await atk.connect()
             sent = await atk.app.send_code(phone)
             atk_state["atk"] = atk
+            atk_state["atk_tmp_name"] = tmp_name
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "code"
             await st.edit_text("✅ کد ارسال شد، کد ۵ رقمی را بفرست:")
         except Exception as e:
-            await st.edit_text(f"❌ خطا: {str(e)}")
+            await st.edit_text(f"❌ خطا: {str(e)[:300]}")
             atk_state.clear()
 
     elif step == "code":
@@ -2418,9 +2454,29 @@ async def steps(c, m):
         st = atk_state["st"]
         try:
             await atk.app.sign_in(phone, h, code)
-        except Exception as e:
-            await m.reply_text(f"❌ خطا در کد: {str(e)}")
+        except SessionPasswordNeeded:
+            atk_state["step"] = "code_2fa"
+            await st.edit_text("🔐 رمز دو عاملی لازم است، پسورد را بفرستید:")
             return
+        except Exception as e:
+            await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
+            return
+        # ذخیره سشن در فایل دائمی
+        try: await atk.persist_to_permanent()
+        except Exception as e: print(f"persist err: {e}", flush=True)
+        me = await atk.app.get_me()
+        accs = load_accounts()
+        fp_used = atk.get_fp_dict()
+        accs[phone] = {
+            "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
+            "user_id": me.id,
+            "username": me.username or "",
+            "added_at": int(time.time()),
+            "device_fp": fp_used
+        }
+        save_accounts(accs)
+        try: _backup_session(phone)
+        except: pass
         atk_state["step"] = "target"
         await st.edit_text(
             "✅ ورود موفق!\n"
@@ -2517,16 +2573,18 @@ async def steps(c, m):
         atk_state["already_added"] = already
         st = await m.reply_text(f"📡 در حال اتصال به اکانت اد کننده...\n(تا کنون {already} نفر با این اکانت اضافه شده، باقیمانده: {MAX_ADD_PER_ACCOUNT-already})")
         try:
-            add_client = AdvancedScraper("adder_session", API_ID, API_HASH, phone=phone)
+            tmp_name = f"tmp_adder_{int(time.time())}_{random.randint(1000,9999)}"
+            add_client = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, force_fresh=True)
             await add_client.connect()
             sent = await add_client.app.send_code(phone)
             atk_state["add_client"] = add_client
+            atk_state["adder_tmp_name"] = tmp_name
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "adder_code"
             await st.edit_text("✅ کد تایید به اکانت ارسال شد، کد ۵ رقمی را بفرست:")
         except Exception as e:
-            await st.edit_text(f"❌ خطا: {str(e)}")
+            await st.edit_text(f"❌ خطا: {str(e)[:300]}")
             atk_state.clear()
 
     elif step == "adder_code":
@@ -2537,9 +2595,34 @@ async def steps(c, m):
         st = atk_state["st"]
         try:
             await add_client.app.sign_in(phone, h, code)
-        except Exception as e:
-            await m.reply_text(f"❌ خطا در کد: {str(e)}")
+        except SessionPasswordNeeded:
+            atk_state["step"] = "adder_2fa"
+            await st.edit_text("🔐 رمز دو عاملی لازم است، پسورد را بفرستید:")
             return
+        except Exception as e:
+            await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
+            return
+        # ذخیره دائمی سشن
+        try: await add_client.persist_to_permanent()
+        except Exception as e: print(f"persist err: {e}", flush=True)
+        me = await add_client.app.get_me()
+        accs = load_accounts()
+        fp_used = add_client.get_fp_dict()
+        accs[phone] = {
+            "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
+            "user_id": me.id,
+            "username": me.username or "",
+            "added_at": int(time.time()),
+            "device_fp": fp_used
+        }
+        save_accounts(accs)
+        try:
+            tmp = atk_state.get("adder_tmp_name", "")
+            if tmp and os.path.exists(tmp + ".session"):
+                os.remove(tmp + ".session")
+        except: pass
+        try: _backup_session(phone)
+        except: pass
         atk_state["step"] = "adder_target"
         await st.edit_text("✅ ورود موفق!\n🔄 در حال بارگذاری لیست گروه‌های شما...")
         # گرم کردن کش و تهیه لیست گروه ها
