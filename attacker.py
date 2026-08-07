@@ -298,7 +298,7 @@ class AdvancedScraper:
         # Phase 1: Direct member list
         try:
             async for member in self.app.get_chat_members(chat_id, limit=50000):
-                if self._stop_requested: return False
+                if self._stop_requested: break
                 u = member.user
                 uid = u.id
                 if uid in self.found_users or uid in existing: continue
@@ -307,8 +307,6 @@ class AdvancedScraper:
                     "last_name": u.last_name or "", "username": u.username or "",
                     "phone": getattr(u, 'phone_number', '') or '', "source": "direct"}
                 count += 1
-                # Micro-yield every 100 to avoid flood
-                if count % 100 == 0: await asyncio.sleep(0.02)
                 # Progress every 2s
                 now = time.time()
                 if now - last_prog > 2:
