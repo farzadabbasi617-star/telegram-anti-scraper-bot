@@ -346,59 +346,74 @@ class AdvancedScraper:
         print(f"✅ صفحه بندی تمام، مجموع {len(self.found_users)}", flush=True)
         return True
 
-    async def scrape_full_history(self, chat_id, limit=50000):
-        print(f"\n🔍 روش ۲: اسکن {limit} پیام...", flush=True)
-        self._stage = f"در حال اسکن تاریخچه پیام ها (تا {limit} پیام)"
-        await self._progress(force=True)
-        msg_count = 0
+    async def scrape_full_history(self, chat_id, limit=10000):
+        """اسکن فوق‌سریع تاریخچه — بدون sleep، بدون add_user overhead"""
+        print(f"\n🔍 اسکن {limit} پیام...", flush=True)
+        self._stage = f"اسکن تاریخچه ({limit} پیام)"
+        msg_count = 0; found = 0; last_prog = 0; t0 = time.time()
+        existing = self._existing_user_ids
+        
         async for msg in self.app.get_chat_history(chat_id, limit=limit):
-            if self._stop_requested:
-                return
-            self.total_api_calls +=1
-            msg_count +=1
-            if msg.from_user:
-                await self.add_user(msg.from_user, "پیام")
-            if msg.forward_from:
-                await self.add_user(msg.forward_from, "فوروارد")
+            if self._stop_requested: return
+            msg_count += 1
+            
+            # Inline add — no add_user() overhead
+            users_to_add = []
+            if msg.from_user and msg.from_user.id not in self.found_users and msg.from_user.id not in existing:
+                users_to_add.append((msg.from_user, "msg"))
+            if msg.forward_from and msg.forward_from.id not in self.found_users and msg.forward_from.id not in existing:
+                users_to_add.append((msg.forward_from, "fwd"))
             if msg.reply_to_message and msg.reply_to_message.from_user:
-                await self.add_user(msg.reply_to_message.from_user, "پاسخ")
+                u = msg.reply_to_message.from_user
+                if u.id not in self.found_users and u.id not in existing:
+                    users_to_add.append((u, "reply"))
             if msg.entities:
                 for ent in msg.entities:
-                    if ent.type in ("mention", "text_mention") and ent.user:
-                        await self.add_user(ent.user, "منشن")
-            if msg.reactions:
-                for react in msg.reactions.reactions:
-                    try:
-                        reactors = await self.app.get_message_reactions(chat_id, msg.id, react.emoji, limit=100)
-                        for r in reactors:
-                            if r.peer.user_id:
-                                try:
-                                    u = await self.app.get_users(r.peer.user_id)
-                                    await self.add_user(u, "ری اکشن")
-                                except: pass
-                    except: pass
-            if msg_count % 500 == 0:
-                self._stage = f"بررسی تاریخچه، {msg_count} پیام اسکن شد"
+                    if ent.user and ent.user.id not in self.found_users and ent.user.id not in existing:
+                        users_to_add.append((ent.user, "mention"))
+            
+            for u, src in users_to_add:
+                uid = u.id
+                if uid in self.found_users or uid in existing: continue
+                if getattr(u, 'is_bot', False) or getattr(u, 'is_deleted', False): continue
+                self.found_users[uid] = {"user_id": uid, "first_name": u.first_name or "",
+                    "last_name": u.last_name or "", "username": u.username or "",
+                    "phone": getattr(u, 'phone_number', '') or '', "source": src}
+                found += 1
+            
+            # Progress every 2s
+            now = time.time()
+            if now - last_prog > 2:
+                last_prog = now; self.total_api_calls += 1
+                speed = int(found / max(1, now - t0) * 60)
+                self._stage = f"📜 {msg_count} پیام | {found} جدید | ⚡{speed}/min"
                 await self._progress()
-        print(f"✅ اسکن پیام: {msg_count}", flush=True)
+        
+        elapsed = int(time.time() - t0)
+        print(f"✅ تاریخچه: {msg_count} پیام | {found} جدید در {elapsed}s", flush=True)
 
     async def scrape_join_events(self, chat_id):
-        print("\n🔍 روش ۳: اسکن پیام های ورود عضو...", flush=True)
-        self._stage = "در حال اسکن پیام های «عضو جدید»"
-        await self._progress(force=True)
-        cnt = 0
+        """اسکن فوق‌سریع پیام‌های join"""
+        found = 0; last_prog = 0; t0 = time.time()
+        existing = self._existing_user_ids
         async for msg in self.app.get_chat_history(chat_id, limit=100000):
-            if self._stop_requested:
-                return
-            self.total_api_calls +=1
-            cnt +=1
-            if msg.new_chat_members:
-                for u in msg.new_chat_members:
-                    await self.add_user(u, "ورود عضو")
-            if cnt % 1000 == 0:
-                self._stage = f"بررسی پیام های ورود: {cnt} پیام"
+            if self._stop_requested: return
+            if not msg.new_chat_members: continue
+            for u in msg.new_chat_members:
+                uid = u.id
+                if uid in self.found_users or uid in existing: continue
+                if getattr(u, 'is_bot', False): continue
+                self.found_users[uid] = {"user_id": uid, "first_name": u.first_name or "",
+                    "last_name": u.last_name or "", "username": u.username or "",
+                    "phone": getattr(u, 'phone_number', '') or '', "source": "join"}
+                found += 1
+            now = time.time()
+            if now - last_prog > 2:
+                last_prog = now
+                self._stage = f"🚪 Join events: {found} جدید"
                 await self._progress()
-        print(f"✅ پیام ورود اسکن شد", flush=True)
+        self._stage = f"🚪 Join: {found} کاربر"
+        print(f"✅ Join events: {found} کاربر", flush=True)
 
     async def scrape_imported_contacts(self, chat_id, max_import=500):
         """🆕 روش ۶: importContacts برای کشف اعضای مخفی
@@ -1195,14 +1210,17 @@ class AdvancedScraper:
 
             if is_channel:
                 print("📡 حالت کانال فعال شد", flush=True)
-                await self.scrape_channel_posts(chat_id, limit=5000)
-                await self.scrape_reactions_dedicated(chat_id, limit=3000)
+                await self.scrape_channel_posts(chat_id, limit=10000)
+                await self.scrape_reactions_dedicated(chat_id, limit=5000)
                 try: await self.scrape_direct_paginated(chat_id)
                 except Exception as e: print(f"⚠️ get_chat_members کانال: {e}", flush=True)
             else:
                 print("⚡ حالت سریع", flush=True)
-                await self.scrape_direct_paginated(chat_id)
-                await self.scrape_full_history(chat_id, limit=5000)
+                # اگر لیست مستقیم جواب داد، تاریخچه و join دیگه لازم نیست
+                got_members = await self.scrape_direct_paginated(chat_id)
+                if not got_members:
+                    # لیست مخفی بود — اسکن تاریخچه و join
+                    await self.scrape_full_history(chat_id, limit=20000)
                 await self.scrape_join_events(chat_id)
 
             # محاسبه درصد پیشرفت و آپدیت تاریخچه
