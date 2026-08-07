@@ -17,6 +17,13 @@ from typing import List, Dict, Any
 STATE_FILE = "pfinder_state.json"
 FOUND_FILE = "pfinder_projects.json"
 
+# Try to use DB-backed storage (falls back to JSON if DB unavailable)
+try:
+    import db as _db
+    _HAS_DB = True
+except Exception:
+    _HAS_DB = False
+
 # ---------- دسته‌بندی‌ها با کوئری‌های جستجو ----------
 CATEGORIES = {
     "hack": {
@@ -100,31 +107,63 @@ def _get(url, **kw):
 
 
 # ---------- state / storage ----------
-def load_state():
+def _load_state_file():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
-        return {"running": False, "total_found": 0, "last_scan": 0,
-                "scanned_repos": [], "last_results_by_cat": {}}
-
-
-def save_state(s):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(s, f, ensure_ascii=False, indent=2)
-
-
-def load_found() -> List[Dict]:
+        return {}
+def _save_state_file(s):
+    try:
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump(s, f, ensure_ascii=False, indent=2)
+    except: pass
+def _load_found_file() -> List[Dict]:
     try:
         with open(FOUND_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
         return []
+def _save_found_file(lst):
+    try:
+        with open(FOUND_FILE, "w", encoding="utf-8") as f:
+            json.dump(lst, f, ensure_ascii=False, indent=2)
+    except: pass
+
+def load_state():
+    base = {"running": False, "total_found": 0, "last_scan": 0,
+            "scanned_repos": [], "last_results_by_cat": {}}
+    if _HAS_DB:
+        d = _db.kv_get("pf_state", {}) or {}
+        base.update(d)
+        return base
+    base.update(_load_state_file())
+    return base
+
+
+def save_state(s):
+    _save_state_file(s)
+    if _HAS_DB:
+        try: _db.kv_set("pf_state", s)
+        except: pass
+
+
+def load_found() -> List[Dict]:
+    if _HAS_DB:
+        try: return _db.load_projects()
+        except: pass
+    return _load_found_file()
 
 
 def save_found(lst):
-    with open(FOUND_FILE, "w", encoding="utf-8") as f:
-        json.dump(lst, f, ensure_ascii=False, indent=2)
+    _save_found_file(lst)
+    if _HAS_DB:
+        try:
+            # Sync to DB
+            for p in lst:
+                _db.save_project(p["url"], p.get("platform",""), p.get("full_name",""),
+                                 p.get("category","other"), p)
+        except: pass
 
 
 # ---------- helpers ----------
@@ -409,3 +448,6 @@ def clear_all():
     save_found([])
     save_state({"running": False, "total_found": 0, "last_scan": 0,
                 "scanned_repos": [], "last_results_by_cat": {}})
+    if _HAS_DB:
+        try: _db.clear_projects()
+        except: pass

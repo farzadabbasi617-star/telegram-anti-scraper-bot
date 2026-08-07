@@ -44,6 +44,19 @@ from project_finder import (
     projects_by_category, export_csv as pf_export, clear_all as pf_clear,
 )
 import parallel
+import db
+from db import (
+    save_user, load_users_dict as _db_load_users, bulk_save_users as _db_bulk_users,
+    count_users as _db_count_users, save_account, load_accounts as _db_load_accounts,
+    delete_account as _db_delete_account, save_session_blob as _db_save_sess,
+    get_config as _db_get_config, set_config as _db_set_config,
+    get_adder_limits as _db_get_limits, set_adder_limit as _db_set_limit,
+    reset_adder_limits as _db_reset_limits, mark_added as _db_mark_added,
+    is_added as _db_is_added, count_added as _db_count_added,
+    set_bg_scan, get_bg_scan, get_owner_phone, set_owner_phone,
+    save_project, load_projects, count_projects, clear_projects, migrate_json_to_db,
+)
+from bg_scraper import start_in_background as bg_scraper_start, _backup_session
 
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
@@ -59,102 +72,105 @@ MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر 
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
 
+# One-time JSON->DB migration (harmless if already done)
+try:
+    migrate_json_to_db()
+except Exception as e:
+    print(f"migration: {e}", flush=True)
+
 
 def load_added_history():
-    """بارگذاری تاریخچه افرادی که به گروه ها اضافه شده اند"""
-    try:
-        with open(ADDED_MEMBERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+    """سازگاری با نسخه قدیمی - از DB میخواند"""
+    return {}  # history now in db via is_added/mark_added
 
 def save_added_history(hist):
-    with open(ADDED_MEMBERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(hist, f, ensure_ascii=False)
+    pass  # no-op, db is source of truth
 
 def mark_user_as_added(chat_id, chat_title, user_id):
-    """ثبت کردن این کاربر که به این گروه اضافه شد"""
-    hist = load_added_history()
-    ckey = str(chat_id)
-    if ckey not in hist:
-        hist[ckey] = {"group_title": chat_title, "added_user_ids": [], "last_added_at": 0}
-    if user_id not in hist[ckey]["added_user_ids"]:
-        hist[ckey]["added_user_ids"].append(user_id)
-    hist[ckey]["last_added_at"] = int(time.time())
-    save_added_history(hist)
+    """ثبت کردن این کاربر که به این گروه اضافه شد (در DB)"""
+    _db_mark_added(chat_id, user_id, "")
 
 def is_user_already_added(chat_id, user_id):
-    """چک کنه که این کاربر قبلا به این گروه اضافه شده یا نه"""
-    hist = load_added_history()
-    ckey = str(chat_id)
-    return ckey in hist and user_id in hist[ckey].get("added_user_ids", [])
+    """چک میکند که این کاربر قبلا به این گروه اضافه شده یا نه"""
+    return _db_is_added(chat_id, user_id)
 
 
 def load_accounts():
-    """بارگذاری لیست اکانت های ذخیره شده"""
-    try:
-        with open(ACCOUNTS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+    return _db_load_accounts()
 
 def save_accounts(accs):
-    with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
-        json.dump(accs, f, ensure_ascii=False)
+    """هم در فایل لوکال و هم در DB ذخیره میکند"""
+    try:
+        with open(ACCOUNTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(accs, f, ensure_ascii=False)
+    except: pass
+    # Sync to DB
+    try:
+        existing = _db_load_accounts()
+        # Upsert accounts in accs
+        for phone, info in accs.items():
+            name = info.get("name","")
+            uname = info.get("username","")
+            fp = info.get("device_fp")
+            if fp:
+                save_account(phone, name, uname, fp)
+        # (don't delete accounts that exist in DB but not in dict - user may have deleted via UI separately)
+    except Exception as e:
+        print(f"save_accounts sync err: {e}", flush=True)
 
 def list_saved_accounts():
-    """برگرداندن لیست اکانت های معتبر که فایل سشن شان موجود است"""
-    accounts = load_accounts()
+    """لیست اکانت‌های معتبر که فایل سشن شان موجود است"""
+    from bg_scraper import _ensure_session
+    accounts = _db_load_accounts()
     valid = {}
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
     for phone, info in accounts.items():
         fname = safe_phone_filename(phone)
         sfile = os.path.join(SESSIONS_DIR, f"acc_{fname}.session")
-        if os.path.exists(sfile):
+        if os.path.exists(sfile) and os.path.getsize(sfile) > 100:
             valid[phone] = info
+        else:
+            # try restoring from DB
+            blob = db.load_session_blob(phone)
+            if blob:
+                with open(sfile, "wb") as f:
+                    f.write(blob)
+                valid[phone] = info
     return valid
 
 def load_config():
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {"defend_group": None, "defense_enabled": True}
+    c = _db_get_config()
+    return {"defend_group": c.get("group_id") or None, "defense_enabled": c.get("defense_enabled", True),
+            "group_name": c.get("group_name",""), "owner_phone": c.get("owner_phone","")}
 
 def save_config(cfg):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f)
+    gid = cfg.get("defend_group") or 0
+    gname = cfg.get("group_name","")
+    _db_set_config(gid, gname, cfg.get("defense_enabled", True), cfg.get("owner_phone",""))
 
 def load_scraped():
-    """بارگذاری لیست مخاطبان استخراج شده از فایل"""
-    try:
-        with open(SCRAPED_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("users", []), data.get("group_name", ""), data.get("group_id", 0)
-    except:
-        return [], "", 0
+    d = _db_load_users()
+    users_list = list(d.values())
+    c = _db_get_config()
+    return users_list, c.get("group_name",""), c.get("group_id",0)
 
 def save_scraped(users, group_name="", group_id=0):
-    """ذخیره لیست استخراج شده در فایل دائمی"""
-    data = {
-        "users": list(users.values()) if isinstance(users, dict) else users,
-        "group_name": group_name,
-        "group_id": group_id,
-        "saved_at": int(time.time())
-    }
-    with open(SCRAPED_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    if isinstance(users, dict):
+        users_list = list(users.values())
+    else:
+        users_list = users
+    _db_bulk_users(users_list, group_id, group_name)
+    if group_id:
+        c = _db_get_config()
+        _db_set_config(group_id, group_name or c.get("group_name",""), c.get("defense_enabled",True), c.get("owner_phone",""))
 
 def load_adder_limits():
-    """بارگذاری آمار اضافه کردن هر اکانت"""
-    try:
-        with open(ADDER_LIMIT_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return {}
+    return _db_get_limits()
 
 def save_adder_limits(limits):
-    with open(ADDER_LIMIT_FILE, "w", encoding="utf-8") as f:
-        json.dump(limits, f, ensure_ascii=False)
+    for phone, info in limits.items():
+        added = info.get("added",0) if isinstance(info, dict) else int(info or 0)
+        _db_set_limit(phone, added)
 
 config = load_config()
 CURRENT_GROUP_ID = config.get("defend_group")
@@ -184,23 +200,31 @@ def main_menu():
         buttons.append([InlineKeyboardButton(f"⚡ ادد موازی ({acc_count} اکانت)", callback_data="par_pick_target_add")])
     buttons.append([InlineKeyboardButton("📋 لیست مخاطبان استخراج شده", callback_data="show_list_0")])
     buttons.append([InlineKeyboardButton("📈 آمار اکانت‌های اضافه کننده", callback_data="adder_stats")])
-    add_hist = load_added_history()
-    total_added = sum(len(g.get("added_user_ids", [])) for g in add_hist.values())
+    total_added = _db_count_added()
     buttons.append([InlineKeyboardButton(f"✅ تاریخچه اعضای اضافه شده ({total_added})", callback_data="added_history_menu")])
+    # --- اسکن خودکار پس‌زمینه ---
+    bg_st = get_bg_scan()
+    bg_icon = "🟢" if bg_st.get("enabled") else "🔴"
+    acc_sel = "✓" if bg_st.get("account_phone") and bg_st.get("target_group_id") else "⚠"
+    buttons.append([InlineKeyboardButton(f"{bg_icon} ⏱️ اسکن خودکار پس‌زمینه", callback_data="bg_menu")])
     # --- پروژه یاب اوپن‌سورس ---
-    pf_all = pf_load()
-    pf_total = len(pf_all)
+    pf_total = count_projects()
     buttons.append([InlineKeyboardButton(f"🔭 پروژه‌یاب اوپن‌سورس ({pf_total})", callback_data="pf_menu")])
     buttons.append([InlineKeyboardButton(f"📱 مدیریت اکانت‌های من ({acc_count})", callback_data="manage_accounts")])
     return InlineKeyboardMarkup(buttons)
 
+bg_scraper_started = False
+
 @app.on_message(filters.command("start") & filters.private & filters.user(ADMIN_ID))
 async def start_cmd(c, m):
-    global bg_started, hunter_bg_started
+    global bg_started, hunter_bg_started, bg_scraper_started
     if defender and not bg_started:
         asyncio.create_task(defender.bg_scan())
         bg_started = True
-    # Note: crypto-hunter auto scanner disabled (replaced by project finder)
+    # Start the background member scraper (NOT the old crypto hunter)
+    if not bg_scraper_started:
+        bg_scraper_start(app, ADMIN_ID)
+        bg_scraper_started = True
     try:
         await app.set_bot_commands([])
     except:
@@ -210,10 +234,13 @@ async def start_cmd(c, m):
         welcome += "🛡️ سیستم دفاع فعال است.\n"
     users, gname, _ = load_scraped()
     if users:
-        welcome += f"📋 {len(users)} مخاطب استخراج شده در حافظه ذخیره شده.\n"
-    pf_all = pf_load()
-    if pf_all:
-        welcome += f"🔭 پروژه‌یاب: {len(pf_all)} پروژه در بایگانی.\n"
+        welcome += f"📋 {len(users):,} مخاطب در دیتابیس دائمی ذخیره شده.\n"
+    total_proj = count_projects()
+    if total_proj:
+        welcome += f"🔭 پروژه‌یاب: {total_proj} پروژه در بایگانی.\n"
+    bg_st = get_bg_scan()
+    if bg_st.get("enabled"):
+        welcome += "⏱️ اسکن خودکار پس‌زمینه روشن است.\n"
     await m.reply_text(welcome, reply_markup=main_menu())
 
 # Honeypot callback watcher (catches non-admin users in protected group clicking trap buttons)
@@ -509,6 +536,81 @@ async def cb(c, q):
         await q.answer("همه آمار ریست شد.", show_alert=True)
         await q.message.edit_text("✅ تمام آمار اضافه کردن پاک شد.", reply_markup=main_menu())
         return
+
+    # ==================== اسکن خودکار پس‌زمینه ====================
+    if d == "bg_menu":
+        st = get_bg_scan()
+        accs = list_saved_accounts()
+        cfg = _db_get_config()
+        icon = "🟢" if st.get("enabled") else "🔴"
+        text = f"⏱️ <b>اسکن خودکار پس‌زمینه</b>\n\n"
+        text += f"وضعیت: {icon} {'روشن' if st.get('enabled') else 'خاموش'}\n"
+        text += f"👤 اکانت انتخابی: <code>{st.get('account_phone') or '—'}</code>\n"
+        text += f"👥 گروه هدف: {cfg.get('group_name') or '—'}\n"
+        text += f"⏰ فاصله اسکن: {st.get('interval_minutes',60)} دقیقه\n"
+        text += f"🕐 آخرین اجرا: {'ندارد' if not st.get('last_run') else time.strftime('%Y-%m-%d %H:%M', time.localtime(st['last_run']))}\n"
+        text += f"👥 مجموع پیدا شده تا کنون: {st.get('total_found',0)}\n"
+        text += f"📊 وضعیت فعلی: {st.get('status','idle')}\n\n"
+        if not st.get("account_phone"):
+            text += "⚠️ هنوز اکانت برای اسکن خودکار انتخاب نکردی.\n"
+        if not cfg.get("group_id"):
+            text += "⚠️ هنوز گروه هدف انتخاب نشده.\n"
+        text += "\n💾 تمام داده‌ها در دیتابیس ابری Neon ذخیره می‌شوند، حتی با ریست رندر پاک نمی‌شوند."
+        buttons = []
+        if accs:
+            for phone in accs.keys():
+                sel = "✅" if st.get("account_phone") == phone else "⚪"
+                buttons.append([InlineKeyboardButton(f"{sel} انتخاب {phone} بعنوان اکانت اصلی", callback_data=f"bg_acc_{phone}")])
+        if cfg.get("group_id"):
+            buttons.append([InlineKeyboardButton(
+                f"{'🔴 خاموش' if st.get('enabled') else '🟢 روشن'} کردن اسکن خودکار",
+                callback_data="bg_toggle")])
+        iv_opts = [
+            InlineKeyboardButton("⏱ ۳۰دقیقه", callback_data="bg_iv_30"),
+            InlineKeyboardButton("⏱ ۱ساعت", callback_data="bg_iv_60"),
+            InlineKeyboardButton("⏱ ۲ساعت", callback_data="bg_iv_120"),
+            InlineKeyboardButton("⏱ ۴ساعت", callback_data="bg_iv_240"),
+        ]
+        buttons.append(iv_opts)
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("bg_acc_"):
+        phone = d[len("bg_acc_"):]
+        cfg = _db_get_config()
+        set_bg_scan(True, target_group_id=cfg.get("group_id"), account_phone=phone,
+                    interval_minutes=get_bg_scan().get("interval_minutes",60))
+        set_owner_phone(phone)
+        await q.answer(f"اکانت {phone} به عنوان اکانت اصلی اسکن خودکار انتخاب شد.", show_alert=True)
+        q.data = "bg_menu"
+        # fallthrough to redraw menu
+        pass
+
+    if d == "bg_toggle":
+        st = get_bg_scan()
+        if not st.get("account_phone"):
+            await q.answer("اول یک اکانت انتخاب کن.", show_alert=True)
+            return
+        cfg = _db_get_config()
+        if not cfg.get("group_id"):
+            await q.answer("اول گروه محافظت شده/هدف را انتخاب کن.", show_alert=True)
+            return
+        set_bg_scan(not st.get("enabled"), target_group_id=cfg.get("group_id"),
+                   account_phone=st.get("account_phone"), interval_minutes=st.get("interval_minutes",60))
+        new_state = "روشن" if not st.get("enabled") else "خاموش"
+        await q.answer(f"اسکن خودکار {new_state} شد.", show_alert=True)
+        q.data = "bg_menu"
+        pass
+
+    if d.startswith("bg_iv_"):
+        mins = int(d.split("_")[2])
+        st = get_bg_scan()
+        set_bg_scan(st.get("enabled",False), target_group_id=st.get("target_group_id"),
+                   account_phone=st.get("account_phone"), interval_minutes=mins)
+        await q.answer(f"فاصله اسکن: هر {mins} دقیقه", show_alert=False)
+        q.data = "bg_menu"
+        pass
 
     # ==================== پروژه یاب اوپن‌سورس ====================
     if d == "pf_menu":
@@ -953,6 +1055,7 @@ async def cb(c, q):
         if phone in accs:
             del accs[phone]
             save_accounts(accs)
+        _db_delete_account(phone)
         await q.answer(f"اکانت {phone} حذف شد.", show_alert=True)
         await q.message.edit_text("✅ اکانت با موفقیت حذف شد.", reply_markup=main_menu())
         return
@@ -1273,6 +1376,7 @@ async def cb(c, q):
                 if phone in accs:
                     del accs[phone]
                     save_accounts(accs)
+                _db_delete_account(phone)
                 await prog.edit_text(f"⚠️ سشن اکانت {phone} واقعا منقضی شده بود، حذف شد. لطفا دوباره اکانت را اضافه کنید.", reply_markup=main_menu())
                 return
         except Exception as e:
@@ -1460,8 +1564,11 @@ async def steps(c, m):
         }
         save_accounts(accs)
         await acc_client.disconnect()
+        # Backup session bytes to DB for persistence across render wipes
+        try: _backup_session(phone)
+        except: pass
         atk_state.clear()
-        await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت به صورت دائمی ذخیره شد!\n✅ شناسه دستگاه هم ثابت ذخیره شد (دیگه انقضا نمی‌خوره)\nاز این به بعد بدون نیاز به کد می‌توانی ازش استفاده کنی.", reply_markup=main_menu())
+        await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت به صورت دائمی در دیتابیس ذخیره شد!\n✅ شناسه دستگاه ثابت ذخیره شد (انقضا نمی‌خورد)\n✅ فایل سشن در دیتابیس ابری بکاپ گرفته شد\nاز این به بعد بدون نیاز به کد می‌توانی ازش استفاده کنی.", reply_markup=main_menu())
         return
 
     if step == "add_new_acc_2fa":
@@ -1486,8 +1593,10 @@ async def steps(c, m):
         }
         save_accounts(accs)
         await acc_client.disconnect()
+        try: _backup_session(phone)
+        except: pass
         atk_state.clear()
-        await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت ذخیره شد!", reply_markup=main_menu())
+        await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت در دیتابیس ذخیره شد!", reply_markup=main_menu())
         return
 
     # ==================== لاگین اکانت جدید هنگام شروع عملیات ====================
@@ -1553,6 +1662,8 @@ async def steps(c, m):
             await new_client.disconnect()
         except:
             pass
+        try: _backup_session(phone)
+        except: pass
         await asyncio.sleep(1)
         # حالا مستقیم با سشن دائمی و همین فینگر وصل شو
         atk_state.clear()
@@ -1643,8 +1754,10 @@ async def steps(c, m):
             await new_client.disconnect()
         except:
             pass
+        try: _backup_session(phone)
+        except: pass
         atk_state.clear()
-        await st.edit_text("✅ اکانت ذخیره شد! /start بزن.", reply_markup=main_menu())
+        await st.edit_text("✅ اکانت در دیتابیس ذخیره شد! /start بزن.", reply_markup=main_menu())
         return
 
     # ==================== مراحل قدیمی - دیگر مستقیم استفاده نمی‌شوند ====================
