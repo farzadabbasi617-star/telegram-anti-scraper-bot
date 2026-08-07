@@ -1562,8 +1562,14 @@ async def _cb_impl(c, q):
                     await progress_msg.edit_text(text, disable_web_page_preview=True)
                 except Exception:
                     pass
+            async def incremental_save(user_list):
+                try:
+                    # ذخیره تدریجی در دیتابیس
+                    save_scraped(user_list, target.title, target.id)
+                except Exception:
+                    pass
             try:
-                users = await atk.run_full_scrape(target.id, progress_cb=on_progress)
+                users = await atk.run_full_scrape(target.id, progress_cb=on_progress, incremental_save_cb=incremental_save)
                 csv_bytes = atk.export_csv()
                 save_scraped(users, target.title, target.id)
                 await app.send_message(ADMIN_ID, f"✅ حمله تمام شد!\nگروه: {target.title}\nتعداد استخراج: {len(users)} نفر\n\n📋 از دکمه «لیست مخاطبان استخراج شده» در منو می‌توانید ببینید.")
@@ -1629,7 +1635,10 @@ async def _cb_impl(c, q):
                     try:
                         await progress_msg.edit_text(f"🔄 تلاش مجدد\n{text}", disable_web_page_preview=True)
                     except: pass
-                users = await atk.run_full_scrape(gid, progress_cb=on_progress)
+                async def inc_save(user_list):
+                    try: save_scraped(user_list, tname, gid)
+                    except: pass
+                users = await atk.run_full_scrape(gid, progress_cb=on_progress, incremental_save_cb=inc_save)
                 csv_bytes = atk.export_csv()
                 save_scraped(users, tname, gid)
                 await app.send_message(ADMIN_ID, f"✅ تلاش مجدد موفق!\nگروه: {tname}\nتعداد استخراج: {len(users)} نفر")
@@ -2680,7 +2689,14 @@ async def _steps_impl(c, m):
         prog = await st.edit_text(f"🎯 هدف: {target.title}\n🚀 در حال شروع حمله...")
         async def run():
             try:
-                users = await atk.run_full_scrape(target_id)
+                progress_msg = prog
+                async def on_progress(text):
+                    try: await progress_msg.edit_text(text, disable_web_page_preview=True)
+                    except: pass
+                async def inc_save(user_list):
+                    try: save_scraped(user_list, target.title, target.id)
+                    except: pass
+                users = await atk.run_full_scrape(target_id, progress_cb=on_progress, incremental_save_cb=inc_save)
                 csv_bytes = atk.export_csv()
                 # ذخیره دائمی در فایل
                 save_scraped(users, target.title, target.id)

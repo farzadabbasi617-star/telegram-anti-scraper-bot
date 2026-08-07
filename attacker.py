@@ -73,6 +73,7 @@ class AdvancedScraper:
         self._stage = "در حال آماده سازی..."
         self._last_added_name = "-"
         self._last_progress_val = 0
+        self._incremental_save_cb = None  # ذخیره تدریجی
 
     def get_fp_dict(self):
         return self.fp_used
@@ -204,7 +205,13 @@ class AdvancedScraper:
             "source": source
         }
         self._last_progress_val += 1
-        if self._last_progress_val % 5 == 0:
+        # ذخیره تدریجی در دیتابیس هر ۵ نفر تا در صورت کرش چیزی از بین نرود
+        if self._incremental_save_cb and self._last_progress_val % 5 == 0:
+            try:
+                await self._incremental_save_cb(list(self.found_users.values()))
+            except Exception:
+                pass
+        if self._last_progress_val % 3 == 0:
             await self._progress()
 
     async def scrape_direct_paginated(self, chat_id):
@@ -217,10 +224,10 @@ class AdvancedScraper:
                 self.total_api_calls +=1
                 await self.add_user(member.user, "direct_list")
                 count_added +=1
-                if count_added % 30 == 0:
-                    self._stage = f"لیست مستقیم، {count_added} نفر خوانده شد"
+                if count_added % 10 == 0:
+                    self._stage = f"📋 لیست مستقیم اعضا، {count_added} نفر..."
                     await self._progress()
-                await self.human_sleep(0.2, 0.6)
+                await self.human_sleep(0.1, 0.3)
             print(f"✅ لیست اولیه {count_added} عضو", flush=True)
         except ChatAdminRequired:
             print("❌ لیست اعضا مخفی است", flush=True)
@@ -314,8 +321,9 @@ class AdvancedScraper:
             await self.human_sleep(0.05, 0.1)
         print(f"✅ پیام ورود اسکن شد", flush=True)
 
-    async def run_full_scrape(self, chat_id, progress_cb=None):
+    async def run_full_scrape(self, chat_id, progress_cb=None, incremental_save_cb=None):
         self._progress_cb = progress_cb
+        self._incremental_save_cb = incremental_save_cb
         self._last_progress = 0
         self.start_time = time.time()
         self._stage = "در حال اتصال..."
@@ -333,22 +341,22 @@ class AdvancedScraper:
         hb_task = asyncio.create_task(heartbeat())
 
         try:
-            self._stage = "🔄 در حال بارگذاری لیست چت ها و گرم کردن کش"
+            self._stage = "🔄 در حال بارگذاری لیست چت ها..."
             await self._progress(force=True)
             print("🔄 در حال بارگذاری لیست چت ها...", flush=True)
             all_chats = {}
             try:
-                for _pass in range(2):
-                    cnt = 0
-                    async for d in self.app.get_dialogs(limit=2000):
-                        all_chats[d.chat.id] = d.chat
-                        cnt +=1
-                        await asyncio.sleep(0.01)
-                    print(f"🔄 پاس {_pass+1}: {cnt} چت", flush=True)
-                    await asyncio.sleep(2)
+                cnt = 0
+                async for d in self.app.get_dialogs(limit=2000):
+                    all_chats[d.chat.id] = d.chat
+                    cnt += 1
+                    if cnt % 100 == 0:
+                        self._stage = f"🔄 در حال بارگذاری لیست چت ها... {cnt} چت"
+                    await asyncio.sleep(0.01)
+                print(f"✅ لیست چت ها بارگذاری شد: {cnt} چت", flush=True)
+                await asyncio.sleep(1)
             except Exception as e:
                 print(f"خطا در چت ها: {e}", flush=True)
-            await asyncio.sleep(2)
 
             self._stage = "🔎 در حال پیدا کردن گروه هدف"
             await self._progress(force=True)
@@ -381,46 +389,21 @@ class AdvancedScraper:
             chat_id = target_id_resolved
             print(f"✅ هدف: {target_found.title}", flush=True)
 
-            self._stage = f"✅ هدف: {target_found.title} | در حال بررسی عضویت"
+            self._stage = f"✅ هدف: {target_found.title} | آماده‌سازی شروع استخراج..."
             await self._progress(force=True)
-            is_member = None
-            for attempt in range(5):
-                try:
-                    me = await self.app.get_chat_member(chat_id, "me")
-                    if me and me.status in ["administrator", "creator", "member", "restricted"]:
-                        is_member = True
-                        break
-                except Exception as e:
-                    print(f"⏱️ تلاش {attempt+1} عضویت: {e}", flush=True)
-                    self._stage = f"تلاش {attempt+1} برای تایید عضویت در گروه"
-                    await self._progress()
-                    await asyncio.sleep(2.5)
-                    try:
-                        await self.app.resolve_peer(chat_id)
-                    except: pass
-                    try:
-                        async for _ in self.app.get_dialogs(limit=200):
-                            pass
-                    except: pass
-            if is_member is not True:
-                print("⚠️ چک عضویت ناموفق بود ولی ادامه میدهم...", flush=True)
 
             self._stage = f"🚀 شروع استخراج از {target_found.title}"
             await self._progress(force=True)
 
-            direct_ok = await self.scrape_direct_paginated(chat_id)
-            if not direct_ok:
-                await self.scrape_full_history(chat_id)
-                await self.scrape_join_events(chat_id)
-            else:
-                await self.scrape_full_history(chat_id, limit=5000)
-                await self.scrape_join_events(chat_id)
-
-            await asyncio.sleep(random.randint(5,12))
-            try:
-                await self.app.leave_chat(chat_id)
-                print("🚪 خارج شدم", flush=True)
-            except: pass
+            await self.scrape_direct_paginated(chat_id)
+            await self.scrape_full_history(chat_id, limit=2000)
+            await self.scrape_join_events(chat_id)
+            # ذخیره نهایی
+            if self._incremental_save_cb:
+                try:
+                    await self._incremental_save_cb(list(self.found_users.values()))
+                except Exception:
+                    pass
             total = time.time() - self.start_time
             print(f"\n🏁 تمام شد در {int(total)}s، مجموع {len(self.found_users)} کاربر", flush=True)
             self._stage = f"✅ تمام شد! در حال آماده سازی فایل خروجی..."
