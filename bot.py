@@ -7,6 +7,7 @@ import os
 import json
 import re
 import traceback
+import glob as _glob
 
 # Pyrogram 2.x needs an event loop set at import time (Python 3.10+ deprecates auto-loop)
 try:
@@ -76,12 +77,24 @@ MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر 
 LAST_ERROR = ""  # آخرین خطای رخ داده برای دیباگ
 # Regex for detecting URLs in messages
 URL_REGEX = re.compile(r"https?://[^\s<>\"')]+")
+# قفل سراسری برای اتصال Client ها تا دو اتصال همزمان به یک فایل سشن SQLite باعث database is locked نشود
+_connect_lock = asyncio.Lock()
 
 def _log_err(e, where=""):
     global LAST_ERROR
     LAST_ERROR = f"[{where}] {type(e).__name__}: {str(e)[:400]}"
     print(f"❌ ERROR {where}: {LAST_ERROR}", flush=True)
     traceback.print_exc()
+
+def _make_progress_updater(msg_ref, is_retry=False):
+    stop_btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف عملیات", callback_data="stop_op")]])
+    async def updater(text):
+        try:
+            prefix = "🔄 تلاش مجدد\n" if is_retry else ""
+            await msg_ref.edit_text(prefix + text, reply_markup=stop_btn, disable_web_page_preview=True)
+        except Exception:
+            pass
+    return updater
 
 app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
 
@@ -109,21 +122,35 @@ def _cleanup_session_locks():
 # پاکسازی در لحظه ایمپورت
 _cleanup_session_locks()
 
-async def robust_connect(client, max_retries=4):
+async def robust_connect(client, max_retries=6):
     """اتصال با تلاش مجدد و پاک کردن قفل در صورت database is locked"""
-    for attempt in range(1, max_retries + 1):
-        try:
-            await client.connect()
-            return
-        except Exception as e:
-            msg = str(e).lower()
-            if ("locked" in msg or "database" in msg) and attempt < max_retries:
-                print(f"⚠️ قفل دیتابیس سشن، تلاش {attempt+1} بعد از پاکسازی...", flush=True)
-                await client.disconnect() if hasattr(client, 'disconnect') else None
-                await asyncio.sleep(2)
-                _cleanup_session_locks()
-                continue
-            raise
+    async with _connect_lock:
+        for attempt in range(1, max_retries + 1):
+            try:
+                # مطمئن شویم که Client کاملا بسته است قبل از اتصال
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+                await asyncio.sleep(0.3)
+                await client.connect()
+                return
+            except Exception as e:
+                msg = str(e).lower()
+                if ("locked" in msg or "database" in msg) and attempt < max_retries:
+                    print(f"⚠️ قفل دیتابیس سشن، تلاش {attempt+1}/{max_retries} بعد از پاکسازی...", flush=True)
+                    # تمام فایل های قفل را پاک کن
+                    try:
+                        client_name = client.app.name
+                        for pat in [client_name + ".session-journal", client_name + ".session-wal", client_name + ".session-shm", "*.session-journal", "*.session-wal", "*.session-shm"]:
+                            for f in _glob.glob(pat):
+                                try: os.remove(f)
+                                except: pass
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2 * attempt)
+                    continue
+                raise
 
 async def robust_resolve_chat(client, raw, max_attempts=8):
     """تلاش چند باره برای پیدا کردن هر نوع گروه/سوپرگروه/کانال/مگاگروه
@@ -505,6 +532,19 @@ async def _cb_impl(c, q):
     # ==================== خانه و منوهای دسته‌بندی ====================
     if d == "noop":
         await q.answer(cache_time=3)
+        return
+
+    if d == "stop_op":
+        # درخواست توقف هر عملیات در حال اجرا
+        for obj in ["atk", "new_acc_client", "new_client", "add_client"]:
+            try:
+                o = atk_state.get(obj)
+                if o and hasattr(o, "request_stop"):
+                    o.request_stop()
+            except: pass
+        atk_state.clear()
+        await q.answer("⏹️ درخواست توقف داده شد، چند لحظه...", show_alert=True)
+        await q.message.edit_text("⏹️ عملیات توسط کاربر متوقف شد.", reply_markup=main_menu())
         return
 
     if d == "home":
@@ -1556,10 +1596,11 @@ async def _cb_impl(c, q):
         prog = await q.message.edit_text(f"🎯 هدف: {target.title}\n🚀 در حال شروع حمله...")
         async def run():
             progress_msg = prog
+            stop_btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف عملیات", callback_data="stop_op")]])
             async def on_progress(text):
                 try:
                     nonlocal progress_msg
-                    await progress_msg.edit_text(text, disable_web_page_preview=True)
+                    await progress_msg.edit_text(text, reply_markup=stop_btn, disable_web_page_preview=True)
                 except Exception:
                     pass
             async def incremental_save(user_list):
@@ -1630,10 +1671,11 @@ async def _cb_impl(c, q):
                 except:
                     tname = "گروه هدف"
                 progress_msg = q.message
+                stop_btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف عملیات", callback_data="stop_op")]])
                 async def on_progress(text):
                     nonlocal progress_msg
                     try:
-                        await progress_msg.edit_text(f"🔄 تلاش مجدد\n{text}", disable_web_page_preview=True)
+                        await progress_msg.edit_text(f"🔄 تلاش مجدد\n{text}", reply_markup=stop_btn, disable_web_page_preview=True)
                     except: pass
                 async def inc_save(user_list):
                     try: save_scraped(user_list, tname, gid)
@@ -2690,8 +2732,9 @@ async def _steps_impl(c, m):
         async def run():
             try:
                 progress_msg = prog
+                stop_btn = InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف عملیات", callback_data="stop_op")]])
                 async def on_progress(text):
-                    try: await progress_msg.edit_text(text, disable_web_page_preview=True)
+                    try: await progress_msg.edit_text(text, reply_markup=stop_btn, disable_web_page_preview=True)
                     except: pass
                 async def inc_save(user_list):
                     try: save_scraped(user_list, target.title, target.id)

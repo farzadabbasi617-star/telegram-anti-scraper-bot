@@ -74,6 +74,10 @@ class AdvancedScraper:
         self._last_added_name = "-"
         self._last_progress_val = 0
         self._incremental_save_cb = None  # ذخیره تدریجی
+        self._stop_requested = False  # درخواست توقف از کاربر
+
+    def request_stop(self):
+        self._stop_requested = True
 
     def get_fp_dict(self):
         return self.fp_used
@@ -165,17 +169,26 @@ class AdvancedScraper:
                     text_out += f"👤 آخرین: {self._last_added_name[:25]}\n"
                 if elapsed > 30:
                     text_out += f"\n⏳ در حال کار، صبر کنید..."
+                # Return tuple of (text, reply_markup) if progress_cb supports stop button
+                # We just return text; caller handles the stop button
                 await self._progress_cb(text_out)
+                if self._stop_requested:
+                    self._stage = "توقف توسط کاربر..."
+                    await self._progress_cb(text_out + "\n\n🛑 درخواست توقف داده شد...")
+                    return
             except Exception:
                 pass
 
     async def human_sleep(self, min_t=0.3, max_t=1.2):
+        if self._stop_requested:
+            return
         t = random.uniform(min_t, max_t)
         if random.random() < 0.05:
             t += random.uniform(0.8, 2.0)
-        # در طول اسلیپ هم پیشرفت را بروزرسانی کن
         end_t = time.time() + t
         while time.time() < end_t:
+            if self._stop_requested:
+                return
             await asyncio.sleep(min(0.5, end_t - time.time()))
             if time.time() - self._last_progress >= 5:
                 await self._progress()
@@ -221,6 +234,8 @@ class AdvancedScraper:
         count_added = 0
         try:
             async for member in self.app.get_chat_members(chat_id, limit=10000):
+                if self._stop_requested:
+                    return True
                 self.total_api_calls +=1
                 await self.add_user(member.user, "direct_list")
                 count_added +=1
@@ -243,6 +258,8 @@ class AdvancedScraper:
         self._stage = f"صفحه بندی جستجو با حروف الفبا"
         await self._progress(force=True)
         for pi, prefix in enumerate(search_prefixes):
+            if self._stop_requested:
+                return True
             try:
                 while True:
                     self.total_api_calls +=1
@@ -275,6 +292,8 @@ class AdvancedScraper:
         await self._progress(force=True)
         msg_count = 0
         async for msg in self.app.get_chat_history(chat_id, limit=limit):
+            if self._stop_requested:
+                return
             self.total_api_calls +=1
             msg_count +=1
             if msg.from_user:
@@ -310,6 +329,8 @@ class AdvancedScraper:
         await self._progress(force=True)
         cnt = 0
         async for msg in self.app.get_chat_history(chat_id, limit=100000):
+            if self._stop_requested:
+                return
             self.total_api_calls +=1
             cnt +=1
             if msg.new_chat_members:

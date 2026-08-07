@@ -232,6 +232,8 @@ async def _run_strategy(sc, chat_id, strat, users_store, users_lock):
         prefixes = list("اآبپتثجچحخدذرزژسشصضطظعغفقکگلمنوهیabcdefghijklmnopqrstuvwxyz")
         random.shuffle(prefixes)
         for p in prefixes[:25]:
+            if self._stop_requested:
+                return
             try:
                 async for u in sc.app.get_chat_members(chat_id, query=p, limit=200):
                     await add_user(u.user if hasattr(u, "user") else u)
@@ -298,6 +300,8 @@ async def _run_strategy(sc, chat_id, strat, users_store, users_lock):
             random.shuffle(uids)
             done = 0
             for uid in uids[:150]:
+                if self._stop_requested:
+                    return
                 try:
                     async for g in sc.app.get_common_chats(uid):
                         try:
