@@ -66,7 +66,11 @@ from db import (
     delete_scanned_chat, toggle_chat_favorite, upsert_scanned_chat,
 )
 from bg_scraper import start_in_background as bg_scraper_start, _backup_session
-import instagram_scraper as ig_scraper
+try:
+    import instagram_scraper as ig_scraper
+except Exception as e:
+    print(f"⚠️ instagram_scraper import failed (bot will work without IG): {e}", flush=True)
+    ig_scraper = None
 
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
