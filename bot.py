@@ -6,12 +6,12 @@ import sys
 import os
 import json
 
-loop = asyncio.new_event_loop()
-asyncio.set_event_loop(loop)
-_original_get_event_loop = asyncio.get_event_loop
-def _patched_get_event_loop():
-    return loop
-asyncio.get_event_loop = _patched_get_event_loop
+# Ensure an event loop exists (fix for Python 3.12+ deprecation in Pyrogram)
+try:
+    asyncio.get_running_loop()
+except RuntimeError:
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
 
 import io
 import csv
