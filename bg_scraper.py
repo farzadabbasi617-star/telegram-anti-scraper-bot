@@ -73,9 +73,11 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
         set_bg_status("no_session")
         return 0, "no_session_file"
 
-    sc = AdvancedScraper(path, API_ID, API_HASH, phone=None, device_fp=fp)
+    # Pass phone=phone to use proper permanent session path
+    sc = AdvancedScraper("", API_ID, API_HASH, phone=phone, device_fp=fp)
     try:
         await sc.connect()
+        me = await sc.app.get_me()
     except (AuthKeyDuplicated, AuthKeyUnregistered, ConnectionError) as e:
         set_bg_status(f"auth_error:{str(e)[:50]}")
         try: await sc.disconnect()
@@ -83,6 +85,8 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
         return 0, f"auth_error: {e}"
     except Exception as e:
         set_bg_status(f"connect_err:{str(e)[:50]}")
+        try: await sc.disconnect()
+        except: pass
         return 0, f"connect: {e}"
 
     # Warm up caches (two passes)

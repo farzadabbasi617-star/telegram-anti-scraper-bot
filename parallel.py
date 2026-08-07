@@ -70,11 +70,10 @@ def make_scraper_for_phone(phone):
         pass
     if not fp:
         fp = random.choice(DEVICE_FP)
-    fname = safe_phone_filename(phone)
-    session_path = os.path.join(SESSIONS_DIR, f"acc_{fname}")
-    if not os.path.exists(session_path + ".session"):
+    # Pass phone=phone so AdvancedScraper resolves the permanent session path correctly
+    sc = AdvancedScraper("", API_ID, API_HASH, phone=phone, in_memory=False, device_fp=fp)
+    if not os.path.exists(sc.app.name + ".session"):
         return None, name
-    sc = AdvancedScraper(session_path, API_ID, API_HASH, phone=None, in_memory=False, device_fp=fp)
     sc.phone = phone
     return sc, name
 
