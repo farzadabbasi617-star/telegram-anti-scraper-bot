@@ -7,8 +7,12 @@ import os
 import json
 import traceback
 
-# Monkey patch for compatibility: do NOT create loop at import time
-# (This was causing "different event loop" errors with Pyrogram sub-clients)
+# Pyrogram 2.x needs an event loop set at import time (Python 3.10+ deprecates auto-loop)
+try:
+    _loop = asyncio.get_event_loop()
+except RuntimeError:
+    _loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(_loop)
 
 import io
 import csv
