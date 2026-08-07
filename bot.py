@@ -61,6 +61,9 @@ from db import (
     is_added as _db_is_added, count_added as _db_count_added,
     set_bg_scan, get_bg_scan, get_owner_phone, set_owner_phone,
     save_project, load_projects, count_projects, clear_projects, migrate_json_to_db,
+    get_scanned_chats, get_scanned_chat, update_chat_category,
+    get_users_by_source, count_users_by_source, get_all_categories, get_category_stats,
+    delete_scanned_chat, toggle_chat_favorite, upsert_scanned_chat,
 )
 from bg_scraper import start_in_background as bg_scraper_start, _backup_session
 
@@ -398,6 +401,243 @@ def _sub_back_btn(target="home"):
             InlineKeyboardButton("🏠 خانه", callback_data="home")]
 
 
+# ═══════════════ 🆕 UI Functions: Chats Manager ═══════════════
+def _progress_bar(pct):
+    """نمایش نوار پیشرفت ۱۰ خانه‌ای"""
+    filled = int(pct / 10)
+    empty = 10 - filled
+    return "🟦" * filled + "⬜" * empty
+
+def _chat_type_icon(ct):
+    return "📡" if ct == "channel" else "👥"
+
+async def _show_chats_manager(q, category=None):
+    """نمایش لیست گروه/کانال‌های اسکن شده با درصد پیشرفت"""
+    chats = get_scanned_chats(category=category)
+    title = f"📂 دسته‌بندی: {category}" if category else "🗂️ گروه/کانال‌های اسکن شده"
+    text = f"<b>{title}</b>\n━━━━━━━━━━━━━━━━━━\n"
+
+    if not chats:
+        text += "\n⚠️ هنوز هیچ گروه/کانالی اسکن نشده.\n"
+        text += "از منوی «🚀 حمله» یک گروه/کانال جدید اسکن کنید.\n"
+    else:
+        for i, ch in enumerate(chats[:30], 1):
+            icon = _chat_type_icon(ch.get("chat_type", ""))
+            pct = ch.get("progress_pct") or 0
+            extracted = ch.get("extracted_count") or 0
+            total = ch.get("total_members_estimate") or 0
+            fav = "⭐ " if ch.get("is_favorite") else ""
+            cat_tag = f" [{ch.get('category')}]" if ch.get("category") else ""
+            bar = _progress_bar(pct)
+            scans = ch.get("scan_count") or 1
+
+            text += f"\n{i}. {fav}<b>{ch['chat_name'][:35]}</b> {icon}{cat_tag}\n"
+            text += f"   {bar} {pct}% | {extracted:,}/{total or '?'} 👤\n"
+            text += f"   🆔 <code>{ch['chat_id']}</code> · 🔄 {scans} بار اسکن\n"
+
+    buttons = []
+    # Add each chat as a selectable button (limit to 12 rows, 2 per row)
+    for ch in chats[:24]:
+        icon = _chat_type_icon(ch.get("chat_type", ""))
+        name = ch["chat_name"][:20]
+        pct = ch.get("progress_pct") or 0
+        fav = "⭐" if ch.get("is_favorite") else ""
+        cid = ch["chat_id"]
+        buttons.append([
+            InlineKeyboardButton(f"{fav}{icon} {name} ({pct}%)", callback_data=f"chat_select_{cid}"),
+            InlineKeyboardButton("⚙️", callback_data=f"chat_cat_{cid}"),
+        ])
+
+    # Navigation row
+    nav = []
+    cats = get_all_categories()
+    if not category:
+        nav.append(InlineKeyboardButton("📂 دسته‌بندی‌ها", callback_data="categories_menu"))
+    else:
+        nav.append(InlineKeyboardButton("🔙 همه چت‌ها", callback_data="chats_manager"))
+    if cats:
+        for c in cats[:3]:
+            if c != category:
+                nav.append(InlineKeyboardButton(f"📁 {c}", callback_data=f"cat_view_{c}"))
+    buttons.append(nav)
+    buttons.append(_sub_back_btn())
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+async def _handle_chat_select(q, chat_id):
+    """نمایش جزئیات یک چت و گزینه‌های عملیات"""
+    ch = get_scanned_chat(chat_id)
+    if not ch:
+        await q.answer("چت پیدا نشد!", show_alert=True)
+        return
+
+    icon = _chat_type_icon(ch.get("chat_type", ""))
+    pct = ch.get("progress_pct") or 0
+    extracted = ch.get("extracted_count") or 0
+    total = ch.get("total_members_estimate") or 0
+    cat = ch.get("category") or "—"
+    fav = ch.get("is_favorite", False)
+    name = ch["chat_name"]
+    ctype = "کانال" if ch.get("chat_type") == "channel" else "گروه/سوپرگروه"
+
+    # Count users from this specific source
+    source_users = count_users_by_source(source_chat_id=chat_id)
+
+    text = f"<b>{icon} {name}</b>\n"
+    text += "━━━━━━━━━━━━━━━━━━\n"
+    text += f"🆔 آیدی: <code>{chat_id}</code>\n"
+    text += f"📁 نوع: {ctype}\n"
+    text += f"🏷️ دسته‌بندی: {cat}\n"
+    text += f"📊 پیشرفت: {_progress_bar(pct)} {pct}%\n"
+    text += f"👥 استخراج شده: {extracted:,} از ~{total or '?'}\n"
+    text += f"📦 کل در دیتابیس: {source_users:,} کاربر\n"
+    text += f"🔄 تعداد اسکن: {ch.get('scan_count', 1)} بار\n"
+    text += f"⭐ علاقه‌مندی: {'بله' if fav else 'خیر'}\n"
+
+    buttons = []
+    # Row 1: Attack + Add members
+    buttons.append([
+        InlineKeyboardButton("🚀 اسکن مجدد", callback_data=f"attack_from_chat_{chat_id}"),
+        InlineKeyboardButton("➕ ادد از این منبع", callback_data=f"source_filter_{chat_id}"),
+    ])
+    # Row 2: Category + Favorite
+    buttons.append([
+        InlineKeyboardButton("🏷️ تغییر دسته‌بندی", callback_data=f"cat_set_{chat_id}"),
+        InlineKeyboardButton("⭐" if not fav else "❌⭐", callback_data=f"chat_fav_{chat_id}"),
+    ])
+    # Row 3: View users + Delete
+    buttons.append([
+        InlineKeyboardButton(f"👥 مشاهده کاربران ({source_users})", callback_data=f"show_list_source_{chat_id}"),
+        InlineKeyboardButton("🗑️ حذف", callback_data=f"chat_del_{chat_id}"),
+    ])
+    buttons.append(_sub_back_btn(target="chats_manager"))
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+async def _start_attack_from_chat(q, chat_id):
+    """شروع حمله روی یک چت از قبل اسکن شده"""
+    ch = get_scanned_chat(chat_id)
+    if not ch:
+        await q.answer("چت پیدا نشد!", show_alert=True)
+        return
+    atk_state["target_chat_id"] = chat_id
+    atk_state["target_chat_name"] = ch["chat_name"]
+    await q.message.edit_text(
+        f"🎯 هدف: <b>{ch['chat_name']}</b> ({chat_id})\n"
+        f"📊 پیشرفت قبلی: {ch.get('progress_pct') or 0}%\n\n"
+        "یک اکانت برای حمله انتخاب کنید:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 حمله تک‌اکانت", callback_data="pick_account_attack")],
+            [InlineKeyboardButton("⚡ حمله موازی", callback_data="par_pick_target_attack")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data=f"chat_select_{chat_id}")],
+        ])
+    )
+
+
+async def _handle_chat_category_prompt(q, chat_id):
+    """نمایش پرامپت انتخاب دسته‌بندی"""
+    ch = get_scanned_chat(chat_id)
+    if not ch:
+        await q.answer("چت پیدا نشد!", show_alert=True)
+        return
+
+    existing_cats = get_all_categories()
+    text = f"🏷️ تغییر دسته‌بندی <b>{ch['chat_name']}</b>\n"
+    text += f"دسته فعلی: <b>{ch.get('category') or '—'}</b>\n\n"
+    text += "یک دسته انتخاب کنید یا دسته جدید تایپ کنید:"
+
+    buttons = []
+    # Show existing categories
+    for cat in existing_cats[:8]:
+        label = f"✅ {cat}" if cat == ch.get("category") else cat
+        buttons.append([InlineKeyboardButton(label, callback_data=f"cat_apply_{chat_id}_{cat}")])
+
+    # Remove category option
+    if ch.get("category"):
+        buttons.append([InlineKeyboardButton("❌ حذف دسته‌بندی", callback_data=f"cat_apply_{chat_id}_none")])
+
+    # Common predefined categories
+    predefined = ["گیمینگ", "آشپزی", "تکنولوژی", "کریپتو", "فیلم", "موسیقی", "ورزشی", "آموزشی", "فروشگاهی"]
+    row = []
+    for cat in predefined:
+        if cat not in existing_cats:
+            row.append(InlineKeyboardButton(cat, callback_data=f"cat_apply_{chat_id}_{cat}"))
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
+    if row:
+        buttons.append(row)
+
+    buttons.append(_sub_back_btn(target=f"chat_select_{chat_id}"))
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+async def _show_categories_menu(q):
+    """نمایش آمار دسته‌بندی‌ها"""
+    stats = get_category_stats()
+    cats = get_all_categories()
+    total_chats = len(get_scanned_chats())
+
+    text = "📂 <b>دسته‌بندی چت‌ها</b>\n━━━━━━━━━━━━━━━━━━\n"
+    text += f"📊 مجموع چت‌ها: {total_chats}\n"
+    text += f"🏷️ دسته‌بندی‌ها: {len(cats)}\n\n"
+
+    if stats:
+        for s in stats[:15]:
+            text += f"📁 <b>{s['category']}</b>: {s['chat_count']} چت · {s['total_users']:,} کاربر\n"
+    else:
+        text += "⚠️ هنوز دسته‌بندی ایجاد نشده.\nاز منوی مدیریت چت‌ها، دسته‌بندی تعیین کنید.\n"
+
+    buttons = []
+    # Show each category as button
+    for c in cats[:12]:
+        buttons.append([InlineKeyboardButton(f"📁 {c}", callback_data=f"cat_view_{c}")])
+
+    buttons.append(_sub_back_btn())
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+async def _show_source_filter_menu(q):
+    """منوی فیلتر منبع برای ادد ممبر"""
+    chats = get_scanned_chats()
+    cats = get_all_categories()
+
+    text = "🎯 <b>فیلتر کاربران بر اساس منبع</b>\n"
+    text += "━━━━━━━━━━━━━━━━━━\n"
+    text += "انتخاب کنید کاربران استخراج شده از کدام منبع اضافه شوند:\n"
+
+    buttons = []
+    # All users
+    buttons.append([InlineKeyboardButton("🌐 همه کاربران", callback_data="source_filter_all")])
+
+    # By category
+    if cats:
+        text += "\n📂 <b>بر اساس دسته‌بندی:</b>\n"
+        for c in cats[:8]:
+            cnt = count_users_by_source(category=c)
+            if cnt > 0:
+                buttons.append([InlineKeyboardButton(f"📁 {c} ({cnt:,})", callback_data=f"source_filter_cat_{c}")])
+
+    # By specific chat (favorites first, then recent)
+    if chats:
+        text += "\n👥 <b>بر اساس چت:</b>\n"
+        for ch in chats[:10]:
+            icon = _chat_type_icon(ch.get("chat_type", ""))
+            cnt = count_users_by_source(source_chat_id=ch["chat_id"])
+            if cnt > 0:
+                name = ch["chat_name"][:25]
+                buttons.append([InlineKeyboardButton(
+                    f"{icon} {name} ({cnt:,})",
+                    callback_data=f"source_filter_{ch['chat_id']}"
+                )])
+
+    buttons.append(_sub_back_btn())
+    await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
+
+
+# ═══════════════ End of UI Functions ═══════════════
+
+
 def main_menu():
     """Main dashboard with two-column modern layout + categories."""
     saved_accs = list_saved_accounts()
@@ -414,6 +654,11 @@ def main_menu():
     buttons.append([
         InlineKeyboardButton("🛡️ پنل دفاع و گروه", callback_data="menu_defense"),
         InlineKeyboardButton("📊 آمار کلی", callback_data="menu_stats"),
+    ])
+    # ===== دسته 1.5: مدیریت چت‌ها و دسته‌بندی =====
+    buttons.append([
+        InlineKeyboardButton("🗂️ مدیریت چت‌ها", callback_data="chats_manager"),
+        InlineKeyboardButton("📂 دسته‌بندی‌ها", callback_data="categories_menu"),
     ])
 
     # ===== دسته ۲: حمله/اسکرپ =====
@@ -558,6 +803,80 @@ async def _cb_impl(c, q):
     # ==================== خانه و منوهای دسته‌بندی ====================
     if d == "noop":
         await q.answer(cache_time=3)
+        return
+
+    # ==================== 🆕 مدیریت چت‌ها ====================
+    if d == "chats_manager":
+        await _show_chats_manager(q)
+        return
+
+    if d.startswith("chat_select_"):
+        chat_id = int(d.split("_")[2])
+        await _handle_chat_select(q, chat_id)
+        return
+
+    if d.startswith("chat_cat_"):
+        parts = d.split("_", 2)
+        chat_id = int(parts[2])
+        await _handle_chat_category_prompt(q, chat_id)
+        return
+
+    if d.startswith("chat_del_"):
+        chat_id = int(d.split("_")[2])
+        delete_scanned_chat(chat_id)
+        await q.answer("🗑️ چت از تاریخچه حذف شد", show_alert=True)
+        await _show_chats_manager(q)
+        return
+
+    if d.startswith("chat_fav_"):
+        chat_id = int(d.split("_")[2])
+        toggle_chat_favorite(chat_id)
+        await _show_chats_manager(q)
+        return
+
+    if d.startswith("attack_from_chat_"):
+        chat_id = int(d.split("_")[3])
+        atk_state["target_chat_id"] = chat_id
+        await _start_attack_from_chat(q, chat_id)
+        return
+
+    if d == "categories_menu":
+        await _show_categories_menu(q)
+        return
+
+    if d.startswith("cat_view_"):
+        cat = d[9:]  # after "cat_view_"
+        await _show_chats_manager(q, category=cat)
+        return
+
+    if d.startswith("cat_set_"):
+        parts = d.split("_", 2)
+        chat_id = int(parts[2])
+        await _handle_chat_category_prompt(q, chat_id)
+        return
+
+    if d.startswith("cat_apply_"):
+        parts = d.split("_")
+        chat_id = int(parts[2])
+        new_cat = "_".join(parts[3:])
+        update_chat_category(chat_id, new_cat if new_cat != "none" else "")
+        await q.answer(f"✅ دسته‌بندی به '{new_cat}' تغییر کرد" if new_cat != "none" else "✅ دسته‌بندی حذف شد", show_alert=True)
+        await _show_chats_manager(q)
+        return
+
+    if d.startswith("source_filter_"):
+        filter_type = d.split("_")[2]
+        if filter_type == "all":
+            source_chat_id = None
+        elif filter_type == "cat":
+            source_cat = "_".join(d.split("_")[3:])
+            source_chat_id = None
+            atk_state["source_cat"] = source_cat
+        else:
+            source_chat_id = int(d.split("_")[2]) if d.split("_")[2].isdigit() else None
+        atk_state["source_filter"] = source_chat_id
+        await q.answer("✅ فیلتر اعمال شد", show_alert=True)
+        await q.message.edit_text(q.message.text + f"\n\n✅ فیلتر منبع اعمال شد", reply_markup=main_menu())
         return
 
     if d == "stop_op":
@@ -985,6 +1304,45 @@ async def _cb_impl(c, q):
         nav_buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="menu_stats"),
                             InlineKeyboardButton("🏠 خانه", callback_data="home")])
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(nav_buttons), disable_web_page_preview=True)
+        return
+
+    # ==================== 🆕 لیست کاربران فیلتر شده بر اساس منبع ====================
+    if d.startswith("show_list_source_"):
+        chat_id = int(d.split("_")[3])
+        page = int(d.split("_")[4]) if len(d.split("_")) > 4 else 0
+        PER_PAGE = 15
+        ch = get_scanned_chat(chat_id)
+        ch_name = ch["chat_name"] if ch else f"چت {chat_id}"
+
+        users = get_users_by_source(source_chat_id=chat_id, limit=PER_PAGE, offset=page * PER_PAGE)
+        total = count_users_by_source(source_chat_id=chat_id)
+        if not users:
+            await q.answer("هیچ کاربری از این منبع یافت نشد!", show_alert=True)
+            return
+
+        total_pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+        text = f"👥 کاربران استخراج شده از:\\n<b>{ch_name}</b>\\n"
+        text += f"━━━━━━━━━━━━━━━━━━\\n"
+        text += f"📦 تعداد کل: {total:,}\\n"
+        text += f"📄 صفحه {page+1} از {total_pages}\\n"
+        text += "━━━━━━━━━━━━━━━━━━\\n"
+
+        for i, u in enumerate(users, page * PER_PAGE + 1):
+            name = (u.get("first_name", "") or "بدون نام").strip()
+            if u.get("last_name"):
+                name += " " + (u.get("last_name") or "").strip()
+            uname = f"@{u['username']}" if u.get("username") else ""
+            text += f"{i}. <b>{name}</b> {uname}\n"
+            text += f"   <code>{u['user_id']}</code>\\n\\n"
+
+        nav = []
+        if page > 0:
+            nav.append(InlineKeyboardButton("⬅️ قبلی", callback_data=f"show_list_source_{chat_id}_{page-1}"))
+        if page < total_pages - 1:
+            nav.append(InlineKeyboardButton("بعدی ➡️", callback_data=f"show_list_source_{chat_id}_{page+1}"))
+        buttons = [nav] if nav else []
+        buttons.append(_sub_back_btn(target=f"chat_select_{chat_id}"))
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
         return
 
     # ==================== تاریخچه اعضای اضافه شده ====================

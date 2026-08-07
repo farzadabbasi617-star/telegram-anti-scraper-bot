@@ -642,46 +642,60 @@ class AdvancedScraper:
                         raise Exception("❌ گروه/کانال پیدا نشد! لطفا یک بار در تلگرام باز و اسکرول کنید.")
             chat_id = target_id_resolved
 
-            # تشخیص نوع چت: کانال یا گروه/سوپرگروه
+            # تشخیص نوع چت: کانال یا گروه/سوپرگروه + تعداد اعضا برای درصد پیشرفت
             is_channel = str(target_found.type).lower() == "chattype.channel"
             chat_type_str = "کانال" if is_channel else "گروه"
-            print(f"✅ هدف: {target_found.title} | نوع: {chat_type_str}", flush=True)
+            total_members = getattr(target_found, 'members_count', 0) or 0
+            chat_type_db = "channel" if is_channel else "group"
+            print(f"✅ هدف: {target_found.title} | نوع: {chat_type_str} | اعضا: {total_members or '?'}", flush=True)
 
-            self._stage = f"✅ هدف: {target_found.title} | نوع: {chat_type_str} | آماده‌سازی شروع استخراج..."
+            # 🆕 ذخیره در تاریخچه چت‌های اسکن شده
+            try:
+                import db as _db
+                _db.upsert_scanned_chat(
+                    chat_id=chat_id,
+                    chat_name=target_found.title,
+                    chat_type=chat_type_db,
+                    total_members=total_members,
+                    extracted_new=0,
+                    progress_pct=0
+                )
+            except Exception as e:
+                print(f"save chat history err: {e}", flush=True)
+
+            # 🆕 ارسال callback برای forward کردن group_id و group_name به incremental save
+            self._scanned_group_id = chat_id
+            self._scanned_group_name = target_found.title
+
+            self._stage = f"✅ هدف: {target_found.title} | نوع: {chat_type_str} | 👥 ~{total_members or '?'} عضو"
             await self._progress(force=True)
 
             self._stage = f"🚀 شروع استخراج از {target_found.title}"
             await self._progress(force=True)
 
             if is_channel:
-                # ═══════ استراتژی مخصوص کانال ═══════
                 print("📡 حالت کانال فعال شد - استفاده از متدهای مخصوص کانال", flush=True)
-
-                # ۱. اسکن پست‌های کانال (نویسنده‌ها + ری‌اکشن‌ها + فرواردها)
                 await self.scrape_channel_posts(chat_id, limit=10000)
-
-                # ۲. اسکن اختصاصی ری‌اکشن‌ها (دور دوم با focus بیشتر روی ری‌اکشن‌ها)
                 await self.scrape_reactions_dedicated(chat_id, limit=5000)
-
-                # ۳. تلاش برای get_chat_members (فقط برای کانال‌هایی که ادمین هستیم جواب میده)
                 try:
                     await self.scrape_direct_paginated(chat_id)
                 except Exception as e:
                     print(f"⚠️ get_chat_members روی کانال جواب نداد (طبیعیه): {e}", flush=True)
-
             else:
-                # ═══════ استراتژی مخصوص گروه/سوپرگروه ═══════
-                # ۱. لیست مستقیم اعضا + صفحه‌بندی الفبایی
                 await self.scrape_direct_paginated(chat_id)
-
-                # ۲. اسکن تاریخچه پیام‌ها
                 await self.scrape_full_history(chat_id, limit=3000)
-
-                # ۳. اسکن پیام‌های ورود عضو جدید
                 await self.scrape_join_events(chat_id)
-
-                # ۴. 🆕 اسکن اختصاصی ری‌اکشن‌ها (کسایی که فقط ری‌اکشن میدن)
                 await self.scrape_reactions_dedicated(chat_id, limit=5000)
+
+            # 🆕 محاسبه درصد پیشرفت و آپدیت تاریخچه
+            extracted = len(self.found_users)
+            pct = 0
+            if is_channel:
+                # برای کانال درصد رو بر اساس تعداد پست‌های اسکن شده نمی‌تونیم حساب کنیم
+                pct = min(95, extracted) if extracted > 0 else 0
+            else:
+                if total_members and total_members > 0:
+                    pct = min(99, int(extracted * 100 / total_members))
 
             # ذخیره نهایی
             if self._incremental_save_cb:
@@ -689,9 +703,24 @@ class AdvancedScraper:
                     await self._incremental_save_cb(list(self.found_users.values()))
                 except Exception:
                     pass
+
+            # 🆕 آپدیت تاریخچه با نتیجه نهایی
+            try:
+                import db as _db
+                _db.upsert_scanned_chat(
+                    chat_id=chat_id,
+                    chat_name=target_found.title,
+                    chat_type=chat_type_db,
+                    total_members=total_members,
+                    extracted_new=extracted,
+                    progress_pct=pct
+                )
+            except: pass
+
             total = time.time() - self.start_time
-            print(f"\n🏁 تمام شد در {int(total)}s، مجموع {len(self.found_users)} کاربر", flush=True)
-            self._stage = f"✅ تمام شد! در حال آماده سازی فایل خروجی..."
+            pct_str = f" | 📊 {pct}% پیشرفت" if pct > 0 else ""
+            print(f"\n🏁 تمام شد در {int(total)}s، مجموع {extracted} کاربر{pct_str}", flush=True)
+            self._stage = f"✅ تمام شد! {extracted:,} کاربر{pct_str}"
             await self._progress(force=True)
             return self.found_users
         finally:

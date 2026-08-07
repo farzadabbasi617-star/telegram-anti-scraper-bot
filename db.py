@@ -111,6 +111,23 @@ def init_tables():
         VALUES (1, FALSE, 'idle')
         ON CONFLICT (id) DO NOTHING
     """)
+    # 🆕 جدول تاریخچه چت‌های اسکن شده (گروه/کانال) با دسته‌بندی و درصد پیشرفت
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS scanned_chats_tbl (
+            chat_id BIGINT PRIMARY KEY,
+            chat_name TEXT NOT NULL,
+            chat_type TEXT DEFAULT 'group',
+            category TEXT DEFAULT '',
+            total_members_estimate INTEGER DEFAULT 0,
+            extracted_count INTEGER DEFAULT 0,
+            progress_pct INTEGER DEFAULT 0,
+            last_scan BIGINT,
+            first_scan BIGINT,
+            scan_count INTEGER DEFAULT 0,
+            is_favorite BOOLEAN DEFAULT FALSE,
+            notes TEXT DEFAULT ''
+        )
+    """)
     conn.commit()
     cur.close()
 
@@ -524,6 +541,177 @@ def migrate_json_to_db():
 # Initialize at import
 init_tables()
 
+
+
+# ---------------- Scanned Chats History (group/channel tracker) ----------------
+def upsert_scanned_chat(chat_id, chat_name, chat_type="group", category="",
+                         total_members=0, extracted_new=0, progress_pct=None):
+    """Register or update a chat in scan history"""
+    try:
+        cur = get_conn().cursor()
+        existing = get_scanned_chat(chat_id)
+        now = int(time.time())
+        if existing:
+            new_extracted = (existing.get("extracted_count") or 0) + int(extracted_new or 0)
+            new_pct = progress_pct if progress_pct is not None else existing.get("progress_pct") or 0
+            new_total = int(total_members or 0) or existing.get("total_members_estimate") or 0
+            new_cat = category if category else existing.get("category") or ""
+            cur.execute("""
+                UPDATE scanned_chats_tbl SET
+                    chat_name=%s, chat_type=%s, category=%s,
+                    total_members_estimate=%s, extracted_count=%s, progress_pct=%s,
+                    last_scan=%s, scan_count=COALESCE(scan_count,0)+1
+                WHERE chat_id=%s
+            """, (chat_name, chat_type, new_cat, new_total, new_extracted, new_pct,
+                  now, int(chat_id)))
+        else:
+            cur.execute("""
+                INSERT INTO scanned_chats_tbl
+                (chat_id, chat_name, chat_type, category, total_members_estimate,
+                 extracted_count, progress_pct, last_scan, first_scan, scan_count)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,1)
+            """, (int(chat_id), chat_name, chat_type, category or "",
+                  int(total_members or 0), int(extracted_new or 0),
+                  int(progress_pct or 0), now, now))
+        cur.close()
+    except Exception as e:
+        print(f"upsert_scanned_chat err: {e}", flush=True)
+
+
+def get_scanned_chats(category=None):
+    """Get list of scanned chats, optionally filtered by category"""
+    try:
+        cur = get_conn().cursor(cursor_factory=DictCursor)
+        if category:
+            cur.execute("SELECT * FROM scanned_chats_tbl WHERE category=%s ORDER BY last_scan DESC", (category,))
+        else:
+            cur.execute("SELECT * FROM scanned_chats_tbl ORDER BY is_favorite DESC, last_scan DESC")
+        rows = cur.fetchall()
+        cur.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"get_scanned_chats err: {e}", flush=True)
+        return []
+
+
+def get_scanned_chat(chat_id):
+    try:
+        cur = get_conn().cursor(cursor_factory=DictCursor)
+        cur.execute("SELECT * FROM scanned_chats_tbl WHERE chat_id=%s", (int(chat_id),))
+        r = cur.fetchone()
+        cur.close()
+        return dict(r) if r else None
+    except:
+        return None
+
+
+def update_chat_category(chat_id, category):
+    try:
+        cur = get_conn().cursor()
+        cur.execute("UPDATE scanned_chats_tbl SET category=%s WHERE chat_id=%s", (category, int(chat_id)))
+        cur.close()
+    except: pass
+
+
+def update_chat_progress(chat_id, extracted_new, progress_pct):
+    cur = get_conn().cursor()
+    cur.execute("""
+        UPDATE scanned_chats_tbl SET
+            extracted_count = COALESCE(extracted_count,0) + %s,
+            progress_pct = %s,
+            last_scan = %s
+        WHERE chat_id = %s
+    """, (int(extracted_new), int(progress_pct or 0), int(time.time()), int(chat_id)))
+    cur.close()
+
+
+def get_users_by_source(source_chat_id=None, category=None, limit=2000, offset=0):
+    """Get users filtered by source chat or category"""
+    try:
+        cur = get_conn().cursor(cursor_factory=DictCursor)
+        if category:
+            cur.execute("""
+                SELECT u.user_id, u.username, u.first_name, u.last_name, u.source_group_id, u.source_group_name
+                FROM scraped_users u
+                JOIN scanned_chats_tbl c ON u.source_group_id = c.chat_id
+                WHERE c.category = %s
+                ORDER BY u.added_at DESC LIMIT %s OFFSET %s
+            """, (category, limit, offset))
+        elif source_chat_id:
+            cur.execute("""
+                SELECT user_id, username, first_name, last_name, source_group_id, source_group_name
+                FROM scraped_users WHERE source_group_id=%s
+                ORDER BY added_at DESC LIMIT %s OFFSET %s
+            """, (int(source_chat_id), limit, offset))
+        else:
+            cur.execute("""
+                SELECT user_id, username, first_name, last_name, source_group_id, source_group_name
+                FROM scraped_users ORDER BY added_at DESC LIMIT %s OFFSET %s
+            """, (limit, offset))
+        rows = cur.fetchall()
+        cur.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"get_users_by_source err: {e}", flush=True)
+        return []
+
+
+def count_users_by_source(source_chat_id=None, category=None):
+    try:
+        cur = get_conn().cursor()
+        if category:
+            cur.execute("""
+                SELECT COUNT(*) FROM scraped_users u
+                JOIN scanned_chats_tbl c ON u.source_group_id = c.chat_id WHERE c.category=%s
+            """, (category,))
+        elif source_chat_id:
+            cur.execute("SELECT COUNT(*) FROM scraped_users WHERE source_group_id=%s", (int(source_chat_id),))
+        else:
+            cur.execute("SELECT COUNT(*) FROM scraped_users")
+        r = cur.fetchone()[0]
+        cur.close()
+        return r
+    except:
+        return 0
+
+
+def get_all_categories():
+    try:
+        cur = get_conn().cursor()
+        cur.execute("SELECT DISTINCT category FROM scanned_chats_tbl WHERE category IS NOT NULL AND category != '' ORDER BY category")
+        return [r[0] for r in cur.fetchall()]
+    except:
+        return []
+
+
+def get_category_stats():
+    try:
+        cur = get_conn().cursor(cursor_factory=DictCursor)
+        cur.execute("""
+            SELECT category, COUNT(*) as chat_count,
+                   COALESCE(SUM(extracted_count),0) as total_users
+            FROM scanned_chats_tbl WHERE category != ''
+            GROUP BY category ORDER BY total_users DESC
+        """)
+        return [dict(r) for r in cur.fetchall()]
+    except:
+        return []
+
+
+def delete_scanned_chat(chat_id):
+    try:
+        cur = get_conn().cursor()
+        cur.execute("DELETE FROM scanned_chats_tbl WHERE chat_id=%s", (int(chat_id),))
+        cur.close()
+    except: pass
+
+
+def toggle_chat_favorite(chat_id):
+    try:
+        cur = get_conn().cursor()
+        cur.execute("UPDATE scanned_chats_tbl SET is_favorite = NOT COALESCE(is_favorite, FALSE) WHERE chat_id=%s", (int(chat_id),))
+        cur.close()
+    except: pass
 
 # ---------------- Favorites / bookmarks ----------------
 def fav_add(url):
