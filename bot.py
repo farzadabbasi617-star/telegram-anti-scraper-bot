@@ -31,7 +31,9 @@ from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import SessionPasswordNeeded, AuthKeyDuplicated, AuthKeyUnregistered, FloodWait
 
-from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename, DEVICE_FP
+from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename, DEVICE_FP, _get_session_lock, _enable_wal_on_session
+# _global_connect_lock حالا از attacker میاد
+from attacker import _global_connect_lock as _connect_lock
 from defender import AdvancedDefender
 # hunter kept for backward compat (existing data still accessible)
 from hunter import (
@@ -77,8 +79,8 @@ MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر 
 LAST_ERROR = ""  # آخرین خطای رخ داده برای دیباگ
 # Regex for detecting URLs in messages
 URL_REGEX = re.compile(r"https?://[^\s<>\"')]+")
-# قفل سراسری برای اتصال Client ها تا دو اتصال همزمان به یک فایل سشن SQLite باعث database is locked نشود
-_connect_lock = asyncio.Lock()
+# قفل سراسری برای اتصال Client ها - حالا از attacker.py ایمپورت میشه
+# _connect_lock = asyncio.Lock()  # ← از attacker import شده
 
 def _log_err(e, where=""):
     global LAST_ERROR
@@ -104,9 +106,15 @@ def _cleanup_session_locks():
         import glob as _g
         for pat in [
             os.path.join(SESSIONS_DIR, "*.session-journal"),
+            os.path.join(SESSIONS_DIR, "*session-wal"),
+            os.path.join(SESSIONS_DIR, "*session-shm"),
             os.path.join(SESSIONS_DIR, "_newtmp_*.session"),
             "antiscraper_bot.session-journal",
+            "antiscraper_bot.session-wal",
+            "antiscraper_bot.session-shm",
             "*.session-journal",
+            "*.session-wal",
+            "*.session-shm",
             "tmp_*.session",
             "tmp_*.session-journal",
         ]:
@@ -116,6 +124,12 @@ def _cleanup_session_locks():
                     print(f"🧹 قفل قدیمی پاک شد: {os.path.basename(f)}", flush=True)
                 except Exception:
                     pass
+        # فعال کردن WAL mode روی سشن خود ربات
+        _enable_wal_on_session("antiscraper_bot")
+        # و روی همه سشن‌های موجود
+        for f in _g.glob(os.path.join(SESSIONS_DIR, "acc_*.session")):
+            base = f[:-8]  # حذف .session از آخر
+            _enable_wal_on_session(base)
     except Exception:
         pass
 
@@ -133,7 +147,19 @@ async def robust_connect(client, max_retries=6):
                 except Exception:
                     pass
                 await asyncio.sleep(0.3)
+                # فعال کردن WAL mode قبل از connect
+                try:
+                    sess_name = client.app.name if hasattr(client, 'app') else client.name
+                    _enable_wal_on_session(sess_name)
+                except:
+                    pass
                 await client.connect()
+                # WAL mode بعد از connect
+                try:
+                    sess_name = client.app.name if hasattr(client, 'app') else client.name
+                    _enable_wal_on_session(sess_name)
+                except:
+                    pass
                 return
             except Exception as e:
                 msg = str(e).lower()
@@ -141,7 +167,7 @@ async def robust_connect(client, max_retries=6):
                     print(f"⚠️ قفل دیتابیس سشن، تلاش {attempt+1}/{max_retries} بعد از پاکسازی...", flush=True)
                     # تمام فایل های قفل را پاک کن
                     try:
-                        client_name = client.app.name
+                        client_name = client.app.name if hasattr(client, 'app') else client.name
                         for pat in [client_name + ".session-journal", client_name + ".session-wal", client_name + ".session-shm", "*.session-journal", "*.session-wal", "*.session-shm"]:
                             for f in _glob.glob(pat):
                                 try: os.remove(f)

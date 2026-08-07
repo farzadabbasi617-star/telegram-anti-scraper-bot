@@ -17,7 +17,7 @@ from pyrogram.errors import (
     PeerIdInvalid, BadRequest
 )
 
-from attacker import AdvancedScraper, safe_phone_filename, SESSIONS_DIR, DEVICE_FP
+from attacker import AdvancedScraper, safe_phone_filename, SESSIONS_DIR, DEVICE_FP, _enable_wal_on_session, _get_session_lock
 
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
@@ -74,6 +74,8 @@ def make_scraper_for_phone(phone):
     sc = AdvancedScraper("", API_ID, API_HASH, phone=phone, in_memory=False, device_fp=fp)
     if not os.path.exists(sc.app.name + ".session"):
         return None, name
+    # WAL mode on existing session
+    _enable_wal_on_session(sc.app.name)
     sc.phone = phone
     return sc, name
 
@@ -103,7 +105,10 @@ async def parallel_scrape(chat_id, phones, progress_cb=None, users_store=None, u
         dash["workers"][phone] = {"state": "connecting", "found": 0, "name": name, "stage": "در حال اتصال...", "speed":0, "elapsed":0}
         log(f"🔌 {name} در حال اتصال (استراتژی: {strategy_list[0]})...")
         try:
-            await sc.connect()
+            # WAL mode قبل از connect
+            _enable_wal_on_session(sc.app.name)
+            await sc.connect()  # حالا خودش لاک سراسری + per-session داره
+            _enable_wal_on_session(sc.app.name)
             dash["workers"][phone]["state"] = "warming"
             # warm up caches
             try:

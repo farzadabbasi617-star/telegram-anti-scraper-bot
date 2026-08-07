@@ -8,9 +8,43 @@ import io
 import csv
 import string
 import os
+import sqlite3
 from pyrogram import Client
 from pyrogram.errors import FloodWait, ChatAdminRequired, SessionPasswordNeeded, PhoneCodeInvalid, PhoneCodeExpired, AuthKeyDuplicated, AuthKeyUnregistered
 from pyrogram.raw import functions, types
+
+# ===== قفل سراسری برای جلوگیری از database is locked =====
+# یک قفل کلی برای اینکه دو Client همزمان connect/disconnect نکنن
+_global_connect_lock = asyncio.Lock()
+
+# قفل به ازای هر فایل سشن - برای اینکه دو عملیات همزمان روی یک فایل
+# سشن کار نکنن (مثلاً اسکن خودکار + اسکن دستی همزمان با یک اکانت)
+_session_locks: dict = {}
+
+def _get_session_lock(session_path: str) -> asyncio.Lock:
+    """Get or create an asyncio lock for a specific session file."""
+    key = os.path.realpath(session_path) if session_path else session_path
+    if key not in _session_locks:
+        _session_locks[key] = asyncio.Lock()
+    return _session_locks[key]
+
+
+def _enable_wal_on_session(session_path: str):
+    """Set WAL journal mode on a Pyrogram session SQLite file.
+    WAL allows concurrent reads + one writer without locking issues."""
+    if not session_path:
+        return
+    db_path = session_path + ".session"
+    try:
+        if os.path.exists(db_path):
+            conn = sqlite3.connect(db_path, timeout=5)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.close()
+            print(f"✅ WAL mode enabled on {os.path.basename(db_path)}", flush=True)
+    except Exception as e:
+        print(f"⚠️ WAL setup on {db_path}: {e}", flush=True)
 
 # فینگرپرینت دستگاه های مختلف برای دور زدن تشخیص
 DEVICE_FP = [
@@ -86,31 +120,56 @@ class AdvancedScraper:
         """سشن از فایل موقت را با rename به نام دائمی تبدیل میکند (۱۰۰٪ پایدار، auth key عوض نمیشود)"""
         if not self._perm_session_path:
             return
-        try:
-            await self.app.storage.close()
-            # Find actual temp session file paths (Pyrogram workdir is "." and app.name has full path)
-            tmp_base = self.app.name
-            perm_base = self._perm_session_path
-            # Rename all related session files
-            import glob as _glob
-            for tmpf in _glob.glob(tmp_base + ".session*"):
-                suf = tmpf[len(tmp_base):]
-                permf = perm_base + suf
-                if os.path.exists(permf):
-                    try: os.remove(permf)
-                    except: pass
-                os.replace(tmpf, permf)
-            print(f"💾 سشن به {perm_base} منتقل شد", flush=True)
-        except Exception as e:
-            print(f"⚠️ خطا در ذخیره دائمی سشن: {e}", flush=True)
-            import traceback; traceback.print_exc()
+        sess_lock = _get_session_lock(self.app.name)
+        perm_lock = _get_session_lock(self._perm_session_path)
+        async with sess_lock:
+            async with perm_lock:
+                async with _global_connect_lock:
+                    try:
+                        await self.app.storage.close()
+                        # Find actual temp session file paths (Pyrogram workdir is "." and app.name has full path)
+                        tmp_base = self.app.name
+                        perm_base = self._perm_session_path
+                        # Rename all related session files (including .wal, .shm, .session)
+                        import glob as _glob
+                        for tmpf in _glob.glob(tmp_base + ".session*") + _glob.glob(tmp_base + ".session-*"):
+                            suf = tmpf[len(tmp_base):]
+                            permf = perm_base + suf
+                            if os.path.exists(permf):
+                                try: os.remove(permf)
+                                except: pass
+                            os.replace(tmpf, permf)
+                        # فعال کردن WAL روی سشن دائمی
+                        _enable_wal_on_session(perm_base)
+                        # آپدیت لاک‌ها: لاک مسیر موقت رو حذف و به مسیر دائمی منتقل کن
+                        if self.app.name in _session_locks:
+                            old_lock = _session_locks.pop(self.app.name)
+                            _session_locks[perm_base] = old_lock
+                        print(f"💾 سشن به {perm_base} منتقل شد", flush=True)
+                    except Exception as e:
+                        print(f"⚠️ خطا در ذخیره دائمی سشن: {e}", flush=True)
+                        import traceback; traceback.print_exc()
 
     async def connect(self):
-        try:
-            await self.app.connect()
-        except (AuthKeyDuplicated, AuthKeyUnregistered):
-            raise
-        self.start_time = time.time()
+        """اتصال امن با قفل سراسری + قفل per-session + WAL mode"""
+        sess_name = self.app.name  # e.g. saved_sessions/acc_98912xxxxx
+        sess_lock = _get_session_lock(sess_name)
+
+        async with sess_lock:  # اول قفل مخصوص این سشن
+            async with _global_connect_lock:  # بعد قفل سراسری
+                # فعال کردن WAL mode قبل از اتصال
+                _enable_wal_on_session(sess_name)
+
+                try:
+                    await self.app.connect()
+                except (AuthKeyDuplicated, AuthKeyUnregistered):
+                    raise
+
+                # مجدداً WAL رو بعد از اتصال هم ست کن (Pyrogram ممکنه دیتابیس
+                # رو موقع connect باز/بسته کنه و تنظیمات رو reset کنه)
+                _enable_wal_on_session(sess_name)
+
+                self.start_time = time.time()
 
     async def _progress(self, text=None, force=False):
         """گزارش پیشرفت زنده با نوار پراگرس بار متحرک و درصد تقریبی"""
@@ -447,8 +506,11 @@ class AdvancedScraper:
         return out.getvalue().encode("utf-8-sig")
 
     async def disconnect(self):
-        try:
-            await asyncio.sleep(0.3)
-            await self.app.disconnect()
-        except Exception as e:
-            print(f"هنگام قطع: {e}", flush=True)
+        sess_lock = _get_session_lock(self.app.name)
+        async with sess_lock:
+            async with _global_connect_lock:
+                try:
+                    await asyncio.sleep(0.3)
+                    await self.app.disconnect()
+                except Exception as e:
+                    print(f"هنگام قطع: {e}", flush=True)

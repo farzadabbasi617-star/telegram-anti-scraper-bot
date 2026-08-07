@@ -5,6 +5,7 @@ Database module - Neon PostgreSQL
 import os
 import json
 import time
+import threading
 import psycopg2
 from psycopg2.extras import Json, DictCursor
 
@@ -14,13 +15,15 @@ DB_URL = os.environ.get(
 )
 
 _conn = None
+_conn_lock = threading.Lock()
 
 def get_conn():
     global _conn
-    if _conn is None or _conn.closed:
-        _conn = psycopg2.connect(DB_URL, connect_timeout=10)
-        _conn.autocommit = True
-    return _conn
+    with _conn_lock:
+        if _conn is None or _conn.closed:
+            _conn = psycopg2.connect(DB_URL, connect_timeout=10)
+            _conn.autocommit = True
+        return _conn
 
 def init_tables():
     conn = get_conn()

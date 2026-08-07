@@ -23,7 +23,7 @@ from db import (
     get_config, save_account, load_session_blob, save_session_blob,
     bulk_save_users, count_users, kv_set, kv_get
 )
-from attacker import AdvancedScraper, safe_phone_filename, SESSIONS_DIR, DEVICE_FP
+from attacker import AdvancedScraper, safe_phone_filename, SESSIONS_DIR, DEVICE_FP, _enable_wal_on_session
 
 API_ID = int(os.environ.get("API_ID", 6))
 API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
@@ -38,6 +38,9 @@ async def _ensure_session(phone):
     fname = sfn(phone)
     path = os.path.join(SESSIONS_DIR, f"acc_{fname}.session")
     if os.path.exists(path) and os.path.getsize(path) > 100:
+        # فعال کردن WAL روی سشن موجود
+        base = path[:-8]  # acc_98912xxx (بدون .session)
+        _enable_wal_on_session(base)
         return path
     # restore from DB
     blob = load_session_blob(phone)
@@ -45,6 +48,9 @@ async def _ensure_session(phone):
         os.makedirs(SESSIONS_DIR, exist_ok=True)
         with open(path, "wb") as f:
             f.write(blob)
+        # روی سشن restore شده هم WAL فعال کن
+        base = path[:-8]
+        _enable_wal_on_session(base)
         return path
     return None
 
@@ -76,7 +82,10 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
     # Pass phone=phone to use proper permanent session path
     sc = AdvancedScraper("", API_ID, API_HASH, phone=phone, device_fp=fp)
     try:
+        # WAL mode قبل از connect
+        _enable_wal_on_session(sc.app.name)
         await sc.connect()
+        _enable_wal_on_session(sc.app.name)
         me = await sc.app.get_me()
     except (AuthKeyDuplicated, AuthKeyUnregistered, ConnectionError) as e:
         set_bg_status(f"auth_error:{str(e)[:50]}")
