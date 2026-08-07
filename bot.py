@@ -696,6 +696,68 @@ async def _show_source_filter_menu(q):
 
 # ═══════════════ End of UI Functions ═══════════════
 
+# ═══════════════ 📥 Session file upload helper (bypass 2FA) ═══════════════
+async def _save_uploaded_session(st, phone, session_bytes, orig_fname):
+    """Save an uploaded .session file and register the account"""
+    import random as _r
+    fname = safe_phone_filename(phone)
+    dest = os.path.join(SESSIONS_DIR, f"acc_{fname}.session")
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    try:
+        with open(dest, "wb") as f:
+            f.write(session_bytes)
+        # Enable WAL on the new session
+        _enable_wal_on_session(os.path.join(SESSIONS_DIR, f"acc_{fname}"))
+    except Exception as e:
+        return f"❌ خطا در ذخیره فایل: {e}"
+
+    # Try to connect and verify
+    fp = random.choice(DEVICE_FP)
+    try:
+        sc = AdvancedScraper("", API_ID, API_HASH, phone=phone, device_fp=fp)
+        await sc.connect()
+        me = await sc.app.get_me()
+        # Success! Save account
+        accs = load_accounts()
+        accs[phone] = {
+            "name": f"{me.first_name or ''} {me.last_name or ''}".strip(),
+            "user_id": me.id,
+            "username": me.username or "",
+            "added_at": int(time.time()),
+            "device_fp": fp
+        }
+        save_accounts(accs)
+        try: _backup_session(phone)
+        except: pass
+        try: await sc.disconnect()
+        except: pass
+        return (
+            f"✅ <b>اکانت با موفقیت اضافه شد!</b>\n\n"
+            f"👤 {me.first_name} {me.last_name or ''}\n"
+            f"📱 <code>{phone}</code>\n"
+            f"🔐 سشن از فایل <code>{orig_fname}</code> بارگذاری شد\n"
+            f"💾 در دیتابیس ابری هم ذخیره شد\n\n"
+            f"✅ دیگه نیازی به کد و 2FA نداری!"
+        )
+    except FloodWait as fw:
+        try: await sc.disconnect()
+        except: pass
+        return f"⚠️ اکانت در حالت محدودیت موقت (FloodWait {fw.value}s) - فایل ذخیره شد، بعداً امتحان کن"
+    except SessionPasswordNeeded:
+        try: await sc.disconnect()
+        except: pass
+        return (
+            f"⚠️ فایل سشن ذخیره شد ولی هنوز نیاز به 2FA داره!\n"
+            f"ظاهراً موقع ساخت سشن، 2FA رو وارد نکردی.\n"
+            f"دوباره با اسکریپت Pyrogram لاگین کن و <b>حتماً 2FA رو هم وارد کن</b>، بعد فایل جدید رو آپلود کن."
+        )
+    except Exception as e:
+        try: await sc.disconnect()
+        except: pass
+        return f"❌ خطا در تایید سشن: {str(e)[:200]}\n\nفایل سشن معتبر نیست یا منقضی شده. دوباره با Pyrogram لاگین کن."
+
+
+
 
 # ═══════════════ 🚀 Fast dialog loader (no per-chat API calls) ═══════════════
 async def _fast_load_chats(client, chat_types=None):
@@ -2253,6 +2315,7 @@ async def _cb_impl(c, q):
         buttons = []
         buttons.append([InlineKeyboardButton("➕ افزودن اکانت جدید", callback_data="add_new_account"),
                         InlineKeyboardButton("📤 بک‌آپ سشن", callback_data="acc_backup_pick")])
+        buttons.append([InlineKeyboardButton("📥 آپلود فایل سشن (برای 2FA)", callback_data="acc_upload_session")])
         if accounts:
             buttons.append([InlineKeyboardButton("🗑️ حذف یک اکانت", callback_data="acc_delete_pick")])
         buttons.append(_sub_back_btn(target="menu_settings"))
@@ -2309,6 +2372,27 @@ async def _cb_impl(c, q):
         atk_state["step"] = "add_new_acc_phone"
         await q.message.edit_text("➕ افزودن اکانت جدید دائمی\n\n⚠️ نکته: درخواست کد زیاد پشت سر هم باعث فلود ۱۸ ساعته تلگرام میشود!\nاگر اکانت از قبل در لیست هست از آن استفاده کنید.\n\nشماره تلفن را با فرمت +98 بفرستید:",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="manage_accounts")]]))
+        return
+
+    if d == "acc_upload_session":
+        atk_state.clear()
+        atk_state["step"] = "upload_session"
+        await q.message.edit_text(
+            "📥 <b>آپلود فایل سشن تلگرام</b>\n\n"
+            "🔹 مخصوص اکانت‌های دارای <b>Google Authenticator/2FA</b>\n"
+            "🔹 با یه اسکریپت ساده Pyrogram روی سیستم خودت لاگین کن\n"
+            "🔹 فایل <code>.session</code> رو مستقیم اینجا آپلود کن\n\n"
+            "<b>📋 روش دریافت فایل سشن:</b>\n"
+            "<code>pip install pyrogram</code>\n\n"
+            "بعد این اسکریپت رو اجرا کن (کد تلگرام + 2FA رو می‌پرسه):\n\n"
+            "<pre>from pyrogram import Client\n"
+            "app = Client('my_acc', api_id=6,\n"
+            "    api_hash='eb06d4abfb49dc3eeb1aeb98ae0f581e')\n"
+            "app.start()\n"
+            "app.stop()  # فایل my_acc.session ساخته شد</pre>\n\n"
+            "فایل <code>my_acc.session</code> رو همینجا بفرست.",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="manage_accounts")[0]]]),
+            disable_web_page_preview=True)
         return
 
     # ==================== انتخاب اکانت برای شروع عملیات ====================
@@ -2795,6 +2879,56 @@ async def _steps_impl(c, m):
 
     if not step: return
 
+    # ==================== آپلود مستقیم فایل سشن (دور زدن 2FA) ====================
+    if step == "upload_session" and m.document:
+        doc = m.document
+        fname = getattr(doc, 'file_name', '') or 'unknown.session'
+        if not fname.endswith('.session'):
+            await m.reply_text("❌ فقط فایل با پسوند <code>.session</code> قابل قبوله!\nفایل رو دوباره بفرست.", reply_markup=main_menu())
+            atk_state.clear()
+            return
+        st = await m.reply_text("📥 فایل سشن دریافت شد، در حال بررسی...")
+        file_data = await app.download_media(m, in_memory=True)
+        phone = ""
+        base = fname.replace('.session', '')
+        digits = ''.join(c for c in base if c.isdigit())
+        if len(digits) >= 10:
+            phone = '+' + digits
+        if not phone:
+            atk_state["pending_session_bytes"] = file_data.getvalue()
+            atk_state["st"] = st
+            atk_state["step"] = "upload_session_phone"
+            await st.edit_text(
+                "⚠️ نتونستم شماره رو از اسم فایل تشخیص بدم.\n"
+                f"اسم فایل: <code>{fname}</code>\n\n"
+                "لطفاً شماره تلفن این اکانت رو با فرمت +98 بفرست:\n"
+                "مثال: <code>+989123456789</code>",
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="manage_accounts")[0]]]))
+            return
+        result = await _save_uploaded_session(st, phone, file_data.getvalue(), fname)
+        if result:
+            await st.edit_text(result, reply_markup=main_menu())
+        atk_state.clear()
+        return
+
+    if step == "upload_session_phone" and m.text:
+        phone = m.text.strip()
+        if not phone.startswith('+') or len(phone) < 10:
+            await m.reply_text("❌ فرمت شماره اشتباهه! با +98 شروع بشه.\nدوباره بفرست:", reply_markup=main_menu())
+            return
+        blob = atk_state.get("pending_session_bytes")
+        if not blob:
+            await m.reply_text("❌ خطا - فایل سشن پیدا نشد. دوباره آپلود کن.", reply_markup=main_menu())
+            atk_state.clear()
+            return
+        st = atk_state.get("st")
+        result = await _save_uploaded_session(st, phone, blob, "uploaded.session")
+        if result:
+            try: await st.edit_text(result, reply_markup=main_menu())
+            except: await m.reply_text(result, reply_markup=main_menu())
+        atk_state.clear()
+        return
+
     # ==================== افزودن اکانت جدید از منوی مدیریت ====================
     if step == "add_new_acc_phone":
         phone = m.text.strip()
@@ -2839,7 +2973,15 @@ async def _steps_impl(c, m):
             await acc_client.app.sign_in(phone, h, code)
         except SessionPasswordNeeded:
             atk_state["step"] = "add_new_acc_2fa"
-            await st.edit_text("🔐 اکانت شما رمز دو عاملی دارد، لطفا پسورد 2FA را بفرستید:")
+            await st.edit_text(
+                "🔐 این اکانت دارای تایید دو مرحله‌ای است!\n\n"
+                "✅ <b>هر دو روش پشتیبانی میشه:</b>\n"
+                "• اگر <b>رمز ثابت</b> داری → همون رو بفرست\n"
+                "• اگر <b>Google Authenticator</b> داری → کد ۶ رقمی فعلی رو بفرست\n"
+                "• اگر <b>تلگرام پسورد ابری</b> داری → همون رو بفرست\n\n"
+                "⚠️ کد TOTP هر ۳۰ ثانیه عوض میشه، سریع بفرست!\n\n"
+                "یا می‌تونی از منوی «📱 مدیریت اکانت‌ها» → «📤 آپلود فایل سشن» استفاده کنی تا کلاً نیاز به 2FA نباشه.",
+                disable_web_page_preview=True)
             return
         except Exception as e:
             await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
@@ -2952,7 +3094,13 @@ async def _steps_impl(c, m):
             await new_client.app.sign_in(phone, h, code)
         except SessionPasswordNeeded:
             atk_state["step"] = "code_new_2fa"
-            await st.edit_text("🔐 رمز دو عاملی لازم است، پسورد را بفرستید:")
+            await st.edit_text(
+                "🔐 این اکانت دارای تایید دو مرحله‌ای است!\n\n"
+                "✅ <b>هر دو روش پشتیبانی میشه:</b>\n"
+                "• <b>رمز ثابت</b> یا <b>کد Google Authenticator</b> رو بفرست\n"
+                "• یا از «📤 آپلود فایل سشن» استفاده کن\n\n"
+                "⚠️ کد TOTP هر ۳۰ ثانیه عوض میشه!",
+                disable_web_page_preview=True)
             return
         except Exception as e:
             await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
@@ -3095,7 +3243,11 @@ async def _steps_impl(c, m):
             await atk.app.sign_in(phone, h, code)
         except SessionPasswordNeeded:
             atk_state["step"] = "code_2fa"
-            await st.edit_text("🔐 رمز دو عاملی لازم است، پسورد را بفرستید:")
+            await st.edit_text(
+                "🔐 این اکانت تایید دو مرحله‌ای دارد!\n\n"
+                "✅ <b>رمز ثابت</b> یا <b>کد Google Authenticator</b> رو بفرست\n\n"
+                "⚠️ کد TOTP هر ۳۰ ثانیه عوض میشه، سریع باش!",
+                disable_web_page_preview=True)
             return
         except Exception as e:
             await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
@@ -3223,7 +3375,11 @@ async def _steps_impl(c, m):
             await add_client.app.sign_in(phone, h, code)
         except SessionPasswordNeeded:
             atk_state["step"] = "adder_2fa"
-            await st.edit_text("🔐 رمز دو عاملی لازم است، پسورد را بفرستید:")
+            await st.edit_text(
+                "🔐 این اکانت تایید دو مرحله‌ای دارد!\n\n"
+                "✅ <b>رمز ثابت</b> یا <b>کد Google Authenticator</b> رو بفرست\n\n"
+                "⚠️ کد TOTP هر ۳۰ ثانیه عوض میشه، سریع باش!",
+                disable_web_page_preview=True)
             return
         except Exception as e:
             await m.reply_text(f"❌ خطا در کد: {str(e)[:200]}")
@@ -3256,7 +3412,7 @@ async def _steps_impl(c, m):
         atk_state["available_add_groups"] = add_groups
         if add_groups:
             buttons = []
-            for gname, gid, gcount in sorted(add_groups, key=lambda x: -x[2]):
+            for gname, gid, gcount, chtype in sorted(add_groups, key=lambda x: -x[2]):
                     ch_icon = "📡" if chtype == "channel" else "👥"
                     buttons.append([InlineKeyboardButton(f"➕ {ch_icon} {gname[:30]} | {gcount:,}", callback_data=f"add_target_{gid}")])
             buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="add_target_manual")])
