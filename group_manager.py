@@ -510,6 +510,55 @@ def register_group_handlers(app: Client, admin_id: int):
         status = "✅ فعال" if settings[settings_key] else "❌ غیرفعال"
         await m.reply_text(f"✅ {key} → {status}")
     
+    # /lock - سکوت کامل گروه
+    @app.on_message(filters.command("lock") & filters.group)
+    async def cmd_lock(c: Client, m: Message):
+        if not await is_admin(c, m.chat.id, m.from_user.id):
+            await m.reply_text("❌ فقط ادمین‌ها!")
+            return
+        
+        try:
+            # ریستریکت کردن همه اعضا (permissions گروه رو ببند)
+            await c.set_chat_permissions(
+                m.chat.id,
+                ChatPermissions(
+                    can_send_messages=False,
+                    can_send_media_messages=False,
+                    can_send_other_messages=False,
+                    can_add_web_page_previews=False,
+                    can_invite_users=False,
+                    can_pin_messages=False,
+                    can_change_info=False,
+                )
+            )
+            await m.reply_text("🔒 <b>گروه قفل شد!</b>\nهیچ‌کسی نمیتونه پیام بفرسته.\nبرای باز کردن: /unlock")
+        except Exception as e:
+            await m.reply_text(f"❌ خطا: {e}")
+    
+    # /unlock - باز کردن گروه
+    @app.on_message(filters.command("unlock") & filters.group)
+    async def cmd_unlock(c: Client, m: Message):
+        if not await is_admin(c, m.chat.id, m.from_user.id):
+            await m.reply_text("❌ فقط ادمین‌ها!")
+            return
+        
+        try:
+            await c.set_chat_permissions(
+                m.chat.id,
+                ChatPermissions(
+                    can_send_messages=True,
+                    can_send_media_messages=True,
+                    can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                    can_invite_users=True,
+                    can_pin_messages=True,
+                    can_change_info=True,
+                )
+            )
+            await m.reply_text("🔓 <b>گروه باز شد!</b>\nهمه میتونن پیام بفرستن.")
+        except Exception as e:
+            await m.reply_text(f"❌ خطا: {e}")
+    
     # /help
     @app.on_message(filters.command("help") & filters.group)
     async def cmd_help(c: Client, m: Message):
@@ -526,6 +575,10 @@ def register_group_handlers(app: Client, admin_id: int):
 /resetwarn — ریست هشدار
 /pin — پین پیام (ریپلای)
 /unpin — آنپین
+
+<b>🔒 قفل گروه:</b>
+/lock — قفل کامل (هیچ‌کس نتونه پیام بفرسته)
+/unlock — باز کردن گروه
 
 <b>⚙️ تنظیمات:</b>
 /settings — نمایش تنظیمات
