@@ -13,6 +13,8 @@ IG_SESSION_FILE = os.environ.get("IG_SESSION_FILE", os.path.join(SESSION_DIR, "i
 def extract_username(raw):
     """Extract username from URL, @handle, or raw text"""
     raw = raw.strip().lower()
+    # Start with raw as fallback
+    username = raw
     if "instagram.com/" in raw:
         parts = raw.split("instagram.com/", 1)
         username = parts[1] if len(parts) > 1 else raw
