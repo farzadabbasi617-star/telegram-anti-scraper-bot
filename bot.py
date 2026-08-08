@@ -1258,7 +1258,7 @@ async def _execute_direct_add(q, target_gid):
     
     prog_msg = q.message
     added = 0; failed = 0; skipped = 0
-    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "banned": 0, "other": 0, "no_add": 0, "not_member": 0}
+    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "banned": 0, "other": 0, "no_add": 0, "not_member": 0, "peer_invalid": 0}
     first_error = ""  # اولین خطا برای نمایش
     stop_req = [False]
     
@@ -1307,12 +1307,28 @@ async def _execute_direct_add(q, target_gid):
     start_t = time.time()
     await update_progress()
     
+    # 🆕 Warmup: معرفی ۱۰ کاربر اول به اکانت برای گرم کردن
+    warmup_count = min(10, len(uid_list))
+    for uid in uid_list[:warmup_count]:
+        try:
+            await add_client.app.resolve_peer(uid)
+            await asyncio.sleep(0.2)
+        except:
+            pass
+    
     for i, uid in enumerate(uid_list):
         if stop_req[0]:
             skipped = total - added - failed
             break
         
         try:
+            # 🆕 قبل از ادد، کاربر رو به اکانت "معرفی" کن تا PEER_ID_INVALID نگیریم
+            try:
+                await add_client.app.resolve_peer(uid)
+                await asyncio.sleep(0.3)
+            except:
+                pass
+            
             await add_client.app.add_chat_members(target_gid, uid)
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
@@ -1346,6 +1362,8 @@ async def _execute_direct_add(q, target_gid):
                 errors_detail["no_add"] += 1
             elif "not_participant" in err_str.replace("_","") or "chat_admin" in err_str:
                 errors_detail["not_member"] += 1
+            elif "peer_id_invalid" in err_str.replace("_","") or "peer invalid" in err_str:
+                errors_detail["peer_invalid"] += 1
             else:
                 errors_detail["other"] += 1
             await asyncio.sleep(random.randint(3, 8))
@@ -1370,6 +1388,7 @@ async def _execute_direct_add(q, target_gid):
         if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
         if errors_detail["no_add"]: text += f"🚫 تنظیمات ادد بسته: {errors_detail['no_add']}\n"
         if errors_detail["not_member"]: text += f"⛔ اکانت عضو گروه نیست: {errors_detail['not_member']}\n"
+        if errors_detail["peer_invalid"]: text += f"👤 کاربر ناشناس (Peer Invalid): {errors_detail['peer_invalid']}\n"
         if errors_detail["flood"]: text += f"⏱️ Flood: {errors_detail['flood']}\n"
         if errors_detail["already"]: text += f"👥 Already in chat: {errors_detail['already']}\n"
         if errors_detail["banned"]: text += f"🚫 Banned: {errors_detail['banned']}\n"
