@@ -1991,7 +1991,7 @@ async def _cb_impl(c, q):
                 [InlineKeyboardButton(f"🌐 همه ({actual:,})", callback_data=f"par_dir_add_src_all")],
                 [InlineKeyboardButton("📂 دسته‌بندی", callback_data=f"par_dir_add_src_cat")],
                 [InlineKeyboardButton("👥 چت خاص", callback_data=f"par_dir_add_src_chat")],
-                _sub_back_btn(target="home")[0],
+                [_sub_back_btn(target="home")[0]],
             ]), disable_web_page_preview=True)
         return
 
@@ -3092,7 +3092,7 @@ async def _cb_impl(c, q):
                 [InlineKeyboardButton("📂 انتخاب از دسته‌بندی", callback_data=f"dir_add_cat_{gid}")],
                 [InlineKeyboardButton("👥 انتخاب از چت خاص", callback_data=f"dir_add_chat_{gid}")],
                 [InlineKeyboardButton("📄 آپلود فایل CSV", callback_data=f"csv_add_{gid}")],
-                _sub_back_btn(target="home")[0],
+                [_sub_back_btn(target="home")[0]],
             ]),
             disable_web_page_preview=True)
         return
