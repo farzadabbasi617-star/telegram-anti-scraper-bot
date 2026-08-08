@@ -1198,7 +1198,7 @@ async def _start_direct_add(q, target_gid):
 
 
 async def _execute_direct_add(q, target_gid):
-    """add to channel via import_contacts + invite_to_channel"""
+    """Add members to channel via AddContact + InviteToChannel with warmup."""
     add_client = atk_state.get("add_client")
     phone = atk_state.get("phone", "")
     already_added = atk_state.get("already_added", 0)
@@ -1209,11 +1209,21 @@ async def _execute_direct_add(q, target_gid):
         tgt = await add_client.app.get_chat(target_gid)
         target_name = tgt.title
     except Exception as e:
-        await prog_msg.edit_text(f"Target: {e}",
+        await prog_msg.edit_text(f"❌ کانال پیدا نشد: {e}",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    # Get users
+    # Check admin status
+    try:
+        me_member = await add_client.app.get_chat_member(target_gid, "me")
+        if me_member.status not in ["administrator", "creator"]:
+            await prog_msg.edit_text("❌ اکانت ادمین کانال نیست!\nدسترسی Invite Users لازمه.",
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+            return
+    except Exception as e:
+        print(f"⚠️ Admin check: {e}", flush=True)
+
+    # Get users from DB
     source = atk_state.get("add_source", "all")
     source_id = atk_state.get("add_source_id")
     if source == "category":
@@ -1232,18 +1242,17 @@ async def _execute_direct_add(q, target_gid):
     total = len(uid_list)
 
     if total == 0:
-        await prog_msg.edit_text("No users.",
+        await prog_msg.edit_text("❌ کاربری برای ادد نیست.",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    from pyrogram.raw.functions.contacts import AddContact
+    from pyrogram.raw.functions.contacts import AddContact, ImportContacts
     from pyrogram.raw.functions.channels import InviteToChannel
-    from pyrogram.raw.types import InputUser, InputPeerUser, InputPeerChannel
-    from pyrogram.raw.base import InputPeer
+    from pyrogram.raw.types import InputUser, InputPeerUser, InputPhoneContact
 
     added = 0; failed = 0; skipped = 0
     errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "other": 0}
-    first_error = ""; stop_req = [False]; start_t = time.time()
+    first_error = ""; start_t = time.time()
     atk_state["add_in_progress"] = True
 
     async def upd():
@@ -1251,45 +1260,79 @@ async def _execute_direct_add(q, target_gid):
             pct = int((added + failed) * 100 / total) if total > 0 else 0
             e = int(time.time() - start_t); m, s = e // 60, e % 60
             spd = int(added / (e / 60)) if e > 30 else 0
-            txt = f"+ {target_name}\n{'█'*(pct//5)}{'░'*(20-pct//5)} {pct}%\nOK:{added} FAIL:{failed}\n{m:02d}:{s:02d} ~{spd}/min"
+            txt = f"➕ {target_name}\n{'█'*(pct//5)}{'░'*(20-pct//5)} {pct}%\n✅ {added} ❌ {failed}\n⏱ {m:02d}:{s:02d} ⚡ {spd}/min"
             await prog_msg.edit_text(txt,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Stop", callback_data="stop_op")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")]]),
                 disable_web_page_preview=True)
         except: pass
 
     await upd()
 
-    # Resolve target channel once
-    target_peer = await add_client.app.resolve_peer(target_gid)
-
-    for uid in uid_list:
-        if stop_req[0]:
-            skipped = total - added - failed
-            break
+    # ─── Warmup: batch resolve users to get access_hash ───
+    print(f"🔥 Warmup: resolving {total} users...", flush=True)
+    valid_peers = {}
+    
+    # Method 1: batch get_users (fastest way to "meet" users)
+    batch_size = 200
+    for batch_start in range(0, len(uid_list), batch_size):
+        batch = uid_list[batch_start:batch_start + batch_size]
         try:
-            # Step 1: resolve user peer
-            try:
-                user_peer = await add_client.app.resolve_peer(uid)
-            except:
-                failed += 1; errors_detail["peer"] += 1
-                continue
+            users = await add_client.app.get_users(batch)
+            for u in users:
+                if u and u.id and not getattr(u, 'is_bot', False) and not getattr(u, 'is_deleted', False):
+                    try:
+                        peer = await add_client.app.resolve_peer(u.id)
+                        valid_peers[u.id] = peer
+                    except:
+                        pass
+            print(f"  📊 Warmup batch {batch_start//batch_size + 1}: {len(valid_peers)} resolved", flush=True)
+        except Exception as e:
+            print(f"  ⚠️ Warmup batch error: {e}", flush=True)
+        await asyncio.sleep(1)
 
-            # Step 2: add to contacts (Telegram requires this for channel invite)
+    print(f"✅ Warmup done: {len(valid_peers)}/{total} peers resolved", flush=True)
+
+    # Resolve target channel
+    try:
+        target_peer = await add_client.app.resolve_peer(target_gid)
+    except Exception as e:
+        await prog_msg.edit_text(f"❌ کانال resolve نشد: {e}\nمطمئن شو اکانت عضو کاناله.",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        return
+
+    await upd()
+
+    # ─── Main add loop ───
+    for uid in uid_list:
+        try:
+            # Get peer (from warmup cache or resolve now)
+            if uid in valid_peers:
+                user_peer = valid_peers[uid]
+            else:
+                try:
+                    user_peer = await add_client.app.resolve_peer(uid)
+                except Exception:
+                    failed += 1; errors_detail["peer"] += 1
+                    if not first_error: first_error = f"PeerID invalid for {uid}"
+                    continue
+
+            # Add to contacts (needed for channel invite)
             try:
                 await add_client.app.invoke(
                     AddContact(
                         id=user_peer,
-                        first_name=str(uid),
+                        first_name=str(uid)[:30],
                         last_name="",
                         phone="",
                         add_phone_privacy_exception=False
                     )
                 )
-                await asyncio.sleep(0.5)
-            except:
-                pass  # already in contacts or minor error
+                await asyncio.sleep(0.3)
+            except Exception as ce:
+                # Might fail if already in contacts - that's OK
+                pass
 
-            # Step 3: invite to channel via raw API
+            # Invite to channel
             await add_client.app.invoke(
                 InviteToChannel(
                     channel=target_peer,
@@ -1304,10 +1347,16 @@ async def _execute_direct_add(q, target_gid):
             save_adder_limits(limits)
 
             total_acc = already_added + added
-            await asyncio.sleep(random.randint(8, 14) if total_acc > 50 else random.randint(5, 10))
+            if total_acc > 80:
+                await asyncio.sleep(random.randint(15, 25))
+            elif total_acc > 50:
+                await asyncio.sleep(random.randint(10, 18))
+            else:
+                await asyncio.sleep(random.randint(7, 13))
 
         except FloodWait as fw:
             failed += 1; errors_detail["flood"] += 1
+            print(f"⏱ FloodWait {fw.value}s", flush=True)
             await asyncio.sleep(fw.value + 5)
         except Exception as e:
             failed += 1; es = str(e); es_l = es.lower()
@@ -1318,31 +1367,39 @@ async def _execute_direct_add(q, target_gid):
                 errors_detail["already"] += 1
                 mark_user_as_added(target_gid, target_name, uid)
             elif "flood" in es_l: errors_detail["flood"] += 1
-            else: errors_detail["other"] += 1
+            elif "admin" in es_l or "right" in es_l:
+                errors_detail["other"] += 1
+                if not first_error: first_error = f"CHAT_ADMIN_REQUIRED: {es[:100]}"
+                print(f"❌ ADMIN ERROR: {es[:200]}", flush=True)
+                break  # no point continuing
+            else:
+                errors_detail["other"] += 1
+                print(f"❌ Error for {uid}: {es[:150]}", flush=True)
             await asyncio.sleep(random.randint(3, 6))
 
         if (added + failed) % 3 == 0:
             await upd()
 
     e = int(time.time() - start_t); m, s = e // 60, e % 60
-    text = f"✅ DONE: {target_name}\n{'='*20}\n"
-    text += f"Added: {added}\nFailed: {failed}\n"
-    text += f"Time: {m:02d}:{s:02d}\nTotal: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
+    text = f"✅ تمام شد: {target_name}\n{'━'*20}\n"
+    text += f"✅ اضافه شده: {added}\n❌ ناموفق: {failed}\n"
+    text += f"⏱ زمان: {m:02d}:{s:02d}\n"
+    text += f"📊 ظرفیت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
     if failed > 0:
-        text += f"\n{'='*20}\n"
-        if errors_detail["peer"]: text += f"Peer: {errors_detail['peer']}\n"
-        if errors_detail["privacy"]: text += f"Privacy: {errors_detail['privacy']}\n"
-        if errors_detail["already"]: text += f"Already: {errors_detail['already']}\n"
-        if errors_detail["flood"]: text += f"Flood: {errors_detail['flood']}\n"
-        if errors_detail["other"]: text += f"Other: {errors_detail['other']}\n"
-        if first_error: text += f"\n{first_error[:200]}"
+        text += f"\n{'━'*20}\n📋 جزئیات خطا:\n"
+        if errors_detail["peer"]: text += f"🔍 Peer Invalid: {errors_detail['peer']}\n"
+        if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
+        if errors_detail["already"]: text += f"👥 قبلاً عضو: {errors_detail['already']}\n"
+        if errors_detail["flood"]: text += f"⏱ Flood: {errors_detail['flood']}\n"
+        if errors_detail["other"]: text += f"❓ سایر: {errors_detail['other']}\n"
+        if first_error: text += f"\n💬 اولین خطا: {first_error[:200]}"
     atk_state["add_in_progress"] = False
 
     try:
         await prog_msg.edit_text(text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Stats", callback_data="adder_stats")],
-                [InlineKeyboardButton("Home", callback_data="home")],
+                [InlineKeyboardButton("📊 آمار", callback_data="adder_stats")],
+                [InlineKeyboardButton("🏠 خانه", callback_data="home")],
             ]), disable_web_page_preview=True)
     except: pass
 
@@ -1460,6 +1517,19 @@ async def _execute_parallel_direct_add(q):
         sc = AdvancedScraper("par_add_w", API_ID, API_HASH, phone=phone, device_fp=fp)
         try:
             await sc.connect()
+            # Warmup: batch resolve users
+            valid_peers = {}
+            try:
+                batch = user_ids[:200]
+                users = await sc.app.get_users(batch)
+                for u in users:
+                    if u and u.id and not getattr(u, 'is_bot', False) and not getattr(u, 'is_deleted', False):
+                        try:
+                            valid_peers[u.id] = await sc.app.resolve_peer(u.id)
+                        except: pass
+                print(f"  🔥 {name}: warmup {len(valid_peers)}/{len(batch)} resolved", flush=True)
+            except Exception as e:
+                print(f"  ⚠️ {name}: warmup error: {e}", flush=True)
             # Resolve target channel once
             sc._target_peer = await sc.app.resolve_peer(target_gid)
             added = 0; failed = 0
@@ -1467,18 +1537,17 @@ async def _execute_parallel_direct_add(q):
                 if stop_req[0]:
                     break
                 try:
-                    # AddContact + InviteToChannel (works for channels)
                     from pyrogram.raw.functions.contacts import AddContact
                     from pyrogram.raw.functions.channels import InviteToChannel
-                    try:
+                    if uid in valid_peers:
+                        user_peer = valid_peers[uid]
+                    else:
                         user_peer = await sc.app.resolve_peer(uid)
-                        try:
-                            await sc.app.invoke(AddContact(id=user_peer, first_name=str(uid), last_name="", phone="", add_phone_privacy_exception=False))
-                            await asyncio.sleep(0.3)
-                        except: pass
-                        await sc.app.invoke(InviteToChannel(channel=sc._target_peer, users=[user_peer]))
-                    except PeerIdInvalid:
-                        raise PeerIdInvalid
+                    try:
+                        await sc.app.invoke(AddContact(id=user_peer, first_name=str(uid)[:30], last_name="", phone="", add_phone_privacy_exception=False))
+                        await asyncio.sleep(0.3)
+                    except: pass
+                    await sc.app.invoke(InviteToChannel(channel=sc._target_peer, users=[user_peer]))
                     added += 1
                     total_global["added"] += 1
                     mark_user_as_added(target_gid, target_name, uid)

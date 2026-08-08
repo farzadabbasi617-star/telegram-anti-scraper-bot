@@ -375,8 +375,28 @@ async def parallel_add(chat_id, user_ids, phones, adder_limits_load, save_adder_
             except:
                 pass
             dash["workers"][phone]["state"] = "running"
+            # Warmup: batch resolve users
+            _warmup_ids = []
+            _temp_q = asyncio.Queue()
+            while True:
+                try: _warmup_ids.append(queue.get_nowait())
+                except asyncio.QueueEmpty: break
+            for uid in _warmup_ids:
+                await queue.put(uid)
+            _valid_peers = {}
+            if _warmup_ids:
+                try:
+                    _batch = _warmup_ids[:200]
+                    _users = await sc.app.get_users(_batch)
+                    for _u in _users:
+                        if _u and _u.id and not getattr(_u, 'is_bot', False) and not getattr(_u, 'is_deleted', False):
+                            try:
+                                _valid_peers[_u.id] = await sc.app.resolve_peer(_u.id)
+                            except: pass
+                    log(f"🔥 {name}: warmup {len(_valid_peers)}/{len(_batch)} resolved")
+                except Exception as _e:
+                    log(f"⚠️ {name}: warmup: {_e}")
             dash["workers"][phone]["stage"] = "آماده"
-            # Resolve target channel once
             _ch_peer = await sc.app.resolve_peer(chat_id)
             while remaining > 0:
                 try:
@@ -385,12 +405,14 @@ async def parallel_add(chat_id, user_ids, phones, adder_limits_load, save_adder_
                     break
                 try:
                     async with sem:
-                        # AddContact + InviteToChannel (works for channels)
                         from pyrogram.raw.functions.contacts import AddContact
                         from pyrogram.raw.functions.channels import InviteToChannel
-                        user_peer = await sc.app.resolve_peer(uid)
+                        if uid in _valid_peers:
+                            user_peer = _valid_peers[uid]
+                        else:
+                            user_peer = await sc.app.resolve_peer(uid)
                         try:
-                            await sc.app.invoke(AddContact(id=user_peer, first_name=str(uid), last_name="", phone="", add_phone_privacy_exception=False))
+                            await sc.app.invoke(AddContact(id=user_peer, first_name=str(uid)[:30], last_name="", phone="", add_phone_privacy_exception=False))
                             await asyncio.sleep(0.3)
                         except: pass
                         await sc.app.invoke(InviteToChannel(channel=_ch_peer, users=[user_peer]))
