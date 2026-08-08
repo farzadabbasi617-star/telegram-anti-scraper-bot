@@ -14,3 +14,9 @@ hunter_state.json
 pfinder_projects.json
 pfinder_state.json
 antiscraper_bot.session*
+
+# Channel Adder
+sessions/
+data/
+channel_adder_sessions/
+channel_adder_data/
