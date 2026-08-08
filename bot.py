@@ -1677,7 +1677,7 @@ async def _fast_load_chats(client, chat_types=None):
 
 
 def main_menu():
-    """Main dashboard with two-column modern layout + categories."""
+    """Main dashboard - Telegram & Instagram fully separated"""
     saved_accs = list_saved_accounts()
     acc_count = len(saved_accs)
     total_added = _db_count_added()
@@ -1685,71 +1685,77 @@ def main_menu():
     bg_st = get_bg_scan()
     bg_icon = "🟢" if bg_st.get("enabled") else "🔴"
     banned = len(defender.banned_scrapers) if defender else 0
+    total_users = _db_count_users()
 
     buttons = []
 
-    # ===== دسته ۱: داشبورد و دفاع =====
-    buttons.append([
-        InlineKeyboardButton("🛡️ پنل دفاع و گروه", callback_data="menu_defense"),
-        InlineKeyboardButton("📊 آمار کلی", callback_data="menu_stats"),
-    ])
-    # ===== دسته 1.5: مدیریت چت‌ها و دسته‌بندی =====
-    buttons.append([
-        InlineKeyboardButton("🗂️ مدیریت چت‌ها", callback_data="chats_manager"),
-        InlineKeyboardButton("📂 دسته‌بندی‌ها", callback_data="categories_menu"),
-    ])
+    # ═══════════════ 🟢 TELEGRAM SECTION ═══════════════
+    buttons.append([InlineKeyboardButton("🟢 ═══ تلگرام ═══ 🟢", callback_data="noop")])
 
-    # ===== دسته ۲: حمله/اسکرپ =====
+    # Row 1: Attack + Add
     if acc_count >= 1:
-        row = [InlineKeyboardButton("🚀 حمله تک‌اکانت", callback_data="pick_account_attack")]
-        if acc_count >= 2:
-            row.append(InlineKeyboardButton(f"⚡ حمله موازی ({acc_count})", callback_data="par_pick_target_attack"))
-        else:
-            row.append(InlineKeyboardButton("➕ اکانت جدید", callback_data="add_new_account_start"))
+        row = [InlineKeyboardButton("🚀 حمله (اسکرپ)", callback_data="pick_account_attack")]
+        row.append(InlineKeyboardButton("➕ ادد ممبر", callback_data="pick_account_add"))
         buttons.append(row)
     else:
         buttons.append([InlineKeyboardButton("🆕 افزودن اولین اکانت تلگرام", callback_data="add_new_account_start")])
 
-    # ===== دسته ۳: اضافه کردن اعضا =====
-    if acc_count >= 1:
-        row = [InlineKeyboardButton("➕ ادد تک‌اکانت", callback_data="pick_account_add")]
-        if acc_count >= 2:
-            row.append(InlineKeyboardButton(f"⚡ ادد موازی ({acc_count})", callback_data="par_pick_target_add"))
-        buttons.append(row)
+    # Row 2: Parallel Attack + Parallel Add
+    if acc_count >= 2:
+        buttons.append([
+            InlineKeyboardButton(f"⚡ حمله موازی ({acc_count})", callback_data="par_pick_target_attack"),
+            InlineKeyboardButton(f"⚡ ادد موازی ({acc_count})", callback_data="par_pick_target_add"),
+        ])
 
-    # ===== دسته ۴: لیست‌ها و داده =====
+    # Row 3: Defense + Scanned Chats
     buttons.append([
-        InlineKeyboardButton(f"👥 لیست ممبرها ({total_added if False else _db_count_users()})", callback_data="show_list_0"),
-        InlineKeyboardButton("📈 آمار ادد", callback_data="adder_stats"),
-    ])
-    buttons.append([
-        InlineKeyboardButton(f"✅ تاریخچه اددها ({total_added})", callback_data="added_history_menu"),
-        InlineKeyboardButton(f"🚫 لیست بن‌شده‌ها ({banned})", callback_data="banned_list"),
+        InlineKeyboardButton("🛡️ پنل دفاع", callback_data="menu_defense"),
+        InlineKeyboardButton("🗂️ چت‌های اسکن شده", callback_data="chats_manager"),
     ])
 
-    # ===== دسته ۵: اسکن خودکار و پروژه‌یاب =====
+    # Row 4: Lists & Data
     buttons.append([
-        InlineKeyboardButton(f"{bg_icon} ⏱️ اسکن خودکار", callback_data="bg_menu"),
-        InlineKeyboardButton(f"🔭 پروژه‌یاب ({pf_total})", callback_data="pf_menu"),
+        InlineKeyboardButton(f"👥 مخاطبین ({total_users})", callback_data="show_list_0"),
+        InlineKeyboardButton(f"📈 آمار ادد", callback_data="adder_stats"),
+    ])
+    buttons.append([
+        InlineKeyboardButton(f"✅ تاریخچه ادد ({total_added})", callback_data="added_history_menu"),
+        InlineKeyboardButton(f"🚫 بن‌شده‌ها ({banned})", callback_data="banned_list"),
     ])
 
-    # ===== دسته ۶: ابزارها =====
+    # Row 5: Auto Scan + Accounts
     buttons.append([
-        InlineKeyboardButton("⬇️ دانلودر رسانه", callback_data="downloader_menu"),
+        InlineKeyboardButton(f"{bg_icon} اسکن خودکار", callback_data="bg_menu"),
         InlineKeyboardButton(f"📱 اکانت‌ها ({acc_count})", callback_data="manage_accounts"),
     ])
-    # ===== دسته ۶.۵: اینستاگرام =====
+
+    # ═══════════════ 📸 INSTAGRAM SECTION ═══════════════
+    buttons.append([InlineKeyboardButton("📸 ═══ اینستاگرام ═══ 📸", callback_data="noop")])
+
     buttons.append([
-        InlineKeyboardButton("📸 اینستاگرام", callback_data="ig_menu"),
+        InlineKeyboardButton("🔍 اسکرپ فالوور", callback_data="ig_scrape_prompt"),
+        InlineKeyboardButton("➕ Follow", callback_data="ig_follow_menu"),
+    ])
+    buttons.append([
+        InlineKeyboardButton("📋 نتایج اسکرپ", callback_data="ig_list"),
+        InlineKeyboardButton("⚙️ تنظیمات IG", callback_data="ig_menu"),
     ])
 
-    # ===== دسته ۷: پشتیبان‌گیری =====
-    buttons.append([
-        InlineKeyboardButton("💾 بک‌آپ کامل", callback_data="backup_all"),
-        InlineKeyboardButton("♻️ وضعیت سلامت", callback_data="health_check"),
-    ])
+    # ═══════════════ ⚙️ TOOLS ═══════════════
+    buttons.append([InlineKeyboardButton("⚙️ ═══ ابزارها ═══ ⚙️", callback_data="noop")])
 
-    # ===== دسته ۸: تنظیمات و راهنما =====
+    buttons.append([
+        InlineKeyboardButton("📂 دسته‌بندی‌ها", callback_data="categories_menu"),
+        InlineKeyboardButton("📊 آمار کلی", callback_data="menu_stats"),
+    ])
+    buttons.append([
+        InlineKeyboardButton("🔭 پروژه‌یاب", callback_data="pf_menu"),
+        InlineKeyboardButton("⬇️ دانلودر", callback_data="downloader_menu"),
+    ])
+    buttons.append([
+        InlineKeyboardButton("💾 بک‌آپ", callback_data="backup_all"),
+        InlineKeyboardButton("♻️ سلامت", callback_data="health_check"),
+    ])
     buttons.append([
         InlineKeyboardButton("⚙️ تنظیمات", callback_data="menu_settings"),
         InlineKeyboardButton("❓ راهنما", callback_data="help_page"),
