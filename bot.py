@@ -1963,6 +1963,9 @@ def main_menu():
         InlineKeyboardButton("♻️ سلامت", callback_data="health_check"),
     ])
     buttons.append([
+        InlineKeyboardButton("🧪 تست ادد ۱ نفر", callback_data="debug_add_test"),
+    ])
+    buttons.append([
         InlineKeyboardButton("⚙️ تنظیمات", callback_data="menu_settings"),
         InlineKeyboardButton("❓ راهنما", callback_data="help_page"),
     ])
@@ -2233,6 +2236,156 @@ async def _cb_impl(c, q):
         atk_state.clear()
         await q.answer("⏹️ درخواست توقف داده شد، چند لحظه...", show_alert=True)
         await q.message.edit_text("⏹️ عملیات توسط کاربر متوقف شد.", reply_markup=main_menu())
+        return
+
+
+    # ═══════════════ 🧪 DEBUG: Test add 1 user ═══════════════
+    if d == "debug_add_test":
+        accs = load_accounts()
+        if not accs:
+            await q.answer("❌ اکانتی نداری!", show_alert=True)
+            return
+        await q.answer()
+        phone = list(accs.keys())[0]
+        fp = accs[phone].get("device_fp") or random.choice(DEVICE_FP)
+        from attacker import safe_phone_filename as spfn
+        sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
+        test_client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
+        
+        prog = await q.message.edit_text("🧪 <b>تست تشخیصی ادد</b>\n⏳ در حال اتصال...")
+        
+        async def run_test():
+            from pyrogram.raw.functions.contacts import AddContact
+            from pyrogram.raw.functions.channels import InviteToChannel
+            from pyrogram.raw.types import InputPeerUser, InputUser
+            
+            log = ""
+            try:
+                await test_client.connect()
+                me = await test_client.app.get_me()
+                log += f"✅ متصل: {me.first_name} (ID: {me.id})\n\n"
+                
+                # List all groups/channels
+                log += "📡 <b>گروه‌ها و کانال‌های اکانت:</b>\n"
+                groups = []
+                channels = []
+                async for dialog in test_client.app.get_dialogs(limit=200):
+                    cht = dialog.chat
+                    if cht.type in ["supergroup", "group"]:
+                        groups.append((cht.title, cht.id))
+                        log += f"  👥 {cht.title} ({cht.id})\n"
+                    elif cht.type == "channel":
+                        channels.append((cht.title, cht.id))
+                        log += f"  📡 {cht.title} ({cht.id})\n"
+                
+                log += f"\n📊 {len(groups)} گروه + {len(channels)} کانال\n\n"
+                
+                # Pick first channel as target
+                if not channels:
+                    log += "❌ هیچ کانالی پیدا نشد!"
+                    await prog.edit_text(log, reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]), disable_web_page_preview=True)
+                    return
+                
+                target_title, target_id = channels[0]
+                log += f"🎯 هدف تست: <b>{target_title}</b> ({target_id})\n\n"
+                
+                # Check admin
+                try:
+                    member = await test_client.app.get_chat_member(target_id, "me")
+                    log += f"👑 وضعیت ادمین: <b>{member.status}</b>\n"
+                    if hasattr(member, 'privileges') and member.privileges:
+                        log += f"   invite_users: {member.privileges.invite_users}\n"
+                        log += f"   other: {member.privileges}\n"
+                except Exception as e:
+                    log += f"❌ Admin check: {type(e).__name__}: {e}\n"
+                
+                # Get 1 user from DB
+                users = get_users_by_source(limit=3)
+                if not users:
+                    log += "\n❌ کاربری توی دیتابیس نیست!"
+                    await prog.edit_text(log, reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]), disable_web_page_preview=True)
+                    return
+                
+                test_uid = int(users[0].get("user_id", 0))
+                log += f"\n🧪 تست با کاربر: <code>{test_uid}</code>\n"
+                log += f"   نام: {users[0].get('first_name','')} {users[0].get('last_name','')}\n"
+                log += f"   source: {users[0].get('source_group_id')}\n\n"
+                
+                # Step 1: resolve_peer
+                log += "<b>Step 1: resolve_peer</b>\n"
+                try:
+                    peer = await test_client.app.resolve_peer(test_uid)
+                    log += f"  ✅ peer type: {type(peer).__name__}\n"
+                    log += f"  ✅ peer: {peer}\n\n"
+                except Exception as e:
+                    log += f"  ❌ {type(e).__name__}: {e}\n"
+                    log += f"  → Trying InputPeerUser(access_hash=0)...\n"
+                    peer = InputPeerUser(user_id=test_uid, access_hash=0)
+                    log += f"  ✅ Built: {peer}\n\n"
+                
+                # Step 2: AddContact
+                log += "<b>Step 2: AddContact</b>\n"
+                try:
+                    result = await test_client.app.invoke(
+                        AddContact(id=peer, first_name=str(test_uid)[:30], last_name="", phone="", add_phone_privacy_exception=False)
+                    )
+                    log += f"  ✅ OK: {type(result).__name__}\n\n"
+                except Exception as e:
+                    log += f"  ❌ {type(e).__name__}: {e}\n\n"
+                
+                # Step 3: Resolve target
+                log += "<b>Step 3: resolve target channel</b>\n"
+                try:
+                    target_peer = await test_client.app.resolve_peer(target_id)
+                    log += f"  ✅ target peer: {type(target_peer).__name__}\n\n"
+                except Exception as e:
+                    log += f"  ❌ {type(e).__name__}: {e}\n\n"
+                    await prog.edit_text(log, reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]), disable_web_page_preview=True)
+                    return
+                
+                # Step 4: InviteToChannel
+                log += "<b>Step 4: InviteToChannel</b>\n"
+                try:
+                    result = await test_client.app.invoke(
+                        InviteToChannel(channel=target_peer, users=[peer])
+                    )
+                    log += f"  ✅ SUCCESS! {type(result).__name__}\n"
+                    log += f"  Result: {result}\n\n"
+                except Exception as e:
+                    log += f"  ❌ {type(e).__name__}: {e}\n"
+                    log += f"  Code: {getattr(e, 'code', '?')}\n"
+                    log += f"  Name: {getattr(e, 'NAME', '?')}\n\n"
+                    
+                    # Try with InputUser
+                    log += "<b>Step 4b: Try InputUser(access_hash=0)</b>\n"
+                    try:
+                        user_input = InputUser(user_id=test_uid, access_hash=0)
+                        result = await test_client.app.invoke(
+                            InviteToChannel(channel=target_peer, users=[user_input])
+                        )
+                        log += f"  ✅ SUCCESS with InputUser!\n\n"
+                    except Exception as e2:
+                        log += f"  ❌ {type(e2).__name__}: {e2}\n\n"
+                
+                # Step 5: Verify
+                log += "<b>Step 5: Check channel members count</b>\n"
+                try:
+                    chat = await test_client.app.get_chat(target_id)
+                    log += f"  Members: {chat.members_count}\n"
+                except Exception as e:
+                    log += f"  ❌ {e}\n"
+                
+                await test_client.disconnect()
+                
+            except Exception as e:
+                log += f"\n💥 FATAL: {type(e).__name__}: {e}\n"
+                import traceback
+                log += f"```{traceback.format_exc()[:500]}```"
+            
+            await prog.edit_text(log, reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]), disable_web_page_preview=True, parse_mode="HTML")
+        
+        import asyncio
+        asyncio.create_task(run_test())
         return
 
     if d == "home":
