@@ -4981,6 +4981,14 @@ def keep_awake_loop():
             print(f"⚠️ کیپ الایو ناموفق: {e}", flush=True)
 
 if __name__ == "__main__":
+    # Import and register group manager handlers
+    try:
+        from group_manager import register_group_handlers
+        register_group_handlers(app, ADMIN_ID)
+        print("✅ Group Manager loaded!", flush=True)
+    except Exception as e:
+        print(f"⚠️ Group Manager error: {e}", flush=True)
+    
     # Clear any stale webhook from previous deployments so polling works
     for attempt in range(8):
         try:
