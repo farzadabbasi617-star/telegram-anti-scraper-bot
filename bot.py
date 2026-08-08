@@ -1213,15 +1213,24 @@ async def _execute_direct_add(q, target_gid):
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    # Check admin status
+    # Check admin status (soft check — warn but don't block)
+    _is_admin = False
     try:
+        # Warmup dialogs first so channel is in cache
+        try:
+            async for _ in add_client.app.get_dialogs(limit=200):
+                pass
+        except: pass
         me_member = await add_client.app.get_chat_member(target_gid, "me")
-        if me_member.status not in ["administrator", "creator"]:
-            await prog_msg.edit_text("❌ اکانت ادمین کانال نیست!\nدسترسی Invite Users لازمه.",
-                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
-            return
+        _is_admin = me_member.status in ["administrator", "creator"]
+        print(f"ℹ️ Admin check: status={me_member.status}, is_admin={_is_admin}", flush=True)
+        # Check admin rights if administrator
+        if _is_admin and hasattr(me_member, 'privileges') and me_member.privileges:
+            if not me_member.privileges.invite_users:
+                print(f"⚠️ Admin but no invite_users permission!", flush=True)
     except Exception as e:
-        print(f"⚠️ Admin check: {e}", flush=True)
+        print(f"⚠️ Admin check error: {type(e).__name__}: {e}", flush=True)
+        # Don't block — maybe API glitch, let InviteToChannel determine it
 
     # Get users from DB
     source = atk_state.get("add_source", "all")
