@@ -193,7 +193,7 @@ class AdvancedDefender:
                 pass
             self.honeypot_msg_ids.discard(msg.id)
         except Exception as e:
-            print(f"honeypot deploy err: {e}", flush=True)
+            pass  # silently skip if channel invalid
 
     async def _honeypot_loop(self):
         await asyncio.sleep(30)
