@@ -1236,8 +1236,10 @@ async def _execute_direct_add(q, target_gid):
         print(f"ℹ️ Admin check: status={me_member.status}, is_admin={_is_admin}", flush=True)
         # Check admin rights if administrator
         if _is_admin and hasattr(me_member, 'privileges') and me_member.privileges:
-            if not me_member.privileges.invite_users:
-                print(f"⚠️ Admin but no invite_users permission!", flush=True)
+            try:
+                if not getattr(me_member.privileges, 'invite_users', True):
+                    print(f"⚠️ Admin but no invite_users permission!", flush=True)
+            except: pass
     except Exception as e:
         print(f"⚠️ Admin check error: {type(e).__name__}: {e}", flush=True)
         # Don't block — maybe API glitch, let InviteToChannel determine it
