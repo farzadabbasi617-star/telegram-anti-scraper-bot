@@ -1204,6 +1204,16 @@ async def _execute_direct_add(q, target_gid):
     already_added = atk_state.get("already_added", 0)
     remaining = MAX_ADD_PER_ACCOUNT - already_added
     prog_msg = q.message
+    target_name = "گروه"
+    target_peer = None
+    valid_peers = {}
+
+    if not add_client:
+        try:
+            await prog_msg.edit_text("❌ اکانت متصل نیست!\nاول از منوی ادد ممبر اکانت رو وصل کن.",
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        except: pass
+        return
 
     try:
         tgt = await add_client.app.get_chat(target_gid)
