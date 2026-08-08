@@ -83,7 +83,7 @@ SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
 ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
-MAX_ADD_PER_ACCOUNT = 50  # محدودیت اضافه کردن عضو در هر اکانت
+MAX_ADD_PER_ACCOUNT = 100  # محدودیت اضافه کردن عضو در هر اکانت (تا ۵۰ تا ۸-۱۵s, بعد ۱۲-۲۰s)
 
 LAST_ERROR = ""  # آخرین خطای رخ داده برای دیباگ
 # Regex for detecting URLs in messages
@@ -1341,7 +1341,12 @@ async def _execute_direct_add(q, target_gid):
             # Update progress in state
             atk_state["add_progress"] = {"added": added, "failed": failed, "total": total, "phone": phone}
             
-            await asyncio.sleep(random.randint(8, 15))
+            # 🆕 تاخیر progressive: بعد از ۵۰ تا، فاصله بیشتر برای امنیت
+            total_account_adds = already_added + added
+            if total_account_adds > 50:
+                await asyncio.sleep(random.randint(12, 22))
+            else:
+                await asyncio.sleep(random.randint(8, 15))
         except FloodWait as fw:
             failed += 1
             errors_detail["flood"] += 1
