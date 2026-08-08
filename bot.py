@@ -2241,7 +2241,8 @@ async def _cb_impl(c, q):
 
     # ═══════════════ 🧪 DEBUG: Test add 1 user ═══════════════
     if d == "debug_add_test":
-        accs = load_accounts()
+        # Use list_saved_accounts which restores sessions from DB
+        accs = list_saved_accounts()
         if not accs:
             await q.answer("❌ اکانتی نداری!", show_alert=True)
             return
@@ -2250,6 +2251,15 @@ async def _cb_impl(c, q):
         fp = accs[phone].get("device_fp") or random.choice(DEVICE_FP)
         from attacker import safe_phone_filename as spfn
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
+        
+        # Clean up stale WAL/journal files
+        import glob as _g
+        for pat in [sess_path + ".session-journal", sess_path + ".session-wal", sess_path + ".session-shm",
+                     sess_path + ".session-*"]:
+            for f in _g.glob(pat):
+                try: os.remove(f)
+                except: pass
+        
         test_client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
         
         prog = await q.message.edit_text("🧪 <b>تست تشخیصی ادد</b>\n⏳ در حال اتصال...")
@@ -2261,7 +2271,10 @@ async def _cb_impl(c, q):
             
             log = ""
             try:
+                # Clean and enable WAL before connect
+                _enable_wal_on_session(test_client.app.name)
                 await test_client.connect()
+                _enable_wal_on_session(test_client.app.name)
                 me = await test_client.app.get_me()
                 log += f"✅ متصل: {me.first_name} (ID: {me.id})\n\n"
                 
