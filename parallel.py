@@ -376,6 +376,8 @@ async def parallel_add(chat_id, user_ids, phones, adder_limits_load, save_adder_
                 pass
             dash["workers"][phone]["state"] = "running"
             dash["workers"][phone]["stage"] = "آماده"
+            # Resolve target channel once
+            _ch_peer = await sc.app.resolve_peer(chat_id)
             while remaining > 0:
                 try:
                     uid = queue.get_nowait()
@@ -383,7 +385,15 @@ async def parallel_add(chat_id, user_ids, phones, adder_limits_load, save_adder_
                     break
                 try:
                     async with sem:
-                        await sc.app.add_chat_members(chat_id, uid)
+                        # AddContact + InviteToChannel (works for channels)
+                        from pyrogram.raw.functions.contacts import AddContact
+                        from pyrogram.raw.functions.channels import InviteToChannel
+                        user_peer = await sc.app.resolve_peer(uid)
+                        try:
+                            await sc.app.invoke(AddContact(id=user_peer, first_name=str(uid), last_name="", phone="", add_phone_privacy_exception=False))
+                            await asyncio.sleep(0.3)
+                        except: pass
+                        await sc.app.invoke(InviteToChannel(channel=_ch_peer, users=[user_peer]))
                     added += 1
                     remaining -= 1
                     mark_added(chat_id, dash["chat_title"], uid)

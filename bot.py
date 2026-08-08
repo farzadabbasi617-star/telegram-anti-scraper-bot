@@ -1448,6 +1448,7 @@ async def _execute_parallel_direct_add(q):
             assigned[best_phone] += 1
     
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from pyrogram.errors import PeerIdInvalid
     
     async def add_worker(phone, user_ids):
         if not user_ids:
@@ -1459,12 +1460,25 @@ async def _execute_parallel_direct_add(q):
         sc = AdvancedScraper("par_add_w", API_ID, API_HASH, phone=phone, device_fp=fp)
         try:
             await sc.connect()
+            # Resolve target channel once
+            sc._target_peer = await sc.app.resolve_peer(target_gid)
             added = 0; failed = 0
             for i, uid in enumerate(user_ids):
                 if stop_req[0]:
                     break
                 try:
-                    await sc.app.add_chat_members(target_gid, uid)
+                    # AddContact + InviteToChannel (works for channels)
+                    from pyrogram.raw.functions.contacts import AddContact
+                    from pyrogram.raw.functions.channels import InviteToChannel
+                    try:
+                        user_peer = await sc.app.resolve_peer(uid)
+                        try:
+                            await sc.app.invoke(AddContact(id=user_peer, first_name=str(uid), last_name="", phone="", add_phone_privacy_exception=False))
+                            await asyncio.sleep(0.3)
+                        except: pass
+                        await sc.app.invoke(InviteToChannel(channel=sc._target_peer, users=[user_peer]))
+                    except PeerIdInvalid:
+                        raise PeerIdInvalid
                     added += 1
                     total_global["added"] += 1
                     mark_user_as_added(target_gid, target_name, uid)
@@ -4527,6 +4541,12 @@ async def _steps_impl(c, m):
                     await add_client.disconnect()
                 except:
                     pass
+            # Resolve target channel once for AddContact+InviteToChannel
+            from pyrogram.raw.functions.contacts import AddContact as _AC2
+            from pyrogram.raw.functions.channels import InviteToChannel as _ITC2
+            from pyrogram.errors import PeerIdInvalid as _PID2
+            _target_peer_ch = await add_client.app.resolve_peer(target_gid)
+            
             for uid in user_ids:
                 total_for_account = already + added
                 if total_for_account >= MAX_ADD_PER_ACCOUNT:
@@ -4542,7 +4562,18 @@ async def _steps_impl(c, m):
                     break
                 err_msg = ""
                 try:
-                    await add_client.app.add_chat_members(target_gid, uid)
+                    # AddContact + InviteToChannel (works for channels)
+                    from pyrogram.raw.functions.contacts import AddContact
+                    from pyrogram.raw.functions.channels import InviteToChannel
+                    try:
+                        user_peer = await add_client.app.resolve_peer(uid)
+                        try:
+                            await add_client.app.invoke(AddContact(id=user_peer, first_name=str(uid), last_name="", phone="", add_phone_privacy_exception=False))
+                            await asyncio.sleep(0.3)
+                        except: pass
+                        await add_client.app.invoke(InviteToChannel(channel=_target_peer_ch, users=[user_peer]))
+                    except PeerIdInvalid:
+                        raise PeerIdInvalid
                     added += 1
                     # ثبت در تاریخچه تکراری ها
                     mark_user_as_added(target_gid, target_title, uid)
