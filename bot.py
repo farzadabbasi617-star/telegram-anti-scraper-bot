@@ -1270,31 +1270,31 @@ async def _execute_direct_add(q, target_gid):
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
     
     async def update_progress():
-        pct = int((added + failed + skipped) * 100 / total) if total > 0 else 0
-        filled = pct // 5
-        empty = 20 - filled
-        bar = "🟩" * filled + "⬜" * empty
-        elapsed = int(time.time() - start_t)
-        mins = elapsed // 60; secs = elapsed % 60
-        speed = int(added / (elapsed / 60)) if elapsed > 30 else 0
-        eta = int((total - added - failed - skipped) * 12 / 60) if speed > 0 else 0
-        
-        text = f"➕ <b>ادد مستقیم — {target_name}</b>\n"
-        text += f"━━━━━━━━━━━━━━━━━━\n"
-        text += f"{bar} {pct}%\n"
-        text += f"━━━━━━━━━━━━━━━━━━\n"
-        text += f"👤 اکانت: <code>{phone}</code>\n"
-        text += f"✅ ادد شده: <b>{added}</b>\n"
-        text += f"❌ ناموفق: <b>{failed}</b>\n"
-        text += f"⏭️ رد شده: <b>{skipped}</b>\n"
-        text += f"📊 پیشرفت: {added+failed+skipped}/{total}\n"
-        text += f"⏱️ زمان: {mins:02d}:{secs:02d} · ⚡ ~{speed} در دقیقه\n"
-        if eta > 0:
-            text += f"🕐 اتمام: ~{eta} دقیقه\n"
-        text += f"━━━━━━━━━━━━━━━━━━\n"
-        text += f"🛑 دکمه توقف برای لغو عملیات"
-        
         try:
+            pct = int((added + failed + skipped) * 100 / total) if total > 0 else 0
+            filled = pct // 5
+            empty = 20 - filled
+            bar = "🟩" * filled + "⬜" * empty
+            elapsed = int(time.time() - start_t)
+            mins = elapsed // 60; secs = elapsed % 60
+            speed = int(added / (elapsed / 60)) if elapsed > 30 else 0
+            eta = int((total - added - failed - skipped) * 12 / 60) if speed > 0 else 0
+            
+            text = f"➕ <b>ادد مستقیم — {target_name}</b>\n"
+            text += f"━━━━━━━━━━━━━━━━━━\n"
+            text += f"{bar} {pct}%\n"
+            text += f"━━━━━━━━━━━━━━━━━━\n"
+            text += f"👤 اکانت: <code>{phone}</code>\n"
+            text += f"✅ ادد شده: <b>{added}</b>\n"
+            text += f"❌ ناموفق: <b>{failed}</b>\n"
+            text += f"⏭️ رد شده: <b>{skipped}</b>\n"
+            text += f"📊 پیشرفت: {added+failed+skipped}/{total}\n"
+            text += f"⏱️ زمان: {mins:02d}:{secs:02d} · ⚡ ~{speed} در دقیقه\n"
+            if eta > 0:
+                text += f"🕐 اتمام: ~{eta} دقیقه\n"
+            text += f"━━━━━━━━━━━━━━━━━━\n"
+            text += f"🛑 دکمه توقف برای لغو عملیات"
+            
             await prog_msg.edit_text(
                 text,
                 reply_markup=InlineKeyboardMarkup([
@@ -1302,20 +1302,24 @@ async def _execute_direct_add(q, target_gid):
                     [InlineKeyboardButton("🏠 خانه", callback_data="home")]
                 ]),
                 disable_web_page_preview=True)
-        except: pass
+        except:
+            pass  # MessageNotModified or any edit error - ignore
     
     start_t = time.time()
     await update_progress()
     
-    # 🔥 Warmup: معرفی همه کاربرا به اکانت با get_users (batch)
-    batch_size = 20
-    for j in range(0, len(uid_list), batch_size):
-        batch = uid_list[j:j+batch_size]
-        try:
-            await add_client.app.get_users(batch)
-            await asyncio.sleep(0.8)
-        except Exception as e:
-            print(f"warmup batch {j}: {e}", flush=True)
+    # 🔥 Warmup: فقط IDهای معتبر تلگرام (مثبت < 10^11). IG=hash fake.
+    valid_uids = [uid for uid in uid_list if 0 < uid < 10**11]
+    if valid_uids:
+        for j in range(0, len(valid_uids), 20):
+            batch = valid_uids[j:j+20]
+            try: await add_client.app.get_users(batch); await asyncio.sleep(0.5)
+            except: pass
+    uid_list = valid_uids
+    total = len(uid_list)
+    if total == 0:
+        await prog_msg.edit_text('❌ کاربری با ID تلگرام پیدا نشد!', reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        return
     
     for i, uid in enumerate(uid_list):
         if stop_req[0]:
@@ -1923,15 +1927,11 @@ async def cb(c, q):
         import traceback as _tb
         _log_err(e, "callback handler")
         print(_tb.format_exc(), flush=True)
+        # MESSAGE_NOT_MODIFIED یعنی پیام قبلاً آپدیت شده - بی‌ضرره، skip
+        if 'MESSAGE_NOT_MODIFIED' in str(e).upper():
+            return
         try:
             await q.answer(f"خطا: {type(e).__name__}", show_alert=True)
-            if q.message:
-                try:
-                    # Simple inline keyboard that can't fail
-                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]])
-                    await q.message.edit_text(f"❌ خطا: {type(e).__name__}\n{str(e)[:150]}\n\n/start بزنید.", reply_markup=kb)
-                except Exception as e2:
-                    print(f"Error handler failed: {e2}", flush=True)
         except: pass
         atk_state.clear()
 
