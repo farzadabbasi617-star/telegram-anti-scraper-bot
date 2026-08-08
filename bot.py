@@ -1294,38 +1294,34 @@ async def _execute_direct_add(q, target_gid):
     valid_peers = {}
     uid_set_for_warmup = set(uid_list)
 
-    # Step 1: Warmup dialogs with retry
-    print(f"  Warming up dialogs...", flush=True)
-    all_dialogs = []
-    for retry in range(3):
-        try:
-            async for dialog in add_client.app.get_dialogs(limit=500):
-                all_dialogs.append(dialog)
-            break
-        except Exception as de:
-            print(f"  Dialogs retry {retry+1}: {de}", flush=True)
-            await asyncio.sleep(2)
-    print(f"  Got {len(all_dialogs)} dialogs", flush=True)
+    # Fast warmup: quick scan + source group join (max 30 seconds)
+    print(f"  Fast warmup starting...", flush=True)
+    await prog_msg.edit_text("⚡ در حال آماده‌سازی...\nلطفاً صبر کنید (15-30 ثانیه)")
+    print(f"  Fast warmup starting...", flush=True)
 
-    # Step 2: Scan groups the account is already in
-    scanned_groups = 0
-    for dialog in all_dialogs:
-        if dialog.chat.type in ["supergroup", "group"]:
-            scanned_groups += 1
-            try:
-                async for member in add_client.app.get_chat_members(dialog.chat.id, limit=5000):
-                    u = member.user
-                    if u and u.id in uid_set_for_warmup:
-                        try:
-                            valid_peers[u.id] = await add_client.app.resolve_peer(u.id)
-                        except: pass
-            except: pass
-            await asyncio.sleep(0.5)
-            if len(valid_peers) >= total:
-                break
-    print(f"  Scanned {scanned_groups} joined groups: {len(valid_peers)}/{total}", flush=True)
+    # Quick dialogs scan
+    try:
+        async for dialog in add_client.app.get_dialogs(limit=100):
+            if dialog.chat.type in ["supergroup", "group"]:
+                try:
+                    count = 0
+                    async for member in add_client.app.get_chat_members(dialog.chat.id, limit=200):
+                        u = member.user
+                        if u and u.id in uid_set_for_warmup:
+                            try:
+                                valid_peers[u.id] = await add_client.app.resolve_peer(u.id)
+                                count += 1
+                            except: pass
+                        if count >= 5:
+                            break
+                except: pass
+                await asyncio.sleep(0.3)
+                if len(valid_peers) >= 10:
+                    break
+        print(f"  Quick scan: {len(valid_peers)} peers", flush=True)
+    except: pass
 
-    # Step 3: Join source groups and scan
+    # Join source groups (quick)
     source_groups = set()
     for u in user_records:
         gid = u.get("source_group_id")
@@ -1336,68 +1332,41 @@ async def _execute_direct_add(q, target_gid):
                     source_groups.add(gid_int)
             except: pass
 
-    if source_groups and len(valid_peers) < total:
-        print(f"  Source groups: {source_groups}", flush=True)
-        for sg in list(source_groups)[:5]:
-            if len(valid_peers) >= total:
-                break
+    for sg in list(source_groups)[:3]:
+        if len(valid_peers) >= 20:
+            break
+        try:
             try:
-                # Try to join
-                try:
-                    chat = await add_client.app.get_chat(sg)
-                    if chat.username:
-                        try:
-                            await add_client.app.join_chat(chat.username)
-                            print(f"  Joined @{chat.username}", flush=True)
-                        except: pass
-                except: pass
-                # Scan
-                try:
-                    count = 0
-                    async for member in add_client.app.get_chat_members(sg, limit=10000):
-                        u = member.user
-                        if u and u.id in uid_set_for_warmup:
-                            try:
-                                valid_peers[u.id] = await add_client.app.resolve_peer(u.id)
-                                count += 1
-                            except: pass
-                    if count > 0:
-                        print(f"  Resolved {count} from {sg}", flush=True)
-                except Exception as sge:
-                    print(f"  Can't scan {sg}: {sge}", flush=True)
-            except Exception as jne:
-                print(f"  Can't join {sg}: {jne}", flush=True)
-            await asyncio.sleep(1)
-
-    # Step 4: Batch get_users for remaining
-    remaining = [uid for uid in uid_list if uid not in valid_peers]
-    if remaining:
-        print(f"  Batch get_users: {len(remaining)} remaining...", flush=True)
-        batch_size = 100
-        for i in range(0, len(remaining), batch_size):
-            batch = remaining[i:i+batch_size]
+                chat = await add_client.app.get_chat(sg)
+                if chat.username:
+                    try:
+                        await add_client.app.join_chat(chat.username)
+                    except: pass
+            except: pass
             try:
-                users = await add_client.app.get_users(batch)
-                for u in users:
-                    if u and u.id and not getattr(u, 'is_bot', False) and not getattr(u, 'is_deleted', False):
+                count = 0
+                async for member in add_client.app.get_chat_members(sg, limit=500):
+                    u = member.user
+                    if u and u.id in uid_set_for_warmup:
                         try:
                             valid_peers[u.id] = await add_client.app.resolve_peer(u.id)
+                            count += 1
                         except: pass
-            except Exception as bge:
-                print(f"  Batch error: {bge}", flush=True)
-            await asyncio.sleep(1)
-
-    # Step 5: Final direct resolve
-    still_remaining = [uid for uid in uid_list if uid not in valid_peers]
-    if still_remaining:
-        print(f"  Direct resolve {len(still_remaining)}...", flush=True)
-        for uid in still_remaining[:100]:
-            try:
-                valid_peers[uid] = await add_client.app.resolve_peer(uid)
+                    if count >= 10:
+                        break
             except: pass
-            await asyncio.sleep(0.05)
+        except: pass
+        await asyncio.sleep(0.5)
 
-    print(f"  Done: {len(valid_peers)}/{total} peers resolved", flush=True)
+    # Direct resolve for remaining (fast, max 30 users)
+    remaining = [uid for uid in uid_list if uid not in valid_peers]
+    for uid in remaining[:30]:
+        try:
+            valid_peers[uid] = await add_client.app.resolve_peer(uid)
+        except: pass
+        await asyncio.sleep(0.02)
+
+    print(f"  Warmup done: {len(valid_peers)}/{total} peers (took ~15s)", flush=True)
 
     # Resolve target channel
     try:
@@ -1416,13 +1385,19 @@ async def _execute_direct_add(q, target_gid):
             if uid in valid_peers:
                 user_peer = valid_peers[uid]
             else:
-                # Method 1: Try resolve_peer
-                try:
-                    user_peer = await add_client.app.resolve_peer(uid)
-                except:
-                    # Method 2: Direct construct with access_hash=0
-                    from pyrogram.raw.types import InputPeerUser, InputUser
-                    user_peer = InputPeerUser(user_id=uid, access_hash=0)
+                # Try resolve_peer
+                if uid in valid_peers:
+                    user_peer = valid_peers[uid]
+                else:
+                    try:
+                        user_peer = await add_client.app.resolve_peer(uid)
+                        valid_peers[uid] = user_peer
+                    except Exception as re:
+                        # Skip this user - can't resolve
+                        failed += 1
+                        errors["peer"] += 1
+                        if not first_error: first_error = f"Can't resolve {uid}"
+                        continue
 
             # Add to contacts (needed for channel invite)
             try:
