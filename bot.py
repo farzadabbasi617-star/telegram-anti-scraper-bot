@@ -1198,25 +1198,36 @@ async def _start_direct_add(q, target_gid):
 
 
 async def _execute_direct_add(q, target_gid):
-    """ادد مستقیم — channel = invite link, supergroup/group = add_chat_members"""
+    """add members to channel/group via raw InviteToChannel"""
     add_client = atk_state.get("add_client")
     phone = atk_state.get("phone", "")
     already_added = atk_state.get("already_added", 0)
     remaining = MAX_ADD_PER_ACCOUNT - already_added
     prog_msg = q.message
 
-    # ⚡ تشخیص نوع مقصد
     try:
         tgt = await add_client.app.get_chat(target_gid)
         target_name = tgt.title
-        tgt_type = str(tgt.type).lower()
-        is_pure_channel = "channel" in tgt_type and "group" not in tgt_type and not getattr(tgt, 'megagroup', False)
-        is_supergroup = "supergroup" in tgt_type or getattr(tgt, 'megagroup', False)
     except Exception as e:
-        await prog_msg.edit_text(f"❌ گروه پیدا نشد: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        await prog_msg.edit_text(f"Not found: {e}",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    # ⚡ دریافت کاربران
+    # Check admin
+    try:
+        me = await add_client.app.get_chat_member(target_gid, "me")
+        ok = hasattr(me, 'privileges') and me.privileges
+        if not ok:
+            msg = "NOT ADMIN in " + str(target_name)
+            await prog_msg.edit_text(msg,
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+            return
+    except Exception as e:
+        await prog_msg.edit_text(f"Access error: {str(e)[:150]}",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        return
+
+    # Get users from DB
     source = atk_state.get("add_source", "all")
     source_id = atk_state.get("add_source_id")
     if source == "category":
@@ -1226,7 +1237,6 @@ async def _execute_direct_add(q, target_gid):
     else:
         user_records = get_users_by_source(limit=remaining)
 
-    # ⚡ فیلتر IDهای معتبر
     uid_set = set()
     for u in user_records:
         uid = int(u.get("user_id", 0) or 0)
@@ -1236,119 +1246,98 @@ async def _execute_direct_add(q, target_gid):
     total = len(uid_list)
 
     if total == 0:
-        await prog_msg.edit_text("❌ کاربری برای ادد پیدا نشد.", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        await prog_msg.edit_text("No users to add.",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+    from pyrogram.raw.functions.channels import InviteToChannel
+    from pyrogram.raw.types import InputUser
+    from pyrogram.errors import PeerIdInvalid
 
-    # ⚡ کانال خالص → فقط invite link
-    if is_pure_channel:
-        invite_links = []
-        for j in range(0, min(total, 200), 50):
-            try:
-                inv = await add_client.app.create_chat_invite_link(target_gid, creates_join_request=False)
-                invite_links.append(inv.invite_link)
-                await asyncio.sleep(0.5)
-            except:
-                pass
-
-        if invite_links:
-            links_text = "\n".join(f"🔗 <code>{l}</code>" for l in invite_links[:10])
-            text = f"📡 <b>کانال: {target_name}</b>\n━━━━━━━━━━━━━━━━━━\n"
-            text += f"⛔ تلگرام اجازه ادد مستقیم به کانال رو نمیده!\n"
-            text += f"باید از لینک دعوت استفاده کنی.\n\n"
-            text += f"👥 {total} کاربر آماده دعوت\n"
-            text += f"🔗 {len(invite_links)} لینک ساخته شد:\n{links_text}\n\n"
-            text += "لینک‌ها رو برای کاربرا بفرست تا جوین شن."
-        else:
-            text = f"❌ نتونستم لینک دعوت بسازم!\nمطمئن شو اکانت <b>ادمین</b> کانال هست."
-        
-        await prog_msg.edit_text(text,
-            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]),
-            disable_web_page_preview=True)
-        return
-
-    # ⚡ گروه/سوپرگروه → add_chat_members مستقیم
     added = 0; failed = 0; skipped = 0
-    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "peer": 0, "other": 0}
+    errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "other": 0}
     first_error = ""; stop_req = [False]; start_t = time.time()
-
     atk_state["add_in_progress"] = True
-    atk_state["add_progress"] = {"added": 0, "failed": 0, "total": total, "phone": phone}
 
     async def upd():
         try:
             pct = int((added + failed) * 100 / total) if total > 0 else 0
-            bar = "🟩" * (pct // 5) + "⬜" * (20 - pct // 5)
+            bar = "X" * (pct // 5) + "." * (20 - pct // 5)
             e = int(time.time() - start_t); m, s = e // 60, e % 60
             spd = int(added / (e / 60)) if e > 30 else 0
-            eta = int((total - added - failed) * 10 / 60) if spd > 0 else 0
-            txt = f"➕ <b>{target_name}</b>\n{bar} {pct}%\n✅ {added} | ❌ {failed}\n⏱ {m:02d}:{s:02d} | ⚡ ~{spd}/min\n🛑 توقف"
+            txt = "+ " + str(target_name) + "\n" + bar + " " + str(pct) + "%\n"
+            txt += "OK: " + str(added) + " | FAIL: " + str(failed) + "\n"
+            txt += str(m).zfill(2) + ":" + str(s).zfill(2) + " | ~" + str(spd) + "/min\nSTOP"
             await prog_msg.edit_text(txt,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Stop", callback_data="stop_op")]]),
                 disable_web_page_preview=True)
         except: pass
 
     await upd()
 
-    # 🔥 Warmup: get_users ۱۰ تایی
-    for j in range(0, min(total, 300), 10):
-        try:
-            await add_client.app.get_users(uid_list[j:j+10])
-            await asyncio.sleep(0.3)
-        except: pass
-
-    # 🔥 حلقه اصلی
     for uid in uid_list:
         if stop_req[0]:
             skipped = total - added - failed
             break
         try:
-            await add_client.app.add_chat_members(target_gid, uid)
+            # Resolve peer
+            try:
+                peer = await add_client.app.resolve_peer(uid)
+                input_user = InputUser(user_id=peer.user_id, access_hash=peer.access_hash)
+            except:
+                failed += 1; errors_detail["peer"] += 1
+                continue
+
+            # Raw MTProto InviteToChannel
+            target_peer = await add_client.app.resolve_peer(target_gid)
+            await add_client.app.invoke(InviteToChannel(channel=target_peer, users=[input_user]))
+            
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
             limits = load_adder_limits()
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
-            atk_state["add_progress"] = {"added": added, "failed": failed, "total": total, "phone": phone}
             total_acc = already_added + added
             await asyncio.sleep(random.randint(10, 18) if total_acc > 50 else random.randint(7, 12))
+
         except FloodWait as fw:
             failed += 1; errors_detail["flood"] += 1
             await asyncio.sleep(fw.value + 5)
         except Exception as e:
             failed += 1; es = str(e); es_l = es.lower()
-            if not first_error: first_error = es[:150]
-            if "peer_id_invalid" in es_l or "peer invalid" in es_l: errors_detail["peer"] += 1
-            elif "privacy" in es_l: errors_detail["privacy"] += 1
+            if not first_error: first_error = es[:200]
+            if "peer_id_invalid" in es_l: errors_detail["peer"] += 1
+            elif "privacy" in es_l or "not_mutual" in es_l: errors_detail["privacy"] += 1
             elif "already" in es_l or "participant" in es_l:
                 errors_detail["already"] += 1
                 mark_user_as_added(target_gid, target_name, uid)
             elif "flood" in es_l: errors_detail["flood"] += 1
-            elif "not_mutual" in es_l: errors_detail["privacy"] += 1
             else: errors_detail["other"] += 1
             await asyncio.sleep(random.randint(3, 6))
-        if (added + failed) % 5 == 0:
+
+        if (added + failed) % 3 == 0:
             await upd()
 
     e = int(time.time() - start_t); m, s = e // 60, e % 60
-    text = f"✅ <b>ادد تمام شد!</b> — {target_name}\n━━━━━━━━━━━━━━━━━━\n"
-    text += f"✅ ادد شده: <b>{added}</b>\n❌ ناموفق: <b>{failed}</b>\n"
-    text += f"⏱️ زمان: {m:02d}:{s:02d}\n📊 مجموع: {already_added + added}/{MAX_ADD_PER_ACCOUNT}\n"
+    text = "DONE: " + str(target_name) + "\n" + "="*20 + "\n"
+    text += "Added: " + str(added) + "\nFailed: " + str(failed) + "\n"
+    text += "Time: " + str(m).zfill(2) + ":" + str(s).zfill(2) + "\n"
+    text += "Total: " + str(already_added + added) + "/" + str(MAX_ADD_PER_ACCOUNT) + "\n"
     if failed > 0:
-        text += f"━━━━━━━━━━━━━━━━━━\n🔍 <b>دلایل:</b>\n"
-        if errors_detail["peer"]: text += f"👤 Peer Invalid: {errors_detail['peer']}\n"
-        if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
-        if errors_detail["flood"]: text += f"⏱️ Flood: {errors_detail['flood']}\n"
-        if errors_detail["already"]: text += f"👥 Already: {errors_detail['already']}\n"
-        if errors_detail["other"]: text += f"❓ سایر: {errors_detail['other']}\n"
-        if first_error: text += f"\n📝 <code>{first_error[:200]}</code>\n"
+        text += "="*20 + "\n"
+        if errors_detail["peer"]: text += "Peer: " + str(errors_detail["peer"]) + "\n"
+        if errors_detail["privacy"]: text += "Privacy: " + str(errors_detail["privacy"]) + "\n"
+        if errors_detail["already"]: text += "Already: " + str(errors_detail["already"]) + "\n"
+        if errors_detail["flood"]: text += "Flood: " + str(errors_detail["flood"]) + "\n"
+        if errors_detail["other"]: text += "Other: " + str(errors_detail["other"]) + "\n"
+        if first_error: text += "\n" + first_error[:200] + "\n"
     atk_state["add_in_progress"] = False
+
     try:
         await prog_msg.edit_text(text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📊 آمار اکانت‌ها", callback_data="adder_stats")],
-                [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
+                [InlineKeyboardButton("Stats", callback_data="adder_stats")],
+                [InlineKeyboardButton("Home", callback_data="home")],
             ]), disable_web_page_preview=True)
     except: pass
 
