@@ -2499,8 +2499,8 @@ async def _cb_impl(c, q):
             
             await prog.edit_text(log, reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]), disable_web_page_preview=True, parse_mode="HTML")
         
-        import asyncio
-        asyncio.create_task(run_test())
+        import asyncio as _asyncio
+        _asyncio.create_task(run_test())
         return
 
     if d == "home":
