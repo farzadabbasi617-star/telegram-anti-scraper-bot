@@ -1232,7 +1232,7 @@ async def _execute_direct_add(q, target_gid):
                 pass
         except: pass
         me_member = await add_client.app.get_chat_member(target_gid, "me")
-        _is_admin = me_member.status in ["administrator", "creator"]
+        _is_admin = "owner" in str(me_member.status).lower() or "admin" in str(me_member.status).lower()
         print(f"ℹ️ Admin check: status={me_member.status}, is_admin={_is_admin}", flush=True)
         # Check admin rights if administrator
         if _is_admin and hasattr(me_member, 'privileges') and me_member.privileges:
