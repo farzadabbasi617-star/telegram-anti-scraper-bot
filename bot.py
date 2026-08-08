@@ -1198,35 +1198,19 @@ async def _start_direct_add(q, target_gid):
 
 
 async def _execute_direct_add(q, target_gid):
-    """add members to channel/group - direct add_chat_members with proper fallback"""
+    """add members via invite link method — works for channels AND groups"""
     add_client = atk_state.get("add_client")
     phone = atk_state.get("phone", "")
     already_added = atk_state.get("already_added", 0)
     remaining = MAX_ADD_PER_ACCOUNT - already_added
     prog_msg = q.message
 
-    # Get target info
     try:
         tgt = await add_client.app.get_chat(target_gid)
         target_name = tgt.title
-        target_type = str(tgt.type).lower()
     except Exception as e:
-        await prog_msg.edit_text(f"Target not found: {e}",
+        await prog_msg.edit_text(f"Target error: {e}",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
-        return
-
-    # Check access - must be able to read the chat
-    try:
-        me = await add_client.app.get_chat_member(target_gid, "me")
-    except Exception as e:
-        es = str(e).lower()
-        if "channel_invalid" in es or "not_participant" in es:
-            await prog_msg.edit_text(
-                f"Cannot access {target_name}. Account {phone} is NOT a member.",
-                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
-        else:
-            await prog_msg.edit_text(f"Access error: {str(e)[:150]}",
-                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
     # Get users from DB
@@ -1239,7 +1223,6 @@ async def _execute_direct_add(q, target_gid):
     else:
         user_records = get_users_by_source(limit=remaining)
 
-    # Filter valid IDs
     uid_set = set()
     for u in user_records:
         uid = int(u.get("user_id", 0) or 0)
@@ -1253,6 +1236,9 @@ async def _execute_direct_add(q, target_gid):
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
+    from pyrogram.raw.functions.channels import InviteToChannel
+    from pyrogram.raw.types import InputUser, InputChannel
+
     added = 0; failed = 0; skipped = 0
     errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "other": 0}
     first_error = ""; stop_req = [False]; start_t = time.time()
@@ -1261,31 +1247,40 @@ async def _execute_direct_add(q, target_gid):
     async def upd():
         try:
             pct = int((added + failed) * 100 / total) if total > 0 else 0
-            bar = "X" * (pct // 5) + "." * (20 - pct // 5)
-            e = int(time.time() - start_t); m, s = e // 60, e % 60
-            spd = int(added / (e / 60)) if e > 30 else 0
-            txt = f"Adding to {target_name}\n{bar} {pct}%\nOK: {added} | FAIL: {failed}\n{m:02d}:{s:02d} | ~{spd}/min"
+            elapsed = int(time.time() - start_t)
+            mins, secs = elapsed // 60, elapsed % 60
+            spd = int(added / (elapsed / 60)) if elapsed > 30 else 0
+            txt = f"➕ {target_name}\n{'█'*(pct//5)}{'░'*(20-pct//5)} {pct}%\n✅ {added} | ❌ {failed}\n⏱ {mins:02d}:{secs:02d} | ~{spd}/min"
             await prog_msg.edit_text(txt,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Stop", callback_data="stop_op")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ Stop", callback_data="stop_op")]]),
                 disable_web_page_preview=True)
         except: pass
 
     await upd()
 
-    # Simple add loop - direct add_chat_members
     for uid in uid_list:
         if stop_req[0]:
             skipped = total - added - failed
             break
         try:
-            await add_client.app.add_chat_members(target_gid, uid)
+            # Create invite link (works for channels AND groups)
+            inv = await add_client.app.create_chat_invite_link(target_gid, creates_join_request=False)
+            
+            # Send the invite link to the user via PM, then they join
+            await add_client.app.send_message(
+                uid,
+                f"👋 سلام! به کانال **{target_name}** دعوت شدی.\n\n🔗 {inv.invite_link}"
+            )
+            
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
             limits = load_adder_limits()
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
+            
             total_acc = already_added + added
-            await asyncio.sleep(random.randint(10, 18) if total_acc > 50 else random.randint(7, 12))
+            await asyncio.sleep(random.randint(12, 20))
+
         except FloodWait as fw:
             failed += 1; errors_detail["flood"] += 1
             await asyncio.sleep(fw.value + 5)
@@ -1293,38 +1288,38 @@ async def _execute_direct_add(q, target_gid):
             failed += 1; es = str(e); es_l = es.lower()
             if not first_error: first_error = es[:200]
             if "peer_id_invalid" in es_l: errors_detail["peer"] += 1
-            elif "privacy" in es_l or "not_mutual" in es_l: errors_detail["privacy"] += 1
-            elif "already" in es_l or "participant" in es_l:
+            elif "privacy" in es_l: errors_detail["privacy"] += 1
+            elif "already" in es_l: 
                 errors_detail["already"] += 1
                 mark_user_as_added(target_gid, target_name, uid)
             elif "flood" in es_l: errors_detail["flood"] += 1
-            elif "channel_invalid" in es_l:
-                errors_detail["other"] += 1
-                if not first_error: first_error = "CHANNEL_INVALID: account not in channel"
             else: errors_detail["other"] += 1
             await asyncio.sleep(random.randint(3, 6))
+
         if (added + failed) % 3 == 0:
             await upd()
 
-    e = int(time.time() - start_t); m, s = e // 60, e % 60
-    text = f"DONE: {target_name}\n{'='*20}\n"
-    text += f"Added: {added}\nFailed: {failed}\nTime: {m:02d}:{s:02d}\n"
-    text += f"Total: {already_added + added}/{MAX_ADD_PER_ACCOUNT}\n"
+    elapsed = int(time.time() - start_t)
+    mins, secs = elapsed // 60, elapsed % 60
+    text = f"✅ DONE: {target_name}\n{'='*25}\n"
+    text += f"✅ Added: {added}\n❌ Failed: {failed}\n"
+    text += f"⏱ {mins:02d}:{secs:02d}\n📊 {already_added + added}/{MAX_ADD_PER_ACCOUNT}\n"
+    text += "\n💡 Users receive invite link in PV."
     if failed > 0:
-        text += f"{'='*20}\n"
-        if errors_detail["peer"]: text += f"Peer Invalid: {errors_detail['peer']}\n"
-        if errors_detail["privacy"]: text += f"Privacy: {errors_detail['privacy']}\n"
-        if errors_detail["already"]: text += f"Already: {errors_detail['already']}\n"
-        if errors_detail["flood"]: text += f"Flood: {errors_detail['flood']}\n"
-        if errors_detail["other"]: text += f"Other: {errors_detail['other']}\n"
-        if first_error: text += f"\n{first_error[:200]}\n"
+        text += f"\n{'='*25}\n"
+        if errors_detail["peer"]: text += f"👤 Peer: {errors_detail['peer']}\n"
+        if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
+        if errors_detail["already"]: text += f"👥 Already: {errors_detail['already']}\n"
+        if errors_detail["flood"]: text += f"⏱️ Flood: {errors_detail['flood']}\n"
+        if errors_detail["other"]: text += f"❓ Other: {errors_detail['other']}\n"
+        if first_error: text += f"\n{first_error[:200]}"
     atk_state["add_in_progress"] = False
 
     try:
         await prog_msg.edit_text(text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Stats", callback_data="adder_stats")],
-                [InlineKeyboardButton("Home", callback_data="home")],
+                [InlineKeyboardButton("📊 Stats", callback_data="adder_stats")],
+                [InlineKeyboardButton("🏠 Home", callback_data="home")],
             ]), disable_web_page_preview=True)
     except: pass
 
