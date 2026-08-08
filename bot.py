@@ -907,25 +907,35 @@ async def _show_ig_menu(q):
     text += "🔹 skip خودکار کاربرای تکراری\n"
     text += "🔹 سرعت بالا + progress زنده\n\n"
     
-    # Check login status
+    # Check login status — try session first, then auto-login
     logged_in = False
     try:
         L = ig_scraper.get_instaloader()
         L.test_login()
         logged_in = True
     except:
-        pass
+        # Try auto-login with env credentials
+        try:
+            if ig_scraper.login_instagram():
+                logged_in = True
+        except:
+            pass
     
     if logged_in:
         text += "🟢 <b>وضعیت:</b> به اینستاگرام متصلی\n"
         text += f"👤 اکانت: <code>{ig_scraper.IG_USERNAME or '?'}</code>\n"
     else:
-        text += "🔴 <b>وضعیت:</b> هنوز لاگین نشدی\n"
+        if ig_scraper.IG_USERNAME:
+            text += "🔴 <b>وضعیت:</b> لاگین نشد (پسورد اشتباه یا چالش امنیتی)\n"
+            text += f"👤 اکانت تنظیم شده: <code>{ig_scraper.IG_USERNAME}</code>\n"
+        else:
+            text += "🔴 <b>وضعیت:</b> هنوز لاگین نشدی\n"
     
     text += "\n⚠️ <b>محدودیت‌ها:</b>\n"
     text += "• سرعت: ~۲۰۰ فالوور در ساعت\n"
     text += "• فقط پیج‌های عمومی\n"
     text += "• ریسک Shadow ban در صورت استفاده سنگین\n"
+    text += "• Render IP ممکنه چالش امنیتی بخوره → از آپلود سشن استفاده کن\n"
     
     buttons = []
     if logged_in:
@@ -936,6 +946,8 @@ async def _show_ig_menu(q):
     else:
         buttons.append([InlineKeyboardButton("🔐 تنظیم لاگین", callback_data="ig_login")])
         buttons.append([InlineKeyboardButton("📥 آپلود سشن (2FA)", callback_data="ig_upload_session")])
+        if ig_scraper.IG_USERNAME:
+            buttons.append([InlineKeyboardButton("🔄 تلاش مجدد لاگین خودکار", callback_data="ig_retry_login")])
     
     buttons.append(_sub_back_btn())
     await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
@@ -957,11 +969,21 @@ async def _start_ig_scrape(q, target):
     # Extract username from URL if needed
     target = ig_scraper.extract_username(target)
     
+    # Try session first, then auto-login
+    logged_in = False
     try:
         L = ig_scraper.get_instaloader()
         L.test_login()
+        logged_in = True
     except:
-        await q.answer("❌ اول باید لاگین کنی! از منوی اینستاگرام لاگین کن.", show_alert=True)
+        try:
+            if ig_scraper.login_instagram():
+                logged_in = True
+        except:
+            pass
+    
+    if not logged_in:
+        await q.answer("❌ لاگین نشدی! پسورد اشتباهه یا اینستاگرام چالش امنیتی داده.\nاز «📥 آپلود سشن» استفاده کن.", show_alert=True)
         return
     
     prog = await q.message.edit_text(
@@ -2358,10 +2380,33 @@ async def _cb_impl(c, q):
         await _handle_ig_login(q)
         return
 
+    if d == "ig_retry_login":
+        await q.answer("🔄 در حال تلاش مجدد لاگین...", show_alert=False)
+        try:
+            if ig_scraper.login_instagram():
+                await q.answer("✅ لاگین موفق! حالا می‌تونی اسکرپ کنی.", show_alert=True)
+            else:
+                await q.answer("❌ لاگین ناموفق - پسورد اشتباه یا چالش امنیتی.", show_alert=True)
+        except Exception as e:
+            await q.answer(f"❌ خطا: {str(e)[:100]}", show_alert=True)
+        await _show_ig_menu(q)
+        return
+
     if d == "ig_logout":
+        # Delete session file
+        try:
+            sf = ig_scraper.IG_SESSION_FILE
+            if os.path.exists(sf):
+                os.remove(sf)
+            # Also try in saved_sessions dir
+            sf2 = os.path.join("saved_sessions", "instagram_session")
+            if os.path.exists(sf2):
+                os.remove(sf2)
+        except:
+            pass
         atk_state["ig_username"] = ""
         atk_state["ig_password"] = ""
-        await q.answer("📸 اطلاعات لاگین پاک شد", show_alert=True)
+        await q.answer("📸 از اکانت خارج شدی. فایل سشن پاک شد.", show_alert=True)
         await _show_ig_menu(q)
         return
 
@@ -4053,7 +4098,90 @@ async def _steps_impl(c, m):
             reply_markup=InlineKeyboardMarkup([[IB("▶️ شروع اسکرپ", callback_data=f"ig_scrape_{target}")]]))
         return
 
-    # ==================== آپلود مستقیم فایل سشن (دور زدن 2FA) ====================
+    # ==================== لاگین دستی اینستاگرام ====================
+    if step == "ig_login_username":
+        username = m.text.strip().lower()
+        username = re.sub(r'[^a-zA-Z0-9._]', '', username.lstrip('@'))
+        if not username or len(username) < 2:
+            await m.reply_text("❌ نام کاربری نامعتبر! دوباره بفرست.", reply_markup=main_menu())
+            return
+        atk_state["ig_username"] = username
+        atk_state["step"] = "ig_login_password"
+        await m.reply_text(
+            f"👤 نام کاربری: <code>{username}</code>\n\n"
+            "🔑 حالا <b>پسورد</b> رو بفرست:\n\n"
+            "⚠️ توجه: اینستاگرام ممکنه با IP رندر چالش بده.\n"
+            "اگر لاگین نشد، از «📥 آپلود سشن» استفاده کن.",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+        return
+
+    if step == "ig_login_password":
+        password = m.text.strip()
+        username = atk_state.get("ig_username", "")
+        if not username:
+            await m.reply_text("❌ اول نام کاربری رو بفرست!", reply_markup=main_menu())
+            atk_state.clear()
+            return
+        st = await m.reply_text("🔐 در حال لاگین به اینستاگرام...")
+        try:
+            import instaloader
+            L = instaloader.Instaloader(sleep=True, quiet=True, download_pictures=False,
+                                         download_videos=False, download_video_thumbnails=False, compress_json=False)
+            L.login(username, password)
+            # Save session
+            os.makedirs(ig_scraper.SESSION_DIR, exist_ok=True)
+            L.save_session_to_file(ig_scraper.IG_SESSION_FILE)
+            atk_state.clear()
+            await st.edit_text(
+                f"✅ <b>لاگین موفق!</b>\n"
+                f"👤 اکانت: <code>{username}</code>\n"
+                f"💾 سشن ذخیره شد.\n\n"
+                "حالا می‌تونی از «🔍 اسکرپ فالوور» استفاده کنی.",
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+        except Exception as e:
+            err = str(e).lower()
+            if "bad credentials" in err or "wrong password" in err:
+                msg = "❌ پسورد اشتباهه!"
+            elif "challenge" in err or "verify" in err or "suspicious" in err:
+                msg = "❌ اینستاگرام چالش امنیتی داده!\n\n✅ راه حل: از «📥 آپلود سشن» استفاده کن.\nبا Instaloader روی سیستم خودت لاگین کن و فایل سشن رو آپلود کن."
+            elif "2fa" in err or "two-factor" in err:
+                msg = "❌ این اکانت 2FA داره!\n\n✅ از «📥 آپلود سشن» استفاده کن.\nبا Instaloader روی سیستم خودت لاگین کن (2FA رو وارد کن) و فایل سشن رو آپلود کن."
+            else:
+                msg = f"❌ خطا در لاگین:\n{str(e)[:300]}"
+            await st.edit_text(msg, reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+            atk_state.clear()
+        # Delete the message with password for security
+        try: await m.delete()
+        except: pass
+        return
+
+    # ==================== 📸 آپلود فایل سشن اینستاگرام ====================
+    if step == "upload_ig_session" and m.document:
+        doc = m.document
+        fname = getattr(doc, 'file_name', '') or 'ig_session'
+        st = await m.reply_text("📥 فایل سشن اینستاگرام دریافت شد، در حال بررسی...")
+        file_data = await app.download_media(m, in_memory=True)
+        try:
+            os.makedirs(ig_scraper.SESSION_DIR, exist_ok=True)
+            with open(ig_scraper.IG_SESSION_FILE, "wb") as f:
+                f.write(file_data.getvalue())
+            # Test if it works
+            L = ig_scraper.get_instaloader()
+            L.load_session_from_file(ig_scraper.IG_USERNAME, filename=ig_scraper.IG_SESSION_FILE)
+            L.test_login()
+            await st.edit_text(
+                "✅ <b>سشن اینستاگرام با موفقیت لود شد!</b>\n\n"
+                "حالا می‌تونی اسکرپ کنی.",
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+        except Exception as e:
+            await st.edit_text(
+                f"❌ سشن معتبر نیست یا منقضی شده:\n{str(e)[:200]}\n\n"
+                "دوباره با Instaloader لاگین کن و فایل جدید آپلود کن.",
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+        atk_state.clear()
+        return
+
+    # ==================== آپلود مستقیم فایل سشن تلگرام (دور زدن 2FA) ====================
     if step == "upload_session" and m.document:
         doc = m.document
         fname = getattr(doc, 'file_name', '') or 'unknown.session'
