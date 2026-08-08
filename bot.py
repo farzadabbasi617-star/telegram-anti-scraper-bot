@@ -1198,221 +1198,185 @@ async def _start_direct_add(q, target_gid):
 
 
 async def _execute_direct_add(q, target_gid):
-    """Execute the add operation with live progress tracking"""
+    """ادد مستقیم اعضا — بازنویسی کامل و تست شده"""
     add_client = atk_state.get("add_client")
     phone = atk_state.get("phone", "")
     already_added = atk_state.get("already_added", 0)
     remaining = MAX_ADD_PER_ACCOUNT - already_added
-    
     prog_msg = q.message
-    
-    # ⚠️ بررسی عضویت اکانت در گروه مقصد
+
+    # ⚡ چک: اکانت باید ادمین گروه باشه
     try:
-        member = await add_client.app.get_chat_member(target_gid, "me")
-        if member.status not in ("administrator", "creator", "member"):
+        me = await add_client.app.get_chat_member(target_gid, "me")
+        if me.status not in ("administrator", "creator"):
             await prog_msg.edit_text(
-                f"❌ اکانت <code>{phone}</code> عضو گروه مقصد نیست!\n"
-                "اول با این اکانت توی گروه عضو شو بعد ادد کن.",
+                f"❌ اکانت <code>{phone}</code> در گروه مقصد <b>ادمین نیست!</b>\n"
+                "برای ادد کردن باید حتماً ادمین باشی.",
                 reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
             return
     except Exception as e:
         err = str(e).lower()
-        if "user_not_participant" in err.replace("_", "") or "not a member" in err:
+        if "user_not_participant" in err or "not a member" in err:
             await prog_msg.edit_text(
-                f"❌ اکانت <code>{phone}</code> عضو گروه مقصد نیست!\n\n"
-                f"🔹 <b>راه حل:</b> با این اکانت توی گروه عضو شو.\n"
-                f"🔹 لینک گروه رو بفرست به اکانت یا باهاش join بده.",
+                f"❌ اکانت <code>{phone}</code> اصلاً عضو گروه مقصد نیست!\nاول عضو شو بعد ادمین شو.",
                 reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
             return
-        # خطای دیگه - ادامه میدیم شاید بشه
-    
+        # خطای دیگه — ادامه میدیم
+
+    # ⚡ دریافت کاربران از دیتابیس
     source = atk_state.get("add_source", "all")
     source_id = atk_state.get("add_source_id")
-    
     if source == "category":
         user_records = get_users_by_source(category=source_id, limit=remaining)
     elif source == "chat":
         user_records = get_users_by_source(source_chat_id=source_id, limit=remaining)
     else:
         user_records = get_users_by_source(limit=remaining)
-    
-    uid_list = []
+
+    # ⚡ فیلتر: فقط IDهای معتبر تلگرام (مثبت، بین ۱۰^۵ تا ۱۰^۱۱)
+    uid_set = set()
     for u in user_records:
         uid = int(u.get("user_id", 0) or 0)
-        if uid and not is_user_already_added(target_gid, uid):
-            uid_list.append(uid)
-    
-    uid_list = uid_list[:remaining]
+        if 10000 < uid < 10**11 and not is_user_already_added(target_gid, uid):
+            uid_set.add(uid)
+    uid_list = list(uid_set)[:remaining]
     total = len(uid_list)
-    
+
     if total == 0:
-        await q.answer("کاربری برای ادد نیست!", show_alert=True)
+        await prog_msg.edit_text(
+            "❌ هیچ کاربر قابل اددی پیدا نشد!\n"
+            "یا همه قبلاً اضافه شدن، یا IDهاشون معتبر نیست.",
+            reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
-    
-    # Get target name
+
+    # ⚡ اسم گروه مقصد
     try:
         tgt = await add_client.app.get_chat(target_gid)
         target_name = tgt.title
+        is_channel = str(tgt.type).lower() == "chattype.channel" and not getattr(tgt, 'megagroup', False)
     except:
         target_name = atk_state.get("target_add_name", f"Chat {target_gid}")
-    
-    prog_msg = q.message
+        is_channel = False
+
     added = 0; failed = 0; skipped = 0
-    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "banned": 0, "other": 0, "no_add": 0, "not_member": 0, "peer_invalid": 0}
-    first_error = ""  # اولین خطا برای نمایش
+    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "peer": 0, "other": 0}
+    first_error = ""
     stop_req = [False]
-    
-    # Save adder state for stop/resume
+    start_t = time.time()
+
     atk_state["add_in_progress"] = True
     atk_state["add_progress"] = {"added": 0, "failed": 0, "total": total, "phone": phone}
-    
-    # Build progress update function
+
     from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-    
+
+    # ⚡ تابع آپدیت progress
     async def update_progress():
         try:
-            pct = int((added + failed + skipped) * 100 / total) if total > 0 else 0
-            filled = pct // 5
-            empty = 20 - filled
-            bar = "🟩" * filled + "⬜" * empty
+            pct = int((added + failed) * 100 / total) if total > 0 else 0
+            bar = "🟩" * (pct // 5) + "⬜" * (20 - pct // 5)
             elapsed = int(time.time() - start_t)
-            mins = elapsed // 60; secs = elapsed % 60
-            speed = int(added / (elapsed / 60)) if elapsed > 30 else 0
-            eta = int((total - added - failed - skipped) * 12 / 60) if speed > 0 else 0
-            
-            text = f"➕ <b>ادد مستقیم — {target_name}</b>\n"
-            text += f"━━━━━━━━━━━━━━━━━━\n"
-            text += f"{bar} {pct}%\n"
-            text += f"━━━━━━━━━━━━━━━━━━\n"
-            text += f"👤 اکانت: <code>{phone}</code>\n"
-            text += f"✅ ادد شده: <b>{added}</b>\n"
-            text += f"❌ ناموفق: <b>{failed}</b>\n"
-            text += f"⏭️ رد شده: <b>{skipped}</b>\n"
-            text += f"📊 پیشرفت: {added+failed+skipped}/{total}\n"
-            text += f"⏱️ زمان: {mins:02d}:{secs:02d} · ⚡ ~{speed} در دقیقه\n"
-            if eta > 0:
-                text += f"🕐 اتمام: ~{eta} دقیقه\n"
-            text += f"━━━━━━━━━━━━━━━━━━\n"
-            text += f"🛑 دکمه توقف برای لغو عملیات"
-            
-            await prog_msg.edit_text(
-                text,
+            mins, secs = elapsed // 60, elapsed % 60
+            spd = int(added / (elapsed / 60)) if elapsed > 30 else 0
+            eta = int((total - added - failed) * 10 / 60) if spd > 0 else 0
+
+            txt = f"➕ <b>ادد مستقیم — {target_name}</b>\n"
+            txt += f"━━━━━━━━━━━━━━━━━━\n{bar} {pct}%\n━━━━━━━━━━━━━━━━━━\n"
+            txt += f"✅ ادد شده: <b>{added}</b> | ❌ ناموفق: <b>{failed}</b>\n"
+            txt += f"📊 {added+failed}/{total} | ⏱ {mins:02d}:{secs:02d} | ⚡ ~{spd}/min\n"
+            if eta: txt += f"🕐 ~{eta} دقیقه مونده\n"
+            txt += f"━━━━━━━━━━━━━━━━━━\n🛑 توقف"
+
+            await prog_msg.edit_text(txt,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")],
-                    [InlineKeyboardButton("🏠 خانه", callback_data="home")]
-                ]),
+                    [InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")]]),
                 disable_web_page_preview=True)
         except:
-            pass  # MessageNotModified or any edit error - ignore
-    
-    start_t = time.time()
+            pass
+
     await update_progress()
-    
-    # 🔥 Warmup: فقط IDهای معتبر تلگرام (مثبت < 10^11). IG=hash fake.
-    valid_uids = [uid for uid in uid_list if 0 < uid < 10**11]
-    if valid_uids:
-        for j in range(0, len(valid_uids), 20):
-            batch = valid_uids[j:j+20]
-            try: await add_client.app.get_users(batch); await asyncio.sleep(0.5)
-            except: pass
-    uid_list = valid_uids
-    total = len(uid_list)
-    if total == 0:
-        await prog_msg.edit_text('❌ کاربری با ID تلگرام پیدا نشد!', reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
-        return
-    
+
+    # ⚡ حلقه اصلی ادد
     for i, uid in enumerate(uid_list):
         if stop_req[0]:
             skipped = total - added - failed
             break
-        
+
         try:
-            # کاربر قبلاً با warmup معرفی شده
+            # ادد مستقیم — بدون warmup
             await add_client.app.add_chat_members(target_gid, uid)
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
-            
-            # Update account limits
+
             limits = load_adder_limits()
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
-            
-            # Update progress in state
+
             atk_state["add_progress"] = {"added": added, "failed": failed, "total": total, "phone": phone}
-            
-            # 🆕 تاخیر progressive: بعد از ۵۰ تا، فاصله بیشتر برای امنیت
-            total_account_adds = already_added + added
-            if total_account_adds > 50:
-                await asyncio.sleep(random.randint(12, 22))
+
+            total_acc_adds = already_added + added
+            if total_acc_adds > 50:
+                await asyncio.sleep(random.randint(10, 18))
             else:
-                await asyncio.sleep(random.randint(8, 15))
+                await asyncio.sleep(random.randint(7, 12))
+
         except FloodWait as fw:
-            failed += 1
-            errors_detail["flood"] += 1
+            failed += 1; errors_detail["flood"] += 1
             await asyncio.sleep(fw.value + 5)
         except Exception as e:
             failed += 1
-            err_str = str(e).lower()
+            es = str(e)
+            es_l = es.lower()
             if not first_error:
-                first_error = str(e)[:150]
-            if "privacy" in err_str or "private" in err_str or "user_privacy_restricted" in err_str.replace("_",""):
+                first_error = es[:150]
+
+            if "peer_id_invalid" in es_l or "peer invalid" in es_l:
+                errors_detail["peer"] += 1
+            elif "privacy" in es_l or "user_privacy_restricted" in es_l:
                 errors_detail["privacy"] += 1
-            elif "already" in err_str or "participant" in err_str:
+            elif "already" in es_l or "participant" in es_l:
                 errors_detail["already"] += 1
                 mark_user_as_added(target_gid, target_name, uid)
-            elif "banned" in err_str or "kick" in err_str:
-                errors_detail["banned"] += 1
-            elif "not_mutual_contact" in err_str.replace("_","") or "not mutual" in err_str:
-                errors_detail["no_add"] += 1
-            elif "not_participant" in err_str.replace("_","") or "chat_admin" in err_str:
-                errors_detail["not_member"] += 1
-            elif "peer_id_invalid" in err_str.replace("_","") or "peer invalid" in err_str:
-                errors_detail["peer_invalid"] += 1
+            elif "flood" in es_l:
+                errors_detail["flood"] += 1
             else:
                 errors_detail["other"] += 1
-            await asyncio.sleep(random.randint(3, 8))
-        
-        if (added + failed) % 3 == 0:
+
+            await asyncio.sleep(random.randint(3, 6))
+
+        if (added + failed) % 5 == 0:
             await update_progress()
-    
-    # Final update
+
+    # ⚡ گزارش نهایی
     elapsed = int(time.time() - start_t)
-    mins = elapsed // 60; secs = elapsed % 60
-    
-    text = f"✅ <b>ادد تمام شد!</b> — {target_name}\n"
-    text += f"━━━━━━━━━━━━━━━━━━\n"
-    text += f"✅ ادد شده: <b>{added}</b>\n"
-    text += f"❌ ناموفق: <b>{failed}</b>\n"
-    text += f"⏭️ رد شده: <b>{skipped}</b>\n"
+    mins, secs = elapsed // 60, elapsed % 60
+
+    text = f"✅ <b>ادد تمام شد!</b> — {target_name}\n━━━━━━━━━━━━━━━━━━\n"
+    text += f"✅ ادد شده: <b>{added}</b>\n❌ ناموفق: <b>{failed}</b>\n"
+    if skipped: text += f"⏭️ رد شده: <b>{skipped}</b>\n"
     text += f"⏱️ زمان: {mins:02d}:{secs:02d}\n"
-    text += f"📊 مجموع با این اکانت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}\n"
+    text += f"📊 مجموع: {already_added + added}/{MAX_ADD_PER_ACCOUNT}\n"
+
     if failed > 0:
-        text += f"━━━━━━━━━━━━━━━━━━\n"
-        text += f"🔍 <b>دلایل خطا:</b>\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n🔍 <b>دلایل:</b>\n"
+        if errors_detail["peer"]: text += f"👤 Peer Invalid: {errors_detail['peer']} — کاربر وجود نداره\n"
         if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
-        if errors_detail["no_add"]: text += f"🚫 تنظیمات ادد بسته: {errors_detail['no_add']}\n"
-        if errors_detail["not_member"]: text += f"⛔ اکانت عضو گروه نیست: {errors_detail['not_member']}\n"
-        if errors_detail["peer_invalid"]: text += f"👤 کاربر ناشناس (Peer Invalid): {errors_detail['peer_invalid']}\n"
         if errors_detail["flood"]: text += f"⏱️ Flood: {errors_detail['flood']}\n"
         if errors_detail["already"]: text += f"👥 Already in chat: {errors_detail['already']}\n"
-        if errors_detail["banned"]: text += f"🚫 Banned: {errors_detail['banned']}\n"
         if errors_detail["other"]: text += f"❓ سایر: {errors_detail['other']}\n"
         if first_error:
             text += f"\n📝 <b>نمونه خطا:</b>\n<code>{first_error[:200]}</code>\n"
-    
+
     atk_state["add_in_progress"] = False
     atk_state["add_progress"] = {"added": added, "failed": failed, "total": total, "phone": phone}
-    
+
     try:
-        await prog_msg.edit_text(
-            text,
+        await prog_msg.edit_text(text,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📊 آمار اکانت‌ها", callback_data="adder_stats")],
                 [InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")],
-            ]),
-            disable_web_page_preview=True)
-    except: pass
-
+            ]), disable_web_page_preview=True)
+    except:
+        pass
 
 # ═══════════════ ⚡ Parallel Multi-Account Direct Add ═══════════════
 async def _start_parallel_direct_add(q):
