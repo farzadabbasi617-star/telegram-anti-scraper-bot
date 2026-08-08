@@ -2008,18 +2008,18 @@ async def group_help_cmd(c, m):
 async def group_lock_cmd(c, m):
     from pyrogram.types import ChatPermissions
     try:
-        me = await c.get_chat_member(m.chat.id, "me")
-        if me.status not in ["administrator", "creator"]:
-            await m.reply_text("❌ باید ادمین باشم!")
-            return
         await c.set_chat_permissions(m.chat.id, ChatPermissions(
             can_send_messages=False, can_send_media_messages=False,
             can_send_other_messages=False, can_add_web_page_previews=False,
             can_invite_users=False, can_pin_messages=False, can_change_info=False,
         ))
-        await m.reply_text("🔒 <b>قفل شد!</b> هیچکس نمیتونه پیام بده.\n/unlock برای باز کردن")
+        await m.reply_text("🔒 <b>گروه قفل شد!</b>\nهیچکس نمیتونه پیام بده.\n/unlock برای باز کردن")
     except Exception as e:
-        await m.reply_text(f"❌ {e}")
+        err = str(e)
+        if "ADMIN" in err.upper() or "admin" in err:
+            await m.reply_text("❌ باید <b>ادمین</b> باشم با دسترسی <b>Change Group Info</b>\n\nلطفاً من رو ادمین کن و دوباره امتحان کن.")
+        else:
+            await m.reply_text(f"❌ خطا: {err}")
 
 @app.on_message(filters.command("unlock") & filters.group)
 async def group_unlock_cmd(c, m):
@@ -2030,9 +2030,9 @@ async def group_unlock_cmd(c, m):
             can_send_other_messages=True, can_add_web_page_previews=True,
             can_invite_users=True, can_pin_messages=True, can_change_info=True,
         ))
-        await m.reply_text("🔓 <b>باز شد!</b>")
+        await m.reply_text("🔓 <b>گروه باز شد!</b>\nهمه میتونن پیام بدن.")
     except Exception as e:
-        await m.reply_text(f"❌ {e}")
+        await m.reply_text(f"❌ {str(e)[:200]}")
 
 @app.on_message(filters.new_chat_members & filters.group)
 async def group_welcome(c, m):
@@ -2040,6 +2040,25 @@ async def group_welcome(c, m):
         if user.is_bot or user.is_self:
             continue
         await m.reply_text(f"👋 سلام {user.mention()}! خوش اومدی به {m.chat.title} 🎉")
+
+@app.on_message(filters.command(["botstatus", "ping"]) & filters.group)
+async def group_botstatus_cmd(c, m):
+    """Check bot status in group"""
+    me = await c.get_me()
+    bot_info = f"🤖 {me.first_name} (@{me.username})\nID: {me.id}"
+    
+    try:
+        member = await c.get_chat_member(m.chat.id, me.id)
+        status = member.status
+        bot_info += f"\n\n📊 وضعیت من توی این گروه: <b>{status}</b>"
+        if status == "administrator":
+            bot_info += "\n✅ ادمین هستم!"
+        elif status == "member":
+            bot_info += "\n❌ ادمین نیستم! لطفاً ادمینم کن."
+    except Exception as e:
+        bot_info += f"\n\n❌ خطا: {e}"
+    
+    await m.reply_text(bot_info)
 
 @app.on_message(filters.command("settings") & filters.group)
 async def group_settings_cmd(c, m):
