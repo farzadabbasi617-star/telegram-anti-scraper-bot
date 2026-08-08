@@ -1277,83 +1277,96 @@ async def _execute_direct_add(q, target_gid):
 
     await upd()
 
-    # ─── Warmup: join source groups + resolve users ───
-    print(f"🔥 Warmup: resolving {total} users...", flush=True)
+    # ─── Warmup: re-scrape source groups with ADDER account ───
+    print(f"🔥 Warmup: resolving {total} users with adder account...", flush=True)
     valid_peers = {}
     uid_set_for_warmup = set(uid_list)
 
-    # Find source groups from user records
+    # Collect source group IDs from user records
     source_groups = set()
     for u in user_records:
         gid = u.get("source_group_id")
-        if gid and int(gid) != 0:
-            source_groups.add(int(gid))
-
-    # Join each source group so we can resolve members
-    if source_groups:
-        print(f"  📡 Joining {len(source_groups)} source group(s)...", flush=True)
-        for sg in list(source_groups)[:10]:  # max 10 groups
+        if gid:
             try:
-                # Check if already member
-                try:
-                    me = await add_client.app.get_chat_member(sg, "me")
-                    print(f"  ✅ Already in group {sg}", flush=True)
-                except:
-                    # Try to join
-                    try:
-                        chat = await add_client.app.get_chat(sg)
-                        if chat.username:
-                            await add_client.app.join_chat(chat.username)
-                            print(f"  ✅ Joined @{chat.username}", flush=True)
-                        else:
-                            # Try invite link or direct join
-                            try:
-                                link = await add_client.app.create_chat_invite_link(sg, member_limit=1)
-                                await add_client.app.join_chat(link.invite_link)
-                                print(f"  ✅ Joined group {sg} via invite", flush=True)
-                            except:
-                                # Try raw join
-                                from pyrogram.raw.functions.channels import JoinChannel
-                                peer = await add_client.app.resolve_peer(sg)
-                                await add_client.app.invoke(JoinChannel(channel=peer))
-                                print(f"  ✅ Joined group {sg} (raw)", flush=True)
-                    except Exception as je:
-                        print(f"  ⚠️ Can't join {sg}: {je}", flush=True)
-                await asyncio.sleep(2)
-            except Exception as e:
-                print(f"  ⚠️ Source group {sg}: {e}", flush=True)
+                gid_int = int(gid)
+                if gid_int != 0:
+                    source_groups.add(gid_int)
+            except: pass
 
-    # Now resolve users via get_chat_members of source groups
+    print(f"  📋 Source groups found: {source_groups}", flush=True)
+    print(f"  📋 User records sample: {user_records[0] if user_records else 'empty'}", flush=True)
+
+    # Step 1: Try joining source groups
+    joined_groups = []
     for sg in list(source_groups)[:10]:
+        try:
+            # Check if already member
+            try:
+                me = await add_client.app.get_chat_member(sg, "me")
+                joined_groups.append(sg)
+                print(f"  ✅ Already in group {sg}", flush=True)
+            except:
+                try:
+                    chat = await add_client.app.get_chat(sg)
+                    if chat.username:
+                        await add_client.app.join_chat(chat.username)
+                        joined_groups.append(sg)
+                        print(f"  ✅ Joined @{chat.username}", flush=True)
+                    else:
+                        from pyrogram.raw.functions.channels import JoinChannel
+                        peer = await add_client.app.resolve_peer(sg)
+                        await add_client.app.invoke(JoinChannel(channel=peer))
+                        joined_groups.append(sg)
+                        print(f"  ✅ Joined group {sg}", flush=True)
+                except Exception as je:
+                    print(f"  ⚠️ Can't join {sg}: {je}", flush=True)
+            await asyncio.sleep(2)
+        except Exception as e:
+            print(f"  ⚠️ Source group {sg}: {e}", flush=True)
+
+    # Step 2: Scan joined groups to build peer cache
+    for sg in joined_groups:
         try:
             async for member in add_client.app.get_chat_members(sg, limit=10000):
                 u = member.user
-                if u.id in uid_set_for_warmup and not getattr(u, 'is_bot', False) and not getattr(u, 'is_deleted', False):
+                if u and u.id in uid_set_for_warmup and not getattr(u, 'is_bot', False) and not getattr(u, 'is_deleted', False):
                     try:
                         peer = await add_client.app.resolve_peer(u.id)
                         valid_peers[u.id] = peer
-                    except:
-                        pass
-                if len(valid_peers) >= total:
-                    break
-            print(f"  📊 Source {sg}: {len(valid_peers)} peers resolved", flush=True)
+                    except: pass
+                if len(valid_peers) % 100 == 0 and len(valid_peers) > 0:
+                    print(f"  📊 Scanning {sg}: {len(valid_peers)} resolved so far...", flush=True)
+            await asyncio.sleep(1)
         except Exception as e:
-            print(f"  ⚠️ Can't scan {sg}: {e}", flush=True)
-        await asyncio.sleep(1)
+            print(f"  ⚠️ Scan {sg}: {e}", flush=True)
 
-    # Fallback: try direct resolve for remaining
-    remaining_ids = [uid for uid in uid_list if uid not in valid_peers]
-    if remaining_ids:
-        print(f"  🔄 Trying direct resolve for {len(remaining_ids)} remaining...", flush=True)
-        for uid in remaining_ids[:50]:
+    # Step 3: Also try target channel members (in case some users are already there)
+    try:
+        async for member in add_client.app.get_chat_members(target_gid, limit=5000):
+            u = member.user
+            if u and u.id in uid_set_for_warmup:
+                try:
+                    peer = await add_client.app.resolve_peer(u.id)
+                    valid_peers[u.id] = peer
+                except: pass
+    except: pass
+
+    # Step 4: Fallback - try direct resolve for remaining
+    remaining = [uid for uid in uid_list if uid not in valid_peers]
+    if remaining:
+        print(f"  🔄 Direct resolve for {len(remaining)} remaining...", flush=True)
+        for uid in remaining[:100]:
             try:
                 peer = await add_client.app.resolve_peer(uid)
                 valid_peers[uid] = peer
-            except:
-                pass
-            await asyncio.sleep(0.1)
+            except: pass
+            await asyncio.sleep(0.05)
 
     print(f"✅ Warmup done: {len(valid_peers)}/{total} peers resolved", flush=True)
+    if len(valid_peers) == 0:
+        print(f"⚠️ WARNING: 0 peers resolved! Adder account can't see any scraped users.", flush=True)
+        print(f"⚠️ Source groups: {source_groups}", flush=True)
+        print(f"⚠️ Joined groups: {joined_groups}", flush=True)
 
     # Resolve target channel
     try:
