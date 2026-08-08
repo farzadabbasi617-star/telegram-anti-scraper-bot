@@ -1198,7 +1198,7 @@ async def _start_direct_add(q, target_gid):
 
 
 async def _execute_direct_add(q, target_gid):
-    """add members via invite link method — works for channels AND groups"""
+    """add to channel via import_contacts + invite_to_channel"""
     add_client = atk_state.get("add_client")
     phone = atk_state.get("phone", "")
     already_added = atk_state.get("already_added", 0)
@@ -1209,11 +1209,11 @@ async def _execute_direct_add(q, target_gid):
         tgt = await add_client.app.get_chat(target_gid)
         target_name = tgt.title
     except Exception as e:
-        await prog_msg.edit_text(f"Target error: {e}",
+        await prog_msg.edit_text(f"Target: {e}",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    # Get users from DB
+    # Get users
     source = atk_state.get("add_source", "all")
     source_id = atk_state.get("add_source_id")
     if source == "category":
@@ -1232,12 +1232,14 @@ async def _execute_direct_add(q, target_gid):
     total = len(uid_list)
 
     if total == 0:
-        await prog_msg.edit_text("No valid users to add.",
+        await prog_msg.edit_text("No users.",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
+    from pyrogram.raw.functions.contacts import AddContact
     from pyrogram.raw.functions.channels import InviteToChannel
-    from pyrogram.raw.types import InputUser, InputChannel
+    from pyrogram.raw.types import InputUser, InputPeerUser, InputPeerChannel
+    from pyrogram.raw.base import InputPeer
 
     added = 0; failed = 0; skipped = 0
     errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "other": 0}
@@ -1247,39 +1249,62 @@ async def _execute_direct_add(q, target_gid):
     async def upd():
         try:
             pct = int((added + failed) * 100 / total) if total > 0 else 0
-            elapsed = int(time.time() - start_t)
-            mins, secs = elapsed // 60, elapsed % 60
-            spd = int(added / (elapsed / 60)) if elapsed > 30 else 0
-            txt = f"➕ {target_name}\n{'█'*(pct//5)}{'░'*(20-pct//5)} {pct}%\n✅ {added} | ❌ {failed}\n⏱ {mins:02d}:{secs:02d} | ~{spd}/min"
+            e = int(time.time() - start_t); m, s = e // 60, e % 60
+            spd = int(added / (e / 60)) if e > 30 else 0
+            txt = f"+ {target_name}\n{'█'*(pct//5)}{'░'*(20-pct//5)} {pct}%\nOK:{added} FAIL:{failed}\n{m:02d}:{s:02d} ~{spd}/min"
             await prog_msg.edit_text(txt,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ Stop", callback_data="stop_op")]]),
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Stop", callback_data="stop_op")]]),
                 disable_web_page_preview=True)
         except: pass
 
     await upd()
+
+    # Resolve target channel once
+    target_peer = await add_client.app.resolve_peer(target_gid)
 
     for uid in uid_list:
         if stop_req[0]:
             skipped = total - added - failed
             break
         try:
-            # Create invite link (works for channels AND groups)
-            inv = await add_client.app.create_chat_invite_link(target_gid, creates_join_request=False)
-            
-            # Send the invite link to the user via PM, then they join
-            await add_client.app.send_message(
-                uid,
-                f"👋 سلام! به کانال **{target_name}** دعوت شدی.\n\n🔗 {inv.invite_link}"
+            # Step 1: resolve user peer
+            try:
+                user_peer = await add_client.app.resolve_peer(uid)
+            except:
+                failed += 1; errors_detail["peer"] += 1
+                continue
+
+            # Step 2: add to contacts (Telegram requires this for channel invite)
+            try:
+                await add_client.app.invoke(
+                    AddContact(
+                        id=user_peer,
+                        first_name=str(uid),
+                        last_name="",
+                        phone="",
+                        add_phone_privacy_exception=False
+                    )
+                )
+                await asyncio.sleep(0.5)
+            except:
+                pass  # already in contacts or minor error
+
+            # Step 3: invite to channel via raw API
+            await add_client.app.invoke(
+                InviteToChannel(
+                    channel=target_peer,
+                    users=[user_peer]
+                )
             )
-            
+
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
             limits = load_adder_limits()
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
-            
+
             total_acc = already_added + added
-            await asyncio.sleep(random.randint(12, 20))
+            await asyncio.sleep(random.randint(8, 14) if total_acc > 50 else random.randint(5, 10))
 
         except FloodWait as fw:
             failed += 1; errors_detail["flood"] += 1
@@ -1288,8 +1313,8 @@ async def _execute_direct_add(q, target_gid):
             failed += 1; es = str(e); es_l = es.lower()
             if not first_error: first_error = es[:200]
             if "peer_id_invalid" in es_l: errors_detail["peer"] += 1
-            elif "privacy" in es_l: errors_detail["privacy"] += 1
-            elif "already" in es_l: 
+            elif "privacy" in es_l or "not_mutual" in es_l: errors_detail["privacy"] += 1
+            elif "already" in es_l or "participant" in es_l:
                 errors_detail["already"] += 1
                 mark_user_as_added(target_gid, target_name, uid)
             elif "flood" in es_l: errors_detail["flood"] += 1
@@ -1299,27 +1324,25 @@ async def _execute_direct_add(q, target_gid):
         if (added + failed) % 3 == 0:
             await upd()
 
-    elapsed = int(time.time() - start_t)
-    mins, secs = elapsed // 60, elapsed % 60
-    text = f"✅ DONE: {target_name}\n{'='*25}\n"
-    text += f"✅ Added: {added}\n❌ Failed: {failed}\n"
-    text += f"⏱ {mins:02d}:{secs:02d}\n📊 {already_added + added}/{MAX_ADD_PER_ACCOUNT}\n"
-    text += "\n💡 Users receive invite link in PV."
+    e = int(time.time() - start_t); m, s = e // 60, e % 60
+    text = f"✅ DONE: {target_name}\n{'='*20}\n"
+    text += f"Added: {added}\nFailed: {failed}\n"
+    text += f"Time: {m:02d}:{s:02d}\nTotal: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
     if failed > 0:
-        text += f"\n{'='*25}\n"
-        if errors_detail["peer"]: text += f"👤 Peer: {errors_detail['peer']}\n"
-        if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
-        if errors_detail["already"]: text += f"👥 Already: {errors_detail['already']}\n"
-        if errors_detail["flood"]: text += f"⏱️ Flood: {errors_detail['flood']}\n"
-        if errors_detail["other"]: text += f"❓ Other: {errors_detail['other']}\n"
+        text += f"\n{'='*20}\n"
+        if errors_detail["peer"]: text += f"Peer: {errors_detail['peer']}\n"
+        if errors_detail["privacy"]: text += f"Privacy: {errors_detail['privacy']}\n"
+        if errors_detail["already"]: text += f"Already: {errors_detail['already']}\n"
+        if errors_detail["flood"]: text += f"Flood: {errors_detail['flood']}\n"
+        if errors_detail["other"]: text += f"Other: {errors_detail['other']}\n"
         if first_error: text += f"\n{first_error[:200]}"
     atk_state["add_in_progress"] = False
 
     try:
         await prog_msg.edit_text(text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📊 Stats", callback_data="adder_stats")],
-                [InlineKeyboardButton("🏠 Home", callback_data="home")],
+                [InlineKeyboardButton("Stats", callback_data="adder_stats")],
+                [InlineKeyboardButton("Home", callback_data="home")],
             ]), disable_web_page_preview=True)
     except: pass
 
