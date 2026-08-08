@@ -1107,14 +1107,11 @@ class AdvancedScraper:
             all_chats = {}
             try:
                 cnt = 0
-                async for d in self.app.get_dialogs(limit=2000):
+                async for d in self.app.get_dialogs(limit=200):
                     all_chats[d.chat.id] = d.chat
                     cnt += 1
-                    if cnt % 100 == 0:
-                        self._stage = f"🔄 در حال بارگذاری لیست چت ها... {cnt} چت"
-                    await asyncio.sleep(0.01)
                 print(f"✅ لیست چت ها بارگذاری شد: {cnt} چت", flush=True)
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"خطا در چت ها: {e}", flush=True)
 
@@ -1155,7 +1152,7 @@ class AdvancedScraper:
             chat_type_db = "channel" if is_channel else "group"
             print(f"✅ هدف: {target_found.title} | نوع: {chat_type_str} | اعضا: {total_members or '?'}", flush=True)
 
-            # 🆕 ذخیره در تاریخچه چت‌های اسکن شده
+            # 🆕 ذخیره در تاریخچه چت‌های اسکن شده (بدون AI - سرعت)
             try:
                 import db as _db
                 _db.upsert_scanned_chat(
@@ -1166,16 +1163,6 @@ class AdvancedScraper:
                     extracted_new=0,
                     progress_pct=0
                 )
-                # 🆕 تحلیل خودکار موضوع چت
-                try:
-                    from chat_analyzer import smart_analyze
-                    desc = getattr(target_found, 'description', '') or ''
-                    analysis = smart_analyze(target_found.title, desc)
-                    if analysis.get("category"):
-                        _db.update_chat_category(chat_id, analysis["category"])
-                        print(f"🏷️ دسته خودکار: {analysis['category']} ({analysis['method']}, اطمینان: {analysis['confidence']}%)", flush=True)
-                except Exception as e:
-                    print(f"auto analyze err: {e}", flush=True)
             except Exception as e:
                 print(f"save chat history err: {e}", flush=True)
 
