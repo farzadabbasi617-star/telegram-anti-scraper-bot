@@ -1875,7 +1875,10 @@ async def cb(c, q):
         try:
             await q.answer(f"خطا: {str(e)[:100]}", show_alert=True)
             if q.message:
-                await q.message.edit_text(f"❌ خطای داخلی:\n{type(e).__name__}: {str(e)[:300]}\n\nلطفا /start بزنید.", reply_markup=main_menu())
+                try:
+                    await q.message.edit_text(f"❌ خطای داخلی:\n{type(e).__name__}: {str(e)[:200]}\n\nلطفا /start بزنید.", reply_markup=main_menu())
+                except:
+                    await q.message.reply_text("❌ خطا. /start بزنید.")
         except: pass
         atk_state.clear()
 
@@ -3279,22 +3282,25 @@ async def _cb_impl(c, q):
     # ==================== انتخاب اکانت برای شروع عملیات ====================
     async def show_account_picker(callback, back_cb, mode_label):
         """نمایش لیست اکانت ها + گزینه افزودن اکانت جدید"""
-        accounts = list_saved_accounts()
-        text = f"{mode_label}\n\nلطفا اکانت مورد استفاده را انتخاب کنید:"
-        buttons = []
-        if accounts:
-            limits = load_adder_limits()
-            for phone, info in accounts.items():
-                name = info.get("name", phone)
-                added = limits.get(phone, {}).get("added", 0)
-                status = ""
-                if mode_label.startswith("➕") and added >= MAX_ADD_PER_ACCOUNT:
-                    status = " ⚠️ پر"
-                btn = InlineKeyboardButton(f"✅ {name} | {phone}{status}", callback_data=f"useacc_{callback}_{phone}")
-                buttons.append([btn])
-        buttons.append([InlineKeyboardButton("➕ افزودن اکانت جدید و استفاده", callback_data=f"newacc_{callback}")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
-        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        try:
+            accounts = list_saved_accounts() or {}
+            text = f"{mode_label}\n\nلطفا اکانت مورد استفاده را انتخاب کنید:"
+            buttons = []
+            if accounts:
+                limits = load_adder_limits() or {}
+                for phone, info in accounts.items():
+                    name = info.get("name", phone) if isinstance(info, dict) else str(phone)
+                    added = limits.get(phone, {}).get("added", 0) if isinstance(limits.get(phone), dict) else 0
+                    status = ""
+                    if mode_label.startswith("➕") and added >= MAX_ADD_PER_ACCOUNT:
+                        status = " ⚠️ پر"
+                    buttons.append([InlineKeyboardButton(f"✅ {name} | {phone}{status}", callback_data=f"useacc_{callback}_{phone}")])
+            buttons.append([InlineKeyboardButton("➕ افزودن اکانت جدید و استفاده", callback_data=f"newacc_{callback}")])
+            buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
+            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception as e:
+            _log_err(e, "show_account_picker")
+            await q.answer("خطا در بارگذاری اکانت‌ها", show_alert=True)
 
     if d == "pick_account_attack":
         await show_account_picker("attack", "home", "🚀 شروع تست حمله پیشرفته")
