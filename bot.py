@@ -902,9 +902,10 @@ async def _start_ig_follow(q, source_username):
 async def _show_ig_menu(q):
     """Show Instagram scraping menu"""
     text = "📸 <b>اسکرپر اینستاگرام</b>\n━━━━━━━━━━━━━━━━━━\n"
-    text += "🔹 استخراج فالوورهای پیج‌های <b>عمومی</b>\n"
+    text += "🔹 استخراج فالوورها از URL یا username\n"
     text += "🔹 ذخیره در دیتابیس مشترک با تلگرام\n"
-    text += "🔹 فیلتر و دسته‌بندی مثل تلگرام\n\n"
+    text += "🔹 skip خودکار کاربرای تکراری\n"
+    text += "🔹 سرعت بالا + progress زنده\n\n"
     
     # Check login status
     logged_in = False
@@ -952,7 +953,10 @@ async def _handle_ig_login(q):
 
 
 async def _start_ig_scrape(q, target):
-    """Start Instagram follower scraping"""
+    """Start Instagram follower scraping — accepts URL or username"""
+    # Extract username from URL if needed
+    target = ig_scraper.extract_username(target)
+    
     try:
         L = ig_scraper.get_instaloader()
         L.test_login()
@@ -960,37 +964,69 @@ async def _start_ig_scrape(q, target):
         await q.answer("❌ اول باید لاگین کنی! از منوی اینستاگرام لاگین کن.", show_alert=True)
         return
     
-    prog = await q.message.edit_text(f"📸 در حال اسکرپ فالوورهای @{target}...\n⏳ این کار ممکنه چند دقیقه طول بکشه...")
+    prog = await q.message.edit_text(
+        f"📸 <b>شروع اسکرپ فالوورها</b>\n"
+        f"👤 هدف: @{target}\n"
+        f"⏳ در حال اسکن...")
     
     async def run_ig():
         stop = [0]
-        found = 0
+        found = [0]; total = [0]
+        last_update = [0]
+        
+        def progress_cb(cnt, total_f, username, status):
+            found[0] = cnt; total[0] = total_f
+        
+        async def update_progress():
+            import time as _t
+            while True:
+                await asyncio.sleep(3)
+                try:
+                    c = found[0]; t = total[0]; spd = int(c / max(1, _t.time() - t0) * 60) if found[0] > 10 else 0
+                    text = (
+                        f"📸 <b>اسکرپ @{target}</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"👤 اسکن شده: <b>{c:,}</b> از {t or '?'}\n"
+                        f"⚡ سرعت: ~{spd}/min\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"⏳ در حال کار... صبور باش")
+                    await prog.edit_text(text, disable_web_page_preview=True)
+                except: break
+        
+        t0 = time.time()
+        updater = asyncio.create_task(update_progress())
+        
         try:
             loop = asyncio.get_running_loop()
-            def progress_cb(cnt, total, name):
-                nonlocal found
-                found = cnt
             result = await loop.run_in_executor(
-                None, 
-                lambda: ig_scraper.scrape_followers(target, max_followers=300, progress_cb=progress_cb, stop_flag=stop)
+                None,
+                lambda: ig_scraper.scrape_followers(target, max_followers=1000, progress_cb=progress_cb, stop_flag=stop)
             )
+            try: updater.cancel()
+            except: pass
+            
             if result.get("error"):
                 await prog.edit_text(
-                    f"❌ خطا در اسکرپ اینستاگرام:\n{result['error'][:300]}\n\n"
-                    f"👤 استخراج شده تا اینجا: {result['count']:,}",
+                    f"❌ خطا در اسکرپ:\n{result['error'][:300]}\n\n"
+                    f"👤 استخراج شده: {result['count']:,}",
                     reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
             else:
                 await prog.edit_text(
-                    f"✅ اسکرپ @{target} تمام شد!\n\n"
-                    f"👤 فالوور استخراج شده: <b>{result['count']:,}</b>\n"
-                    f"💾 در دیتابیس ذخیره شد\n\n"
-                    f"از «📋 نتایج قبلی» یا «🗂️ مدیریت چت‌ها» ببین.",
+                    f"✅ <b>اسکرپ @{target} تمام شد!</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 فالوور جدید: <b>{result['count']:,}</b>\n"
+                    f"💾 در دیتابیس Neon ذخیره شد\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"از «📋 نتایج» یا «🗂️ چت‌ها» ببین.",
                     reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📋 مشاهده نتایج", callback_data="ig_list")],
+                        [InlineKeyboardButton("📋 نتایج IG", callback_data="ig_list")],
                         [_sub_back_btn(target="ig_menu")[0]]
                     ]))
         except Exception as e:
-            await prog.edit_text(f"❌ خطا: {str(e)[:300]}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+            try: updater.cancel()
+            except: pass
+            await prog.edit_text(f"❌ خطا: {str(e)[:300]}", 
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
     
     asyncio.create_task(run_ig())
 
@@ -1863,9 +1899,10 @@ async def _cb_impl(c, q):
         atk_state["step"] = "ig_target_username"
         await q.message.edit_text(
             "🔍 <b>اسکرپ فالوورهای اینستاگرام</b>\n\n"
-            "نام کاربری پیج عمومی مورد نظر رو بفرست:\n"
-            "مثال: <code>cristiano</code> یا <code>instagram</code>\n\n"
-            "⚠️ فقط پیج‌های <b>عمومی</b> قابل اسکرپ هستن.",
+            "🔗 <b>لینک پیج</b> یا <b>نام کاربری</b> رو بفرست:\n\n"
+            "✅ مثال URL:\n<code>https://www.instagram.com/arjixgameplay/</code>\n\n"
+            "✅ مثال username:\n<code>arjixgameplay</code>\n\n"
+            "⚠️ فقط پیج‌های <b>عمومی</b>",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
         return
 
