@@ -2530,7 +2530,6 @@ async def _cb_impl(c, q):
         atk_state["quick_sess"] = sess_path
         prog = await q.message.edit_text(" در حال اتصال...")
         try:
-            from attacker import AdvancedScraper
             client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
             _enable_wal_on_session(client.app.name)
             await client.connect()
