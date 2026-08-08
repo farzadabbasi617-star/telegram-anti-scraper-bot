@@ -2503,6 +2503,117 @@ async def _cb_impl(c, q):
         _asyncio.create_task(run_test())
         return
 
+
+    # ═══════════════ ⚡ QUICK ADD TO GROUP ═══════════════
+    if d == "quick_add_start":
+        accs = list_saved_accounts()
+        if not accs:
+            await q.answer(" اول یه اکانت اضافه کن!", show_alert=True)
+            return
+        atk_state["quick_step"] = "pick_account"
+        buttons = []
+        for phone, info in accs.items():
+            name = info.get("name", phone)[:20]
+            buttons.append([InlineKeyboardButton(f" {name} ({phone})", callback_data=f"quick_acc_{phone}")])
+        await q.message.edit_text("📱 <b>اکانت اددکننده رو انتخاب کن:</b>", 
+            reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d.startswith("quick_acc_"):
+        phone = d[len("quick_acc_"):]
+        accs = list_saved_accounts()
+        fp = accs[phone].get("device_fp") or random.choice(DEVICE_FP)
+        from attacker import safe_phone_filename as spfn
+        sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
+        atk_state["quick_phone"] = phone
+        atk_state["quick_fp"] = fp
+        atk_state["quick_sess"] = sess_path
+        prog = await q.message.edit_text(" در حال اتصال...")
+        try:
+            from attacker import AdvancedScraper
+            client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
+            _enable_wal_on_session(client.app.name)
+            await client.connect()
+            _enable_wal_on_session(client.app.name)
+            me = await client.app.get_me()
+            # Load groups
+            groups = []
+            async for dialog in client.app.get_dialogs(limit=500):
+                if dialog.chat.type in ["supergroup", "group"]:
+                    cnt = getattr(dialog.chat, "members_count", 0) or 0
+                    groups.append((dialog.chat.title, dialog.chat.id, cnt))
+            atk_state["quick_client"] = client
+            text = f"✅ متصل: <b>{me.first_name}</b>\n\n👥 <b>گروه مقصد:</b>\n"
+            buttons = []
+            for gname, gid, gcnt in sorted(groups, key=lambda x:-x[2])[:20]:
+                buttons.append([InlineKeyboardButton(f"👥 {gname[:30]} ({gcnt:,})", callback_data=f"quick_grp_{gid}")])
+            buttons.append([InlineKeyboardButton("✍️ آیدی دستی", callback_data="quick_grp_manual")])
+            buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="quick_add_start")])
+            await prog.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception as e:
+            await prog.edit_text(f"❌ خطا: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        return
+
+    if d.startswith("quick_grp_") and d != "quick_grp_manual":
+        gid = int(d[len("quick_grp_"):])
+        client = atk_state.get("quick_client")
+        phone = atk_state["quick_phone"]
+        try:
+            chat = await client.app.get_chat(gid)
+            atk_state["quick_gid"] = gid
+            atk_state["quick_gname"] = chat.title
+            # Check membership
+            try:
+                me = await client.app.get_chat_member(gid, "me")
+                if me.status not in ["administrator", "creator", "member"]:
+                    await q.message.edit_text("❌ اکانت عضو این گروه نیست!", 
+                        reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="quick_add_start")[0]]]))
+                    return
+            except: pass
+            await q.message.edit_text(
+                f"🎯 مقصد: <b>{chat.title}</b>\n\n <b>منبع کاربران:</b>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🌐 همه کاربران DB", callback_data="quick_src_all")],
+                    [InlineKeyboardButton("📄 آپلود CSV", callback_data="quick_src_csv")],
+                    [InlineKeyboardButton("🔙 بازگشت", callback_data="quick_acc_" + phone)],
+                ]))
+        except Exception as e:
+            await q.message.edit_text(f"❌ {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="quick_add_start")[0]]]))
+        return
+
+    if d == "quick_grp_manual":
+        atk_state["quick_step"] = "manual_gid"
+        await q.message.edit_text("✍️ آیدی عددی گروه (با -100 شروع میشه):")
+        return
+
+    if d == "quick_src_all":
+        gid = atk_state["quick_gid"]
+        gname = atk_state["quick_gname"]
+        phone = atk_state["quick_phone"]
+        client = atk_state["quick_client"]
+        # Get users from DB
+        uid_list = []
+        try:
+            cur = db.get_conn().cursor()
+            cur.execute("SELECT user_id FROM scraped_users WHERE user_id > 10000 AND user_id < 100000000000 LIMIT 200")
+            for row in cur.fetchall():
+                uid_list.append(int(row[0]))
+            cur.close()
+        except: pass
+        if not uid_list:
+            await q.message.edit_text(" کاربری توی دیتابیس نیست!", 
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+            return
+        random.shuffle(uid_list)
+        await q.message.edit_text(f"⚡ شروع ادد {len(uid_list)} نفر به <b>{gname}</b>...\n⏳ صبر کن...")
+        asyncio.create_task(_do_quick_add(q, gid, gname, uid_list, client, phone))
+        return
+
+    if d == "quick_src_csv":
+        atk_state["quick_step"] = "csv_upload"
+        await q.message.edit_text(" فایل CSV رو بفرست\n(ستون user_id لازم)")
+        return
+
     if d == "home":
         atk_state.clear()
         await q.message.edit_text(build_welcome_text(), reply_markup=main_menu(), disable_web_page_preview=True)
@@ -4114,9 +4225,58 @@ def _validate_phone(phone):
         return False, f"طول شماره نامعتبر است ({len(digits)} رقم)\nمثال: <code>+989123456789</code>\n\nشما وارد کردید: <code>{phone[:20]}</code>"
     return True, ""
 
+
+
 async def _steps_impl(c, m):
     step = atk_state.get("step")
     hstep = atk_state.get("hunter_step")
+
+    # Quick add CSV upload
+    if atk_state.get("quick_step") == "csv_upload" and m.document:
+        import csv as _csv
+        file = await app.download_media(m.document, in_memory=True)
+        reader = _csv.DictReader(io.StringIO(file.getvalue().decode("utf-8-sig")))
+        uid_list = []
+        for row in reader:
+            try:
+                uid = int(row.get("user_id", row.get("id", 0)))
+                if 10000 < uid < 10**11:
+                    uid_list.append(uid)
+            except: continue
+        if not uid_list:
+            await m.reply_text("❌ user_id پیدا نشد در فایل!", reply_markup=main_menu())
+            return
+        random.shuffle(uid_list)
+        gid = atk_state.get("quick_gid")
+        gname = atk_state.get("quick_gname", "گروه")
+        client = atk_state.get("quick_client")
+        phone = atk_state["quick_phone"]
+        await m.reply_text(f"📄 {len(uid_list)} کاربر از CSV\n⚡ شروع...")
+        asyncio.create_task(_do_quick_add(_MsgWrapper(m), gid, gname, uid_list, client, phone))
+        atk_state["quick_step"] = ""
+        return
+
+    # Quick add manual group ID
+    if atk_state.get("quick_step") == "manual_gid":
+        raw_gid = m.text.strip()
+        try:
+            gid = int(raw_gid)
+        except:
+            await m.reply_text("❌ آیدی نامعتبر!", reply_markup=main_menu())
+            atk_state["quick_step"] = ""
+            return
+        atk_state["quick_gid"] = gid
+        atk_state["quick_gname"] = f"گروه {gid}"
+        phone = atk_state["quick_phone"]
+        await m.reply_text(
+            f"🎯 مقصد: {gid}\n\n📂 منبع:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🌐 همه کاربران DB", callback_data="quick_src_all")],
+                [InlineKeyboardButton("📄 آپلود CSV", callback_data="quick_src_csv")],
+            ]))
+        atk_state["quick_step"] = ""
+        return
+
 
     # ═══════════════ 🔍 Group Finder Query ═══════════════
     if step == "gf_query":
@@ -5081,6 +5241,85 @@ def keep_awake_loop():
             print("💓 کیپ الایو پینگ شد - سرویس بیدار میماند", flush=True)
         except Exception as e:
             print(f"⚠️ کیپ الایو ناموفق: {e}", flush=True)
+
+
+class _MsgWrapper:
+    """Wrap a Message to look like a CallbackQuery message for _do_quick_add"""
+    def __init__(self, msg):
+        self._msg = msg
+        self.message = msg
+    async def edit_text(self, text, reply_markup=None, disable_web_page_preview=None, **kw):
+        return await self._msg.edit_text(text, reply_markup=reply_markup, disable_web_page_preview=disable_web_page_preview)
+
+
+async def _do_quick_add(q, gid, gname, uid_list, client, phone):
+    """Simple add to group using add_chat_members"""
+    from pyrogram.errors import FloodWait, PeerIdInvalid, UserAlreadyParticipant
+    from pyrogram.errors import UserPrivacyRestricted, UserNotMutualContact
+    from pyrogram.errors import ChatAdminRequired, UsersTooMuch
+    
+    added = 0
+    failed = 0
+    errors = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "other": 0}
+    start_t = time.time()
+    total = len(uid_list)
+    prog = q.message
+
+    async def upd():
+        try:
+            elapsed = int(time.time() - start_t)
+            m, s = elapsed // 60, elapsed % 60
+            pct = int((added + failed) * 100 / total) if total > 0 else 0
+            bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+            txt = f"⚡ {gname}\n{bar} {pct}%\n✅ {added} ❌ {failed}\n⏱ {m:02d}:{s:02d}"
+            await prog.edit_text(txt, 
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️", callback_data="stop_op")]]))
+        except: pass
+
+    for i, uid in enumerate(uid_list):
+        try:
+            await client.app.add_chat_members(gid, uid)
+            added += 1
+            mark_user_as_added(gid, gname, uid)
+            # Save limit
+            limits = load_adder_limits()
+            limits[phone] = {"added": limits.get(phone, {}).get("added", 0) + 1, "last_used": int(time.time())}
+            save_adder_limits(limits)
+            await asyncio.sleep(random.randint(5, 10))
+        except FloodWait as fw:
+            failed += 1; errors["flood"] += 1
+            await asyncio.sleep(fw.value + 3)
+        except UserAlreadyParticipant:
+            failed += 1; errors["already"] += 1
+        except (UserPrivacyRestricted, UserNotMutualContact):
+            failed += 1; errors["privacy"] += 1
+        except PeerIdInvalid:
+            failed += 1; errors["peer"] += 1
+        except ChatAdminRequired:
+            failed += 1; errors["other"] += 1
+            await prog.edit_text(f"❌ اکانت ادمین نیست!\n✅ {added} | ❌ {failed}")
+            break
+        except UsersTooMuch:
+            failed += 1; errors["other"] += 1
+            await asyncio.sleep(15)
+        except Exception as e:
+            failed += 1; errors["other"] += 1
+            await asyncio.sleep(2)
+        if (added + failed) % 5 == 0:
+            await upd()
+
+    elapsed = int(time.time() - start_t)
+    m, s = elapsed // 60, elapsed % 60
+    text = f"✅ <b>تمام شد — {gname}</b>\n{'━'*20}\n"
+    text += f"✅ ادد: {added}\n❌ خطا: {failed}\n⏱ {m:02d}:{s:02d}\n"
+    if errors["privacy"]: text += f"🔒 Privacy: {errors['privacy']}\n"
+    if errors["already"]: text += f"👥 قبلاً عضو: {errors['already']}\n"
+    if errors["flood"]: text += f"⏱ Flood: {errors['flood']}\n"
+    if errors["peer"]: text += f"🔍 Peer: {errors['peer']}\n"
+    if errors["other"]: text += f"❓ سایر: {errors['other']}\n"
+    await prog.edit_text(text, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 خانه", callback_data="home")],
+    ]))
 
 if __name__ == "__main__":
     # Import and register group manager handlers
