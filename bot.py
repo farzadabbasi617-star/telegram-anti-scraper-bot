@@ -1307,14 +1307,15 @@ async def _execute_direct_add(q, target_gid):
     start_t = time.time()
     await update_progress()
     
-    # 🆕 Warmup: معرفی ۱۰ کاربر اول به اکانت برای گرم کردن
-    warmup_count = min(10, len(uid_list))
-    for uid in uid_list[:warmup_count]:
+    # 🔥 Warmup: معرفی همه کاربرا به اکانت با get_users (batch)
+    batch_size = 20
+    for j in range(0, len(uid_list), batch_size):
+        batch = uid_list[j:j+batch_size]
         try:
-            await add_client.app.resolve_peer(uid)
-            await asyncio.sleep(0.2)
-        except:
-            pass
+            await add_client.app.get_users(batch)
+            await asyncio.sleep(0.8)
+        except Exception as e:
+            print(f"warmup batch {j}: {e}", flush=True)
     
     for i, uid in enumerate(uid_list):
         if stop_req[0]:
@@ -1322,13 +1323,7 @@ async def _execute_direct_add(q, target_gid):
             break
         
         try:
-            # 🆕 قبل از ادد، کاربر رو به اکانت "معرفی" کن تا PEER_ID_INVALID نگیریم
-            try:
-                await add_client.app.resolve_peer(uid)
-                await asyncio.sleep(0.3)
-            except:
-                pass
-            
+            # کاربر قبلاً با warmup معرفی شده
             await add_client.app.add_chat_members(target_gid, uid)
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
