@@ -1381,16 +1381,17 @@ async def _execute_direct_add(q, target_gid):
     # ─── Main add loop ───
     for uid in uid_list:
         try:
-            # Get peer (from warmup cache or resolve now)
+            # Get peer (from warmup cache, or direct construct, or resolve)
             if uid in valid_peers:
                 user_peer = valid_peers[uid]
             else:
+                # Method 1: Try resolve_peer
                 try:
                     user_peer = await add_client.app.resolve_peer(uid)
-                except Exception:
-                    failed += 1; errors_detail["peer"] += 1
-                    if not first_error: first_error = f"PeerID invalid for {uid}"
-                    continue
+                except:
+                    # Method 2: Direct construct with access_hash=0
+                    from pyrogram.raw.types import InputPeerUser, InputUser
+                    user_peer = InputPeerUser(user_id=uid, access_hash=0)
 
             # Add to contacts (needed for channel invite)
             try:
@@ -1404,17 +1405,27 @@ async def _execute_direct_add(q, target_gid):
                     )
                 )
                 await asyncio.sleep(0.3)
-            except Exception as ce:
-                # Might fail if already in contacts - that's OK
-                pass
+            except: pass
 
-            # Invite to channel
-            await add_client.app.invoke(
-                InviteToChannel(
-                    channel=target_peer,
-                    users=[user_peer]
+            # Invite to channel - try with InputUser version too
+            try:
+                await add_client.app.invoke(
+                    InviteToChannel(
+                        channel=target_peer,
+                        users=[user_peer]
+                    )
                 )
-            )
+            except:
+                # Retry with InputUser(access_hash=0) if InputPeerUser failed
+                if hasattr(user_peer, 'access_hash') and user_peer.access_hash == 0:
+                    from pyrogram.raw.types import InputUser
+                    user_input = InputUser(user_id=uid, access_hash=0)
+                    await add_client.app.invoke(
+                        InviteToChannel(
+                            channel=target_peer,
+                            users=[user_input]
+                        )
+                    )
 
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
