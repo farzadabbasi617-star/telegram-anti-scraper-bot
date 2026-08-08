@@ -4040,6 +4040,18 @@ async def _steps_impl(c, m):
 
 # ═══════════════ 📱 Phone Number Validator ═══════════════
     if not step: return
+    if step == "ig_target_username":
+        raw = m.text.strip()
+        target = ig_scraper.extract_username(raw)
+        if not target or len(target) < 2:
+            await m.reply_text("❌ نتونستم نام کاربری رو تشخیص بدم!\nلینک اینستاگرام یا username رو بفرست.", reply_markup=main_menu())
+            return
+        atk_state.clear()
+        from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton as IB
+        await m.reply_text(
+            f"🔍 @{target}\nشروع اسکرپ...",
+            reply_markup=InlineKeyboardMarkup([[IB("▶️ شروع اسکرپ", callback_data=f"ig_scrape_{target}")]]))
+        return
 
     # ==================== آپلود مستقیم فایل سشن (دور زدن 2FA) ====================
     if step == "upload_session" and m.document:
