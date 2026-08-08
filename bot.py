@@ -1204,6 +1204,28 @@ async def _execute_direct_add(q, target_gid):
     already_added = atk_state.get("already_added", 0)
     remaining = MAX_ADD_PER_ACCOUNT - already_added
     
+    prog_msg = q.message
+    
+    # ⚠️ بررسی عضویت اکانت در گروه مقصد
+    try:
+        member = await add_client.app.get_chat_member(target_gid, "me")
+        if member.status not in ("administrator", "creator", "member"):
+            await prog_msg.edit_text(
+                f"❌ اکانت <code>{phone}</code> عضو گروه مقصد نیست!\n"
+                "اول با این اکانت توی گروه عضو شو بعد ادد کن.",
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+            return
+    except Exception as e:
+        err = str(e).lower()
+        if "user_not_participant" in err.replace("_", "") or "not a member" in err:
+            await prog_msg.edit_text(
+                f"❌ اکانت <code>{phone}</code> عضو گروه مقصد نیست!\n\n"
+                f"🔹 <b>راه حل:</b> با این اکانت توی گروه عضو شو.\n"
+                f"🔹 لینک گروه رو بفرست به اکانت یا باهاش join بده.",
+                reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+            return
+        # خطای دیگه - ادامه میدیم شاید بشه
+    
     source = atk_state.get("add_source", "all")
     source_id = atk_state.get("add_source_id")
     
@@ -1236,7 +1258,8 @@ async def _execute_direct_add(q, target_gid):
     
     prog_msg = q.message
     added = 0; failed = 0; skipped = 0
-    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "banned": 0, "other": 0, "no_add": 0}
+    errors_detail = {"flood": 0, "privacy": 0, "already": 0, "banned": 0, "other": 0, "no_add": 0, "not_member": 0}
+    first_error = ""  # اولین خطا برای نمایش
     stop_req = [False]
     
     # Save adder state for stop/resume
@@ -1310,6 +1333,8 @@ async def _execute_direct_add(q, target_gid):
         except Exception as e:
             failed += 1
             err_str = str(e).lower()
+            if not first_error:
+                first_error = str(e)[:150]
             if "privacy" in err_str or "private" in err_str or "user_privacy_restricted" in err_str.replace("_",""):
                 errors_detail["privacy"] += 1
             elif "already" in err_str or "participant" in err_str:
@@ -1319,6 +1344,8 @@ async def _execute_direct_add(q, target_gid):
                 errors_detail["banned"] += 1
             elif "not_mutual_contact" in err_str.replace("_","") or "not mutual" in err_str:
                 errors_detail["no_add"] += 1
+            elif "not_participant" in err_str.replace("_","") or "chat_admin" in err_str:
+                errors_detail["not_member"] += 1
             else:
                 errors_detail["other"] += 1
             await asyncio.sleep(random.randint(3, 8))
@@ -1342,10 +1369,13 @@ async def _execute_direct_add(q, target_gid):
         text += f"🔍 <b>دلایل خطا:</b>\n"
         if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
         if errors_detail["no_add"]: text += f"🚫 تنظیمات ادد بسته: {errors_detail['no_add']}\n"
+        if errors_detail["not_member"]: text += f"⛔ اکانت عضو گروه نیست: {errors_detail['not_member']}\n"
         if errors_detail["flood"]: text += f"⏱️ Flood: {errors_detail['flood']}\n"
         if errors_detail["already"]: text += f"👥 Already in chat: {errors_detail['already']}\n"
         if errors_detail["banned"]: text += f"🚫 Banned: {errors_detail['banned']}\n"
-        if errors_detail["other"]: text += f"❓ Other: {errors_detail['other']}\n"
+        if errors_detail["other"]: text += f"❓ سایر: {errors_detail['other']}\n"
+        if first_error:
+            text += f"\n📝 <b>نمونه خطا:</b>\n<code>{first_error[:200]}</code>\n"
     
     atk_state["add_in_progress"] = False
     atk_state["add_progress"] = {"added": added, "failed": failed, "total": total, "phone": phone}
