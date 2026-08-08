@@ -1871,14 +1871,18 @@ async def cb(c, q):
     try:
         await _cb_impl(c, q)
     except Exception as e:
+        import traceback as _tb
         _log_err(e, "callback handler")
+        print(_tb.format_exc(), flush=True)
         try:
-            await q.answer(f"خطا: {str(e)[:100]}", show_alert=True)
+            await q.answer(f"خطا: {type(e).__name__}", show_alert=True)
             if q.message:
                 try:
-                    await q.message.edit_text(f"❌ خطای داخلی:\n{type(e).__name__}: {str(e)[:200]}\n\nلطفا /start بزنید.", reply_markup=main_menu())
-                except:
-                    await q.message.reply_text("❌ خطا. /start بزنید.")
+                    # Simple inline keyboard that can't fail
+                    kb = InlineKeyboardMarkup([[InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")]])
+                    await q.message.edit_text(f"❌ خطا: {type(e).__name__}\n{str(e)[:150]}\n\n/start بزنید.", reply_markup=kb)
+                except Exception as e2:
+                    print(f"Error handler failed: {e2}", flush=True)
         except: pass
         atk_state.clear()
 
