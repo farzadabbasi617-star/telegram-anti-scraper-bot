@@ -1198,19 +1198,17 @@ async def _start_direct_add(q, target_gid):
 
 
 async def _execute_direct_add(q, target_gid):
-    """Add members to channel via AddContact + InviteToChannel with warmup."""
+    """LIVE scrape from source group + AddContact+InviteToChannel to target."""
     add_client = atk_state.get("add_client")
     phone = atk_state.get("phone", "")
     already_added = atk_state.get("already_added", 0)
     remaining = MAX_ADD_PER_ACCOUNT - already_added
     prog_msg = q.message
     target_name = "گروه"
-    target_peer = None
-    valid_peers = {}
 
     if not add_client:
         try:
-            await prog_msg.edit_text("❌ اکانت متصل نیست!\nاول از منوی ادد ممبر اکانت رو وصل کن.",
+            await prog_msg.edit_text(" اکانت متصل نیست!\nاول از منوی ادد ممبر اکانت رو وصل کن.",
                 reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         except: pass
         return
@@ -1223,65 +1221,42 @@ async def _execute_direct_add(q, target_gid):
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    # Check admin status (soft check — warn but don't block)
-    _is_admin = False
-    try:
-        # Warmup dialogs first so channel is in cache
-        try:
-            async for _ in add_client.app.get_dialogs(limit=200):
-                pass
-        except: pass
-        me_member = await add_client.app.get_chat_member(target_gid, "me")
-        _is_admin = "owner" in str(me_member.status).lower() or "admin" in str(me_member.status).lower()
-        print(f"ℹ️ Admin check: status={me_member.status}, is_admin={_is_admin}", flush=True)
-        # Check admin rights if administrator
-        if _is_admin and hasattr(me_member, 'privileges') and me_member.privileges:
-            try:
-                if not getattr(me_member.privileges, 'invite_users', True):
-                    print(f"⚠️ Admin but no invite_users permission!", flush=True)
-            except: pass
-    except Exception as e:
-        print(f"⚠️ Admin check error: {type(e).__name__}: {e}", flush=True)
-        # Don't block — maybe API glitch, let InviteToChannel determine it
-
-    # Get users from DB
-    source = atk_state.get("add_source", "all")
-    source_id = atk_state.get("add_source_id")
-    if source == "category":
-        user_records = get_users_by_source(category=source_id, limit=remaining)
-    elif source == "chat":
-        user_records = get_users_by_source(source_chat_id=source_id, limit=remaining)
-    else:
-        user_records = get_users_by_source(limit=remaining)
-
-    uid_set = set()
-    for u in user_records:
-        uid = int(u.get("user_id", 0) or 0)
-        if 10000 < uid < 10**11 and not is_user_already_added(target_gid, uid):
-            uid_set.add(uid)
-    uid_list = list(uid_set)[:remaining]
-    total = len(uid_list)
-
-    if total == 0:
-        await prog_msg.edit_text("❌ کاربری برای ادد نیست.",
+    # Get source group
+    source_gid = atk_state.get("live_source_gid")
+    if not source_gid:
+        await prog_msg.edit_text("❌ گروه منبع مشخص نیست!",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    from pyrogram.raw.functions.contacts import AddContact, ImportContacts
-    from pyrogram.raw.functions.channels import InviteToChannel
-    from pyrogram.raw.types import InputUser, InputPeerUser, InputPhoneContact
+    # Get source group name
+    try:
+        src_chat = await add_client.app.get_chat(source_gid)
+        source_name = src_chat.title
+    except:
+        source_name = "گروه منبع"
 
+    # Check admin on target
+    try:
+        await add_client.app.get_dialogs(limit=200)
+    except: pass
+    
     added = 0; failed = 0; skipped = 0
     errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "other": 0}
-    first_error = ""; start_t = time.time()
+    first_error = ""
+    start_t = time.time()
     atk_state["add_in_progress"] = True
+
+    from pyrogram.raw.functions.contacts import AddContact
+    from pyrogram.raw.functions.channels import InviteToChannel
 
     async def upd():
         try:
-            pct = int((added + failed) * 100 / total) if total > 0 else 0
-            e = int(time.time() - start_t); m, s = e // 60, e % 60
-            spd = int(added / (e / 60)) if e > 30 else 0
-            txt = f"➕ {target_name}\n{'█'*(pct//5)}{'░'*(20-pct//5)} {pct}%\n✅ {added} ❌ {failed}\n⏱ {m:02d}:{s:02d} ⚡ {spd}/min"
+            elapsed = int(time.time() - start_t)
+            m, s = elapsed // 60, elapsed % 60
+            pct = int((added + failed) * 100 / max(1, total)) if total > 0 else 0
+            bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
+            spd = int(added / (elapsed / 60)) if elapsed > 30 else 0
+            txt = f"🔄 اسکرپ از: {source_name}\n🎯 ادد به: {target_name}\n{bar} {pct}%\n✅ {added} ❌ {failed} ⏭ {skipped}\n⏱ {m:02d}:{s:02d} ⚡ {spd}/min"
             await prog_msg.edit_text(txt,
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")]]),
                 disable_web_page_preview=True)
@@ -1289,149 +1264,87 @@ async def _execute_direct_add(q, target_gid):
 
     await upd()
 
-    # ─── Warmup: scan account's groups to resolve users ───
-    print(f"🔥 Warmup: same account scraped, rebuilding peer cache...", flush=True)
-    valid_peers = {}
-    uid_set_for_warmup = set(uid_list)
+    # ═══════════════ PHASE 1: LIVE SCRAPE FROM SOURCE GROUP ═══════════════
+    print(f"🔄 Phase 1: Live scraping from {source_name} ({source_gid})...", flush=True)
+    await prog_msg.edit_text(f"🔄 در حال اسکرپ از <b>{source_name}</b>...\n⏳ صبر کنید",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")]]))
 
-    # Fast warmup: quick scan + source group join (max 30 seconds)
-    print(f"  Fast warmup starting...", flush=True)
-    await prog_msg.edit_text("⚡ در حال آماده‌سازی...\nلطفاً صبر کنید (15-30 ثانیه)")
-    print(f"  Fast warmup starting...", flush=True)
-
-    # Quick dialogs scan
-    try:
-        async for dialog in add_client.app.get_dialogs(limit=100):
-            if dialog.chat.type in ["supergroup", "group"]:
-                try:
-                    count = 0
-                    async for member in add_client.app.get_chat_members(dialog.chat.id, limit=200):
-                        u = member.user
-                        if u and u.id in uid_set_for_warmup:
-                            try:
-                                valid_peers[u.id] = await add_client.app.resolve_peer(u.id)
-                                count += 1
-                            except: pass
-                        if count >= 5:
-                            break
-                except: pass
-                await asyncio.sleep(0.3)
-                if len(valid_peers) >= 10:
-                    break
-        print(f"  Quick scan: {len(valid_peers)} peers", flush=True)
-    except: pass
-
-    # Join source groups (quick)
-    source_groups = set()
-    for u in user_records:
-        gid = u.get("source_group_id")
-        if gid:
-            try:
-                gid_int = int(gid)
-                if gid_int != 0:
-                    source_groups.add(gid_int)
-            except: pass
-
-    for sg in list(source_groups)[:3]:
-        if len(valid_peers) >= 20:
-            break
-        try:
-            try:
-                chat = await add_client.app.get_chat(sg)
-                if chat.username:
-                    try:
-                        await add_client.app.join_chat(chat.username)
-                    except: pass
-            except: pass
-            try:
-                count = 0
-                async for member in add_client.app.get_chat_members(sg, limit=500):
-                    u = member.user
-                    if u and u.id in uid_set_for_warmup:
-                        try:
-                            valid_peers[u.id] = await add_client.app.resolve_peer(u.id)
-                            count += 1
-                        except: pass
-                    if count >= 10:
-                        break
-            except: pass
-        except: pass
-        await asyncio.sleep(0.5)
-
-    # Direct resolve for remaining (fast, max 30 users)
-    remaining = [uid for uid in uid_list if uid not in valid_peers]
-    for uid in remaining[:30]:
-        try:
-            valid_peers[uid] = await add_client.app.resolve_peer(uid)
-        except: pass
-        await asyncio.sleep(0.02)
-
-    print(f"  Warmup done: {len(valid_peers)}/{total} peers (took ~15s)", flush=True)
-
-    # Resolve target channel
+    # Resolve target once
     try:
         target_peer = await add_client.app.resolve_peer(target_gid)
     except Exception as e:
-        await prog_msg.edit_text(f"❌ کانال resolve نشد: {e}\nمطمئن شو اکانت عضو کاناله.",
+        await prog_msg.edit_text(f"❌ کانال مقصد resolve نشد: {e}",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
 
-    await upd()
+    # Scrape members from source group
+    valid_peers = {}
+    total = 0
+    scanned = 0
+    try:
+        async for member in add_client.app.get_chat_members(source_gid, limit=10000):
+            if atk_state.get("_stop_requested"):
+                break
+            scanned += 1
+            u = member.user
+            if not u or getattr(u, 'is_bot', False) or getattr(u, 'is_deleted', False):
+                continue
+            uid = u.id
+            if uid <= 10000 or uid >= 10**11:
+                continue
+            if is_user_already_added(target_gid, uid):
+                skipped += 1
+                continue
+            # Skip if over remaining
+            if (added + failed) >= remaining:
+                break
+            try:
+                peer = await add_client.app.resolve_peer(uid)
+                valid_peers[uid] = peer
+                total += 1
+                if scanned % 100 == 0:
+                    print(f"  📊 Scanned {scanned}: {total} resolved, {skipped} already", flush=True)
+                    await upd()
+            except:
+                pass
+            await asyncio.sleep(0.01)
+    except Exception as se:
+        print(f"  ⚠️ Scrape error: {se}", flush=True)
+        first_error = f"Scrape: {str(se)[:200]}"
 
-    # ─── Main add loop ───
-    for uid in uid_list:
+    print(f"  ✅ Phase 1 done: {scanned} scanned, {total} resolved, {skipped} skipped", flush=True)
+
+    if total == 0:
+        await prog_msg.edit_text(
+            f" هیچ کاربر جدیدی پیدا نشد!\n\n"
+            f"📊 اسکن شد: {scanned}\n"
+            f"⏭ رد شده (قبلاً اضافه شده): {skipped}\n"
+            f"\n💡 احتمالاً همه اعضای این گروه قبلاً اضافه شدن.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 اسکرپ از گروه دیگه", callback_data=f"live_add_pick_src_{target_gid}")],
+                [InlineKeyboardButton(" خانه", callback_data="home")],
+            ]))
+        return
+
+    # ═══════════════ PHASE 2: ADD TO TARGET CHANNEL ═══════════════
+    print(f"🔄 Phase 2: Adding {total} users to {target_name}...", flush=True)
+    
+    for uid, user_peer in list(valid_peers.items())[:remaining]:
+        if atk_state.get("_stop_requested"):
+            break
         try:
-            # Get peer (from warmup cache, or direct construct, or resolve)
-            if uid in valid_peers:
-                user_peer = valid_peers[uid]
-            else:
-                # Try resolve_peer
-                if uid in valid_peers:
-                    user_peer = valid_peers[uid]
-                else:
-                    try:
-                        user_peer = await add_client.app.resolve_peer(uid)
-                        valid_peers[uid] = user_peer
-                    except Exception as re:
-                        # Skip this user - can't resolve
-                        failed += 1
-                        errors_detail["peer"] += 1
-                        if not first_error: first_error = f"Can't resolve {uid}"
-                        continue
-
-            # Add to contacts (needed for channel invite)
+            # AddContact
             try:
                 await add_client.app.invoke(
-                    AddContact(
-                        id=user_peer,
-                        first_name=str(uid)[:30],
-                        last_name="",
-                        phone="",
-                        add_phone_privacy_exception=False
-                    )
+                    AddContact(id=user_peer, first_name=str(uid)[:30], last_name="", phone="", add_phone_privacy_exception=False)
                 )
                 await asyncio.sleep(0.3)
             except: pass
 
-            # Invite to channel - try with InputUser version too
-            try:
-                await add_client.app.invoke(
-                    InviteToChannel(
-                        channel=target_peer,
-                        users=[user_peer]
-                    )
-                )
-            except:
-                # Retry with InputUser(access_hash=0) if InputPeerUser failed
-                if hasattr(user_peer, 'access_hash') and user_peer.access_hash == 0:
-                    from pyrogram.raw.types import InputUser
-                    user_input = InputUser(user_id=uid, access_hash=0)
-                    await add_client.app.invoke(
-                        InviteToChannel(
-                            channel=target_peer,
-                            users=[user_input]
-                        )
-                    )
+            # InviteToChannel
+            await add_client.app.invoke(
+                InviteToChannel(channel=target_peer, users=[user_peer])
+            )
 
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
@@ -1462,20 +1375,24 @@ async def _execute_direct_add(q, target_gid):
             elif "flood" in es_l: errors_detail["flood"] += 1
             elif "admin" in es_l or "right" in es_l:
                 errors_detail["other"] += 1
-                if not first_error: first_error = f"CHAT_ADMIN_REQUIRED: {es[:100]}"
+                if not first_error: first_error = f"ADMIN_REQUIRED: {es[:100]}"
                 print(f"❌ ADMIN ERROR: {es[:200]}", flush=True)
-                break  # no point continuing
             else:
                 errors_detail["other"] += 1
-                print(f"❌ Error for {uid}: {es[:150]}", flush=True)
-            await asyncio.sleep(random.randint(3, 6))
+            await asyncio.sleep(random.randint(2, 5))
 
         if (added + failed) % 3 == 0:
             await upd()
 
-    e = int(time.time() - start_t); m, s = e // 60, e % 60
-    text = f"✅ تمام شد: {target_name}\n{'━'*20}\n"
-    text += f"✅ اضافه شده: {added}\n❌ ناموفق: {failed}\n"
+    # ═══════════════ FINAL REPORT ═══════════════
+    elapsed = int(time.time() - start_t)
+    m, s = elapsed // 60, elapsed % 60
+    text = f"✅ <b>تمام شد — {target_name}</b>\n{'━'*20}\n"
+    text += f"📂 منبع: {source_name}\n"
+    text += f"📊 اسکن شد: {scanned}\n"
+    text += f"⏭ رد شده: {skipped}\n"
+    text += f"✅ اضافه شده: {added}\n"
+    text += f"❌ ناموفق: {failed}\n"
     text += f"⏱ زمان: {m:02d}:{s:02d}\n"
     text += f"📊 ظرفیت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
     if failed > 0:
@@ -1483,20 +1400,23 @@ async def _execute_direct_add(q, target_gid):
         if errors_detail["peer"]: text += f"🔍 Peer Invalid: {errors_detail['peer']}\n"
         if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
         if errors_detail["already"]: text += f"👥 قبلاً عضو: {errors_detail['already']}\n"
-        if errors_detail["flood"]: text += f"⏱ Flood: {errors_detail['flood']}\n"
+        if errors_detail["flood"]: text += f" Flood: {errors_detail['flood']}\n"
         if errors_detail["other"]: text += f"❓ سایر: {errors_detail['other']}\n"
         if first_error: text += f"\n💬 اولین خطا: {first_error[:200]}"
+
     atk_state["add_in_progress"] = False
+    atk_state.pop("live_source_gid", None)
 
     try:
         await prog_msg.edit_text(text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("📊 آمار", callback_data="adder_stats")],
-                [InlineKeyboardButton("🏠 خانه", callback_data="home")],
+                [InlineKeyboardButton("🔄 اسکرپ از گروه دیگه", callback_data=f"live_add_pick_src_{target_gid}")],
+                [InlineKeyboardButton(" خانه", callback_data="home")],
             ]), disable_web_page_preview=True)
     except: pass
 
-# ═══════════════ ⚡ Parallel Multi-Account Direct Add ═══════════════
+
+
 async def _start_parallel_direct_add(q):
     """Start multi-account add from database with live dashboard"""
     available = atk_state.get("par_add_available", [])
@@ -2307,8 +2227,103 @@ async def _cb_impl(c, q):
 
     if d.startswith("dir_add_go_"):
         gid = int(d.split("_")[3])
+        # Make sure we have a source group
+        if not atk_state.get("live_source_gid"):
+            # Redirect to source picker
+            q.data = f"live_add_pick_src_{gid}"
+            await _cb_impl(c, q)
+            return
         asyncio.create_task(_execute_direct_add(q, gid))
         return
+
+    # ═══════════ LIVE ADD: Pick source group ═══════════
+    if d.startswith("live_add_pick_src_"):
+        gid = int(d.split("_")[4])
+        accs = list_saved_accounts()
+        phone = atk_state.get("phone", list(accs.keys())[0] if accs else None)
+        if not phone or phone not in accs:
+            await q.answer("اکانت مشخص نیست!", show_alert=True)
+            return
+        fp = accs[phone].get("device_fp") or random.choice(DEVICE_FP)
+        from attacker import safe_phone_filename as spfn
+        sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
+        
+        prog = await q.message.edit_text(" در حال بارگذاری گروه‌ها...")
+        try:
+            client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
+            _enable_wal_on_session(client.app.name)
+            await client.connect()
+            _enable_wal_on_session(client.app.name)
+            
+            groups = []
+            async for dialog in client.app.get_dialogs(limit=500):
+                if dialog.chat.type in ["supergroup", "group"]:
+                    cnt = getattr(dialog.chat, "members_count", 0) or 0
+                    groups.append((dialog.chat.title, dialog.chat.id, cnt))
+            
+            atk_state["_live_client"] = client
+            atk_state["_live_phone"] = phone
+            
+            text = f"📂 <b>گروه منبع را انتخاب کن</b>\n"
+            text += f"کاربران این گروه الان اسکرپ و ادد میشن!\n\n"
+            buttons = []
+            for gname, gid2, gcnt in sorted(groups, key=lambda x:-x[2])[:25]:
+                buttons.append([InlineKeyboardButton(f"👥 {gname[:28]} ({gcnt:,})", callback_data=f"live_add_src_{gid}_{gid2}")])
+            buttons.append([InlineKeyboardButton(" بازگشت", callback_data=f"add_target_{gid}")])
+            
+            await prog.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception as e:
+            await prog.edit_text(f"❌ خطا: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        return
+
+    # ═══════════ LIVE ADD: Source selected, start adding ═══════════
+    if d.startswith("live_add_src_"):
+        parts = d.split("_")
+        target_gid = int(parts[3])
+        source_gid = int(parts[4])
+        
+        client = atk_state.get("_live_client")
+        phone = atk_state.get("_live_phone")
+        
+        if not client or not phone:
+            await q.answer("خطا در وضعیت!", show_alert=True)
+            return
+        
+        # Store source and use existing add_client
+        atk_state["live_source_gid"] = source_gid
+        atk_state["add_client"] = client
+        atk_state["phone"] = phone
+        
+        # Get source name
+        try:
+            src = await client.app.get_chat(source_gid)
+            source_name = src.title
+        except:
+            source_name = "گروه منبع"
+        
+        try:
+            tgt = await client.app.get_chat(target_gid)
+            target_name = tgt.title
+        except:
+            target_name = "کانال مقصد"
+        
+        await q.message.edit_text(
+            f"🔄 <b>آماده اسکرپ + ادد!</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f" منبع: {source_name}\n"
+            f"🎯 مقصد: {target_name}\n"
+            f" اکانت: {phone}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"الان اعضای گروه منبع اسکرپ میشن\n"
+            f"و به کانال مقصد اضافه میشن!\n\n"
+            f"آماده‌ای؟",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("▶️ شروع!", callback_data=f"dir_add_go_{target_gid}")],
+                [InlineKeyboardButton("🔙 گروه دیگه", callback_data=f"live_add_pick_src_{target_gid}")],
+            ]))
+        return
+
+
 
     if d == "par_dir_add_exec":
         asyncio.create_task(_execute_parallel_direct_add(q))
