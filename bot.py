@@ -73,8 +73,8 @@ except Exception as e:
         'upload_ig_session':lambda *a,**kw:False,
     })()
 
-API_ID = int(os.environ.get("API_ID", 6))
-API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
+API_ID = int(os.environ.get("API_ID", 2040))
+API_HASH = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "8790569799:AAFZuVDuVg62v87yQqmaQy3LS_w71-Q6yz0")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", 564234793))
 PORT = int(os.environ.get("PORT", 10000))
