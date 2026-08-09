@@ -155,8 +155,223 @@ def _cleanup_session_locks():
 # پاکسازی در لحظه ایمپورت
 _cleanup_session_locks()
 
-async def robust_connect(client, max_retries=6):
-    """اتصال با تلاش مجدد. قفل داخل AdvancedScraper.connect() هست — اینجا دیگه قفل نمیگیریم"""
+
+# ═══════════════════════════════════════════════════════
+# AUTO-RECOVERY SYSTEM FOR SESSION ERRORS
+# ═══════════════════════════════════════════════════════
+
+def cleanup_session_files(session_path):
+    """Clean up WAL, SHM, and Journal files for a session"""
+    patterns = [
+        f"{session_path}.session-wal",
+        f"{session_path}.session-shm",
+        f"{session_path}.session-journal",
+        f"{session_path}-journal",
+        f"{session_path}-wal",
+        f"{session_path}-shm",
+    ]
+    
+    cleaned = []
+    for pattern in patterns:
+        files = glob.glob(pattern)
+        for f in files:
+            try:
+                os.remove(f)
+                cleaned.append(os.path.basename(f))
+                print(f"🧹 Cleaned: {os.path.basename(f)}", flush=True)
+            except Exception as e:
+                print(f"⚠️ Could not clean {f}: {e}", flush=True)
+    
+    return cleaned
+
+def cleanup_all_session_locks():
+    """Clean up all session lock files"""
+    patterns = [
+        "sessions/*.session-wal",
+        "sessions/*.session-shm",
+        "sessions/*.session-journal",
+        "*.session-wal",
+        "*.session-shm",
+        "*.session-journal",
+    ]
+    
+    cleaned = []
+    for pattern in patterns:
+        for f in glob.glob(pattern):
+            try:
+                os.remove(f)
+                cleaned.append(os.path.basename(f))
+            except:
+                pass
+    
+    if cleaned:
+        print(f"🧹 Cleaned {len(cleaned)} lock files", flush=True)
+    return cleaned
+
+async def safe_connect_with_recovery(client, phone, max_retries=3):
+    """
+    Connect to Telegram with auto-recovery for disk I/O errors
+    
+    Args:
+        client: AdvancedScraper instance
+        phone: Phone number for session recovery
+        max_retries: Maximum retry attempts
+    
+    Returns:
+        bool: True if connected successfully, False otherwise
+    """
+    from attacker import safe_phone_filename
+    
+    session_name = client.app.name if hasattr(client, 'app') else client.name
+    session_path = os.path.join(SESSIONS_DIR, session_name)
+    
+    for attempt in range(max_retries):
+        try:
+            # Try to connect
+            await client.connect()
+            
+            # Test connection
+            me = await client.app.get_me()
+            print(f"✅ Connected: {me.first_name}", flush=True)
+            return True
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Check if it's a disk I/O error
+            if "disk i/o" in error_msg or "database" in error_msg or "locked" in error_msg:
+                print(f"⚠️ Attempt {attempt + 1}/{max_retries}: Disk I/O error detected", flush=True)
+                
+                # Disconnect first
+                try:
+                    await client.disconnect()
+                except:
+                    pass
+                
+                # Clean up session files
+                cleaned = cleanup_session_files(session_path)
+                if cleaned:
+                    print(f"🧹 Cleaned {len(cleaned)} files, retrying...", flush=True)
+                
+                # Wait a bit
+                await asyncio.sleep(2)
+                
+                # If this is the last attempt, try reloading from database
+                if attempt == max_retries - 2:
+                    print("🔄 Trying to reload session from database...", flush=True)
+                    try:
+                        # Delete current session file
+                        session_file = f"{session_path}.session"
+                        if os.path.exists(session_file):
+                            os.remove(session_file)
+                            print(f"🗑️ Deleted: {session_file}", flush=True)
+                        
+                        # Reload from database
+                        blob = db.load_session_blob(phone)
+                        if blob:
+                            with open(session_file, "wb") as f:
+                                f.write(blob)
+                            print(f"✅ Reloaded session from database ({len(blob)} bytes)", flush=True)
+                        else:
+                            print(f"⚠️ No session blob in database for {phone}", flush=True)
+                    except Exception as reload_err:
+                        print(f"❌ Reload failed: {reload_err}", flush=True)
+                
+                # Wait before retry
+                await asyncio.sleep(3)
+                continue
+                
+            else:
+                # Not a disk I/O error, re-raise
+                print(f"❌ Connection error: {e}", flush=True)
+                raise
+    
+    # All retries failed
+    print(f"❌ Failed to connect after {max_retries} attempts", flush=True)
+    return False
+
+async def robust_connect_v2(client, phone=None, max_retries=5):
+    """
+    Enhanced robust_connect with auto-recovery
+    Use this instead of robust_connect for better error handling
+    """
+    from attacker import _enable_wal_on_session
+    
+    session_name = client.app.name if hasattr(client, 'app') else client.name
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Disconnect first
+            try:
+                await client.disconnect()
+            except:
+                pass
+            
+            await asyncio.sleep(0.5)
+            
+            # Enable WAL
+            try:
+                _enable_wal_on_session(session_name)
+            except:
+                pass
+            
+            # Connect
+            await client.connect()
+            
+            # Enable WAL again
+            try:
+                _enable_wal_on_session(session_name)
+            except:
+                pass
+            
+            return True
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Check for disk I/O errors
+            if any(keyword in error_msg for keyword in ["disk i/o", "database", "locked", "corrupt"]):
+                print(f"⚠️ Disk error (attempt {attempt}/{max_retries}): {e}", flush=True)
+                
+                if attempt < max_retries:
+                    # Clean up session files
+                    session_path = os.path.join(SESSIONS_DIR, session_name)
+                    cleanup_session_files(session_path)
+                    
+                    # If we have phone number and this is attempt 3+, try reload from DB
+                    if phone and attempt >= 3:
+                        try:
+                            session_file = f"{session_path}.session"
+                            if os.path.exists(session_file):
+                                os.remove(session_file)
+                            
+                            blob = db.load_session_blob(phone)
+                            if blob:
+                                with open(session_file, "wb") as f:
+                                    f.write(blob)
+                                print(f"✅ Reloaded session from DB", flush=True)
+                        except:
+                            pass
+                    
+                    # Exponential backoff
+                    await asyncio.sleep(2 * attempt)
+                    continue
+            
+            # For other errors or last attempt
+            if attempt == max_retries:
+                raise
+            
+            await asyncio.sleep(2 * attempt)
+    
+    return False
+
+# ═══════════════════════════════════════════════════════
+# END AUTO-RECOVERY SYSTEM
+# ═══════════════════════════════════════════════════════
+
+
+async def robust_connect(client, max_retries=6, phone=None):
+    """اتصال با تلاش مجدد و auto-recovery برای disk I/O errors"""
     for attempt in range(1, max_retries + 1):
         try:
             try:
@@ -178,18 +393,55 @@ async def robust_connect(client, max_retries=6):
             return
         except Exception as e:
             msg = str(e).lower()
-            if ("locked" in msg or "database" in msg) and attempt < max_retries:
-                print(f"⚠️ قفل دیتابیس سشن، تلاش {attempt+1}/{max_retries}", flush=True)
+            
+            # Check for disk I/O errors
+            if any(keyword in msg for keyword in ["disk i/o", "database", "locked", "corrupt"]) and attempt < max_retries:
+                print(f"⚠️ Disk I/O error، تلاش {attempt+1}/{max_retries}: {e}", flush=True)
+                
                 try:
                     client_name = client.app.name if hasattr(client, 'app') else client.name
-                    for pat in [client_name + ".session-journal", client_name + ".session-wal", client_name + ".session-shm", "*.session-journal", "*.session-wal", "*.session-shm"]:
+                    
+                    # Clean up all session lock files
+                    for pat in [
+                        client_name + ".session-journal",
+                        client_name + ".session-wal",
+                        client_name + ".session-shm",
+                        "*.session-journal",
+                        "*.session-wal",
+                        "*.session-shm"
+                    ]:
                         for f in _glob.glob(pat):
-                            try: os.remove(f)
-                            except: pass
-                except Exception:
-                    pass
+                            try:
+                                os.remove(f)
+                                print(f"🧹 Cleaned: {os.path.basename(f)}", flush=True)
+                            except:
+                                pass
+                    
+                    # If we have phone and this is attempt 3+, try reload from DB
+                    if phone and attempt >= 3:
+                        from attacker import safe_phone_filename
+                        fname = safe_phone_filename(phone)
+                        session_file = os.path.join(SESSIONS_DIR, f"acc_{fname}.session")
+                        
+                        if os.path.exists(session_file):
+                            os.remove(session_file)
+                            print(f"🗑️ Deleted corrupt session: {session_file}", flush=True)
+                        
+                        blob = db.load_session_blob(phone)
+                        if blob:
+                            with open(session_file, "wb") as f:
+                                f.write(blob)
+                            print(f"✅ Reloaded session from database ({len(blob)} bytes)", flush=True)
+                        else:
+                            print(f"⚠️ No session blob in database", flush=True)
+                
+                except Exception as cleanup_err:
+                    print(f"⚠️ Cleanup error: {cleanup_err}", flush=True)
+                
+                # Exponential backoff
                 await asyncio.sleep(2 * attempt)
                 continue
+            
             raise
 
 async def robust_resolve_chat(client, raw, max_attempts=8):
