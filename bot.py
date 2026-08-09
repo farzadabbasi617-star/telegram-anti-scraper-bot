@@ -2245,8 +2245,120 @@ GROUP_SETTINGS = {
     "spam_threshold": 10,  # messages per 10 seconds (less strict)
 }
 
+# Apply default settings automatically (no need for commands)
+print("✅ Default group settings applied:", flush=True)
+print("   - Delete join messages: ON", flush=True)
+print("   - Delete leave messages: ON", flush=True)
+print("   - Welcome message: ON", flush=True)
+print("   - Anti-link: ON (admins only)", flush=True)
+print("   - Anti-spam: ON (10 msg/10s)", flush=True)
+
 # Track user messages for anti-spam
 _user_message_tracker = {}
+
+
+# ═══════════════════════════════════════════════════════
+# AUTO-SETUP WHEN BOT JOINS GROUP OR GETS ADMIN
+# ═══════════════════════════════════════════════════════
+
+@app.on_message(filters.new_chat_members & filters.group)
+async def bot_added_to_group(c, m):
+    """Auto-setup when bot is added to a group"""
+    
+    # Check if bot itself was added
+    me = await c.get_me()
+    bot_added = any(user.id == me.id for user in m.new_chat_members)
+    
+    if not bot_added:
+        return  # Not the bot, skip
+    
+    # Bot was added to group - send setup message
+    try:
+        # Delete the "bot joined" message
+        try:
+            await m.delete()
+        except:
+            pass
+        
+        # Send welcome message
+        await m.reply_text(
+            f"👋 <b>سلام! من به گروه اضافه شدم</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>تنظیمات پیش‌فرض فعال شدند:</b>\n"
+            f"✅ خوش‌آمدگویی: فعال\n"
+            f"✅ پاک کردن پیام عضویت: فعال\n"
+            f"✅ پاک کردن پیام خروج: فعال\n"
+            f"✅ فیلتر لینک: فعال (فقط ادمین‌ها می‌تونن لینک بفرستن)\n"
+            f"✅ ضد اسپم: فعال (10 پیام در 10 ثانیه)\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"⚠️ <b>مهم:</b> لطفاً من رو ادمین کنید با دسترسی‌های:\n"
+            f"• Delete Messages\n"
+            f"• Ban Users\n"
+            f"• Pin Messages\n"
+            f"• Invite Users\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 برای دیدن همه دستورات:\n"
+            f"/commands\n\n"
+            f"⚙️ برای دیدن تنظیمات:\n"
+            f"/groupsettings\n\n"
+            f"🛑 برای غیرفعال کردن همه فیلترها:\n"
+            f"/stopall",
+            disable_web_page_preview=True
+        )
+        
+        print(f"✅ Bot added to group: {m.chat.title} ({m.chat.id})", flush=True)
+        
+    except Exception as e:
+        print(f"⚠️ Error in bot_added_to_group: {e}", flush=True)
+
+
+@app.on_chat_member_updated(filters.group)
+async def bot_promoted_to_admin(c, m):
+    """Auto-setup when bot is promoted to admin"""
+    
+    # Check if bot was promoted
+    me = await c.get_me()
+    
+    if m.new_chat_member.user.id != me.id:
+        return  # Not the bot
+    
+    # Check if bot is now admin
+    if m.new_chat_member.status not in ["administrator", "creator"]:
+        return  # Not promoted to admin
+    
+    # Bot was promoted to admin
+    try:
+        await c.send_message(
+            m.chat.id,
+            f"🎉 <b>مرسی که من رو ادمین کردید!</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"✅ <b>همه قابلیت‌ها فعال شدند:</b>\n"
+            f"✅ پاک کردن خودکار پیام عضویت/خروج\n"
+            f"✅ خوش‌آمدگویی به اعضای جدید\n"
+            f"✅ فیلتر لینک (فقط ادمین‌ها می‌تونن لینک بفرستن)\n"
+            f"✅ ضد اسپم (10 پیام در 10 ثانیه)\n"
+            f"✅ دستورات مدیریت گروه\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"📋 <b>دستورات پرکاربرد:</b>\n"
+            f"/commands - لیست همه دستورات\n"
+            f"/groupsettings - تنظیمات فعلی\n"
+            f"/stopall - غیرفعال کردن همه فیلترها\n"
+            f"/startall - فعال کردن همه فیلترها\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"💡 <b>نکته:</b> همه تنظیمات به صورت خودکار فعال هستند!\n"
+            f"اگه خواستی تغییر بدی، از دستورات بالا استفاده کن.",
+            disable_web_page_preview=True
+        )
+        
+        print(f"✅ Bot promoted to admin in: {m.chat.title} ({m.chat.id})", flush=True)
+        
+    except Exception as e:
+        print(f"⚠️ Error in bot_promoted_to_admin: {e}", flush=True)
+
+
+# ═══════════════════════════════════════════════════════
+# END AUTO-SETUP
+# ═══════════════════════════════════════════════════════
 
 @app.on_message(filters.new_chat_members & filters.group)
 async def group_welcome(c, m):
