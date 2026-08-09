@@ -6018,9 +6018,20 @@ async def _cb_impl(c, q):
 
 @app.on_message(filters.private & filters.user(ADMIN_ID) & (filters.text | filters.document) & ~filters.command("start"))
 async def steps(c, m):
+    print("\n" + "="*60, flush=True)
+    print("📨 MESSAGE RECEIVED IN steps() HANDLER", flush=True)
+    print(f"   From: {m.from_user.id} ({m.from_user.first_name})", flush=True)
+    print(f"   Text: {m.text[:100] if m.text else '[document]'}", flush=True)
+    print(f"   Current step: {atk_state.get('step', 'None')}", flush=True)
+    print("="*60 + "\n", flush=True)
+    
     try:
         await _steps_impl(c, m)
+        print("✅ _steps_impl completed successfully", flush=True)
     except Exception as e:
+        print(f"❌ ERROR in _steps_impl: {type(e).__name__}: {str(e)[:200]}", flush=True)
+        import traceback
+        traceback.print_exc()
         _log_err(e, "steps handler")
         try:
             await m.reply_text(f"❌ خطای داخلی:\n{type(e).__name__}: {str(e)[:300]}\n\nلطفا /start را بزنید.", reply_markup=main_menu())
@@ -6065,8 +6076,11 @@ def _validate_phone(phone):
 
 
 async def _steps_impl(c, m):
+    print("\n🔍 _steps_impl called", flush=True)
     step = atk_state.get("step")
     hstep = atk_state.get("hunter_step")
+    print(f"   Step: {step}", flush=True)
+    print(f"   Hunter step: {hstep}", flush=True)
 
     # Quick add CSV upload
     if atk_state.get("quick_step") == "csv_upload" and m.document:
@@ -6307,7 +6321,13 @@ async def _steps_impl(c, m):
 
     # ==================== افزودن اکانت جدید از منوی مدیریت ====================
     if step == "add_new_acc_phone":
+        print("\n" + "="*60, flush=True)
+        print("📱 ADD_NEW_ACC_PHONE HANDLER TRIGGERED!", flush=True)
+        print(f"   Raw text: {m.text}", flush=True)
+        print("="*60 + "\n", flush=True)
+        
         phone = _normalize_phone(m.text)
+        print(f"   Normalized phone: {phone}", flush=True)
         # چک کن اکانت از قبل وجود نداشته باشه
         if phone in list_saved_accounts():
             await m.reply_text(f"⚠️ اکانت {phone} از قبل در لیست ذخیره شده است! نیازی به افزودن مجدد نیست، از لیست اکانت ها انتخاب کنید.", reply_markup=main_menu())
