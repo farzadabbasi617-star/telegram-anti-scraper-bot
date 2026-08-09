@@ -83,7 +83,7 @@ SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
 ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
-MAX_ADD_PER_ACCOUNT = 20  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
+MAX_ADD_PER_ACCOUNT = 50  # 🔒 Supergroup: 200/day safe, we use 50 to be conservative  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
 
 # گروه مقصد ثابت - ممبرها همیشه به این گروه اضافه میشن
 FIXED_TARGET_LINK = "https://t.me/+gLScToU4DZdjZmM0"
@@ -4026,7 +4026,13 @@ async def _cb_impl(c, q):
                 if u and not getattr(u, 'is_bot', False) and not getattr(u, 'is_deleted', False):
                     uid = u.id
                     if 10000 < uid < 10**11:
-                        members.append({"user_id": uid, "first_name": u.first_name or "", "last_name": u.last_name or "", "username": u.username or ""})
+                        members.append({
+                            "user_id": uid,
+                            "first_name": u.first_name or "",
+                            "last_name": u.last_name or "",
+                            "username": u.username or "",
+                            "access_hash": getattr(u, 'access_hash', 0) or 0,
+                        })
         except Exception as se:
             await q.message.edit_text(f"❌ خطا در اسکرپ: {se}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
             return
@@ -5506,9 +5512,9 @@ class _MsgWrapper:
 
 
 async def _execute_simple_add(q, target_gid, client, phone, members, source_name):
-    """Execute simple add flow"""
-    from pyrogram.raw.functions.contacts import AddContact
+    """Execute simple add flow - Professional method (like top GitHub projects)"""
     from pyrogram.raw.functions.channels import InviteToChannel
+    from pyrogram.raw.types import InputPeerUser
     from pyrogram.errors import FloodWait, PeerIdInvalid, UserAlreadyParticipant
     from pyrogram.errors import UserPrivacyRestricted, UserNotMutualContact
     from pyrogram.errors import ChatAdminRequired, UsersTooMuch
@@ -5517,7 +5523,7 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
     added = 0
     failed = 0
     skipped = 0
-    errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "other": 0}
+    errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "channels": 0, "other": 0}
     first_error = ""
     start_t = time.time()
     
@@ -5530,13 +5536,13 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
         tgt = await client.app.get_chat(target_gid)
         target_name = tgt.title
     except:
-        target_name = "کانال مقصد"
+        target_name = "گروه مقصد"
     
-    # Resolve target channel
+    # Resolve target once
     try:
         target_peer = await client.app.resolve_peer(target_gid)
     except Exception as e:
-        await prog.edit_text(f"❌ کانال resolve نشد: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        await prog.edit_text(f"❌ گروه مقصد resolve نشد: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
     
     total = min(len(members), remaining)
@@ -5548,13 +5554,19 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             pct = int((added + failed + skipped) * 100 / max(1, total))
             bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
             spd = int(added / (elapsed / 60)) if elapsed > 30 else 0
-            txt = f"📂 {source_name} → 📡 {target_name}\n{bar} {pct}%\n✅ {added} ❌ {failed} ⏭ {skipped}\n⏱ {m:02d}:{s:02d} ⚡ {spd}/min"
-            await prog.edit_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("️ توقف", callback_data="stop_op")]]))
+            txt = (
+                f"📂 {source_name} → 👥 {target_name}\n"
+                f"{bar} {pct}%\n"
+                f"✅ {added} ❌ {failed} ⏭ {skipped}\n"
+                f"⏱ {m:02d}:{s:02d} ⚡ {spd}/min\n"
+                f"📊 ظرفیت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
+            )
+            await prog.edit_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("️⏹️ توقف", callback_data="stop_op")]]))
         except: pass
     
     await upd()
     
-    # Add members
+    # Add members one by one
     for i, member in enumerate(members[:remaining]):
         uid = member.get("user_id", 0)
         if uid <= 10000 or uid >= 10**11:
@@ -5565,25 +5577,41 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             skipped += 1
             continue
         
+        # Check stop request
+        if atk_state.get("_stop_requested"):
+            break
+        
         try:
-            # Resolve user
+            # Method 1: Try resolve_peer (uses Pyrogram's internal cache)
+            user_peer = None
             try:
                 user_peer = await client.app.resolve_peer(uid)
-            except Exception as re:
+            except Exception:
+                pass
+            
+            # Method 2: If resolve_peer failed, try with access_hash=0
+            if user_peer is None:
+                try:
+                    user_peer = InputPeerUser(user_id=uid, access_hash=0)
+                except:
+                    skipped += 1
+                    errors_detail["peer"] += 1
+                    if not first_error: first_error = f"Can't resolve {uid}"
+                    continue
+            
+            # Method 3: Try username if available
+            if user_peer is None and member.get("username"):
+                try:
+                    user_peer = await client.app.resolve_peer(member["username"])
+                except:
+                    pass
+            
+            if user_peer is None:
                 skipped += 1
                 errors_detail["peer"] += 1
-                if not first_error: first_error = f"Can't resolve {uid}"
                 continue
             
-            # AddContact
-            try:
-                await client.app.invoke(
-                    AddContact(id=user_peer, first_name=str(uid)[:30], last_name="", phone="", add_phone_privacy_exception=False)
-                )
-                await asyncio.sleep(0.3)
-            except: pass
-            
-            # InviteToChannel
+            # Direct InviteToChannel (NO AddContact - it wastes time and triggers limits)
             await client.app.invoke(
                 InviteToChannel(channel=target_peer, users=[user_peer])
             )
@@ -5594,19 +5622,30 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
             
-            # Delay - بهینه‌سازی شده برای جلوگیری از PEER_FLOOD
-            total_acc = already_added + added
-            if total_acc > 25:
-                await asyncio.sleep(random.randint(12, 20))
-            elif total_acc > 15:
-                await asyncio.sleep(random.randint(8, 15))
+            # ═══ Professional delay strategy ═══
+            total_done = already_added + added
+            
+            # Every 20 successful adds, take a 3-5 min break
+            if total_done > 0 and total_done % 20 == 0:
+                break_time = random.randint(180, 300)
+                await prog.edit_text(
+                    f"☕ استراحت {break_time // 60} دقیقه‌ای...\n"
+                    f"✅ {added} نفر تا الان اد شدن\n"
+                    f"📊 {total_done}/{MAX_ADD_PER_ACCOUNT}\n"
+                    f"⏳ صبر کن..."
+                )
+                await asyncio.sleep(break_time)
             else:
-                await asyncio.sleep(random.randint(5, 10))
+                # Normal delay: 30-90 seconds (like top GitHub projects)
+                delay = random.randint(30, 90)
+                await asyncio.sleep(delay)
             
         except FloodWait as fw:
             failed += 1
             errors_detail["flood"] += 1
-            await asyncio.sleep(fw.value + 5)
+            wait = fw.value + 10
+            await prog.edit_text(f"⏱️ Flood Wait {fw.value}s — صبر...")
+            await asyncio.sleep(wait)
         except UserAlreadyParticipant:
             skipped += 1
             errors_detail["already"] += 1
@@ -5620,18 +5659,25 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
         except ChatAdminRequired:
             failed += 1
             errors_detail["other"] += 1
-            if not first_error: first_error = "اکانت ادمین کانال نیست!"
+            if not first_error: first_error = "اکانت ادمین نیست!"
             break
         except UsersTooMuch:
             failed += 1
-            errors_detail["other"] += 1
+            errors_detail["channels"] += 1
             await asyncio.sleep(15)
         except Exception as e:
             failed += 1
-            errors_detail["other"] += 1
+            es = str(e).lower()
+            if "channels_too_much" in es:
+                errors_detail["channels"] += 1
+            elif "peer_flood" in es:
+                errors_detail["flood"] += 1
+                await asyncio.sleep(3600)  # 1 hour break on PEER_FLOOD
+            else:
+                errors_detail["other"] += 1
             if not first_error: first_error = str(e)[:200]
         
-        if (added + failed + skipped) % 5 == 0:
+        if (added + failed + skipped) % 3 == 0:
             await upd()
     
     # Final report
