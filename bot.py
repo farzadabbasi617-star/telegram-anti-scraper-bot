@@ -2824,11 +2824,25 @@ async def ai_chat_in_group(c, m):
         # Import AI module
         from ai_chat import ask_ai
         
-        # Ask AI
         # Get user name for personalization
         user_name = m.from_user.first_name if m.from_user else None
         
-        result = ask_ai(question, user_name=user_name)
+        # Build context from recent chat history (for groups)
+        context = ""
+        if m.chat.type in ["group", "supergroup"]:
+            try:
+                from chat_history import build_context_from_history
+                context = build_context_from_history(m.chat.id, limit=10, hours=6)
+            except Exception as e:
+                print(f"⚠️ Error building context: {e}", flush=True)
+        
+        # Add context to question if available
+        if context:
+            full_question = f"{context}\n\nسوال کاربر: {question}"
+        else:
+            full_question = question
+        
+        result = ask_ai(full_question, user_name=user_name)
         
         if result.get("ok"):
             reply = result["reply"]
@@ -2878,8 +2892,24 @@ async def ai_chat_private(c, m):
     
     try:
         from ai_chat import ask_ai
+        # Get user name and chat context for personalization
         user_name = m.from_user.first_name if m.from_user else None
-        result = ask_ai(question, user_name=user_name)
+        
+        # Build context from recent chat history
+        context = ""
+        try:
+            from chat_history import build_context_from_history
+            context = build_context_from_history(m.chat.id, limit=10, hours=6)
+        except Exception as e:
+            print(f"⚠️ Error building context: {e}", flush=True)
+        
+        # Add context to question if available
+        if context:
+            full_question = f"{context}\n\nسوال کاربر: {question}"
+        else:
+            full_question = question
+        
+        result = ask_ai(full_question, user_name=user_name)
         
         if result.get("ok"):
             reply = result["reply"]
@@ -2908,6 +2938,34 @@ async def ai_chat_private(c, m):
 # AI TRIGGER WORD (فلکسا)
 # ═══════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════
+# CHAT HISTORY LEARNING (Flexa learns from conversations)
+# ═══════════════════════════════════════════════════════
+
+@app.on_message(filters.group & filters.text & ~filters.bot)
+async def save_chat_history(c, m):
+    """Save all group messages for Flexa to learn from"""
+    try:
+        from chat_history import save_message, is_question
+        
+        # Skip very short messages
+        if len(m.text.strip()) < 3:
+            return
+        
+        # Save the message
+        save_message(
+            chat_id=m.chat.id,
+            user_id=m.from_user.id,
+            username=m.from_user.username,
+            first_name=m.from_user.first_name,
+            message=m.text,
+            is_question=is_question(m.text)
+        )
+    except Exception as e:
+        print(f"⚠️ Error saving chat history: {e}", flush=True)
+
+# ═══════════════════════════════════════════════════════
 AI_TRIGGER_WORDS = ["فلکسا", "الکسا", "alexa", "felxa"]
 
 @app.on_message(filters.text & filters.group & ~filters.command(["ai", "ask", "هوش"]))
