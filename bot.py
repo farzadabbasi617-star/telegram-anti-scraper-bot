@@ -4804,7 +4804,9 @@ async def _steps_impl(c, m):
                     "💡 نکته: کد SMS ممکنه ۳۰-۶۰ ثانیه طول بکشه",
                     disable_web_page_preview=True)
             except Exception as e2:
-                await st.edit_text(f"❌ خطا در ارسال مجدد کد: {str(e2)[:200]}\nلطفا از منو دوباره شروع کنید.", reply_markup=main_menu())
+                # Use reply to avoid MESSAGE_NOT_MODIFIED
+                await m.reply_text(f"❌ خطا در ارسال مجدد کد: {str(e2)[:200]}\nلطفاً از منو دوباره شروع کنید.", reply_markup=main_menu())
+                atk_state.clear()
                 atk_state.clear()
             return
         except Exception as e:
@@ -4937,7 +4939,8 @@ async def _steps_impl(c, m):
                 atk_state["hash"] = sent.phone_code_hash
                 await st.edit_text("⏰ کد منقضی شده بود — کد جدید ارسال شد!\n📱 کد ۵ رقمی جدید رو بفرست:")
             except Exception as e2:
-                await st.edit_text(f"❌ خطا در ارسال مجدد: {str(e2)[:200]}", reply_markup=main_menu())
+                # Use reply to avoid MESSAGE_NOT_MODIFIED
+                await m.reply_text(f"❌ خطا در ارسال مجدد: {str(e2)[:200]}", reply_markup=main_menu())
                 atk_state.clear()
             return
         except Exception as e:
@@ -5093,7 +5096,8 @@ async def _steps_impl(c, m):
                 atk_state["hash"] = sent.phone_code_hash
                 await st.edit_text("⏰ کد جدید ارسال شد! کد ۵ رقمی رو بفرست:")
             except Exception as e2:
-                await st.edit_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
+                # Use reply to avoid MESSAGE_NOT_MODIFIED
+                await m.reply_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
                 atk_state.clear()
             return
         except Exception as e:
@@ -5234,7 +5238,8 @@ async def _steps_impl(c, m):
                 atk_state["hash"] = sent.phone_code_hash
                 await st.edit_text("⏰ کد جدید ارسال شد! کد ۵ رقمی رو بفرست:")
             except Exception as e2:
-                await st.edit_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
+                # Use reply to avoid MESSAGE_NOT_MODIFIED
+                await m.reply_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
                 atk_state.clear()
             return
         except Exception as e:
