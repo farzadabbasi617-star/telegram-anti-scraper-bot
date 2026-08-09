@@ -3896,17 +3896,30 @@ async def _cb_impl(c, q):
         from attacker import safe_phone_filename as spfn
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
         
-        # Cleanup stale locks
+        # FULL cleanup: delete session + all related files, then re-download from DB
         import glob as _g
-        for pat in [sess_path + ".session-journal", sess_path + ".session-wal", sess_path + ".session-shm"]:
+        import shutil
+        for pat in [sess_path + ".session", sess_path + ".session-journal", 
+                    sess_path + ".session-wal", sess_path + ".session-shm",
+                    sess_path + ".session-*"]:
             for f in _g.glob(pat):
                 try: os.remove(f)
                 except: pass
+        
+        # Re-download session from Neon DB
+        blob = db.load_session_blob(phone)
+        if blob:
+            with open(sess_path + ".session", "wb") as sf:
+                sf.write(blob)
+            print(f"  Re-downloaded session for {phone} from DB ({len(blob)} bytes)", flush=True)
+        else:
+            print(f"  WARNING: No session blob in DB for {phone}", flush=True)
         
         prog = await q.message.edit_text(" در حال اتصال...\nلطفاً صبر کنید")
         client = None
         try:
             client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
+            # Enable WAL before connect
             _enable_wal_on_session(client.app.name)
             await robust_connect(client, max_retries=3)
             _enable_wal_on_session(client.app.name)
