@@ -1,11 +1,60 @@
 """
-Free AI Chat (no API key)
-Uses multiple free public endpoints; tries them all.
+AI Chat Module - Now with Flexa (Gament AI) Integration
+Uses Gament AI system prompt for gaming-focused responses.
 """
 import json
 import requests
+from typing import Optional
+
+# Import Flexa integration
+try:
+    from flexa_integration import ask_flexa
+    FLEXA_AVAILABLE = True
+except ImportError:
+    FLEXA_AVAILABLE = False
+    print("⚠️ Flexa integration not available, using fallback", flush=True)
 
 HEADERS_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36"}
+
+
+def ask_ai(prompt: str, user_name: Optional[str] = None) -> dict:
+    """
+    Ask AI a question.
+    
+    Args:
+        prompt: User's question
+        user_name: Optional user name for personalization
+        
+    Returns:
+        Dict with 'ok', 'reply', and 'model' keys
+    """
+    # Try Flexa (Gament AI) first if available
+    if FLEXA_AVAILABLE:
+        try:
+            result = ask_flexa(prompt, user_name)
+            if result.get("ok"):
+                return {
+                    "ok": True,
+                    "reply": result["reply"],
+                    "model": f"Flexa ({result['model']})"
+                }
+        except Exception as e:
+            print(f"Flexa error: {e}", flush=True)
+    
+    # Fallback to original endpoints
+    for fn, name in [
+        (_try_airforce_correct, "GPT-4o-mini"),
+        (_try_duckduckgo, "GPT-4o-mini (DuckDuckGo)"),
+        (_try_textsynth, "Mistral 7B"),
+    ]:
+        try:
+            t = fn(prompt)
+            if t and len(t) > 5:
+                return {"ok": True, "reply": t, "model": name}
+        except Exception as e:
+            print(f"{name} err: {e}", flush=True)
+    
+    return {"ok": False, "error": "متاسفانه هم‌اکنون سرویس‌های هوش مصنوعی در دسترس نیستند، لطفاً چند دقیقه بعد امتحان کن."}
 
 
 def _try_blackforest(prompt: str) -> str:
@@ -78,21 +127,6 @@ def _try_duckduckgo(prompt: str) -> str:
     except Exception as e:
         print(f"ddg err: {e}", flush=True)
     return ""
-
-
-def ask_ai(prompt: str) -> dict:
-    for fn, name in [
-        (_try_airforce_correct, "GPT-4o-mini"),
-        (_try_duckduckgo, "GPT-4o-mini (DuckDuckGo)"),
-        (_try_textsynth, "Mistral 7B"),
-    ]:
-        try:
-            t = fn(prompt)
-            if t and len(t) > 5:
-                return {"ok": True, "reply": t, "model": name}
-        except Exception as e:
-            print(f"{name} err: {e}", flush=True)
-    return {"ok": False, "error": "متاسفانه هم‌اکنون سرویس‌های هوش مصنوعی در دسترس نیستند، لطفاً چند دقیقه بعد امتحان کن."}
 
 
 def _try_airforce_correct(prompt: str) -> str:

@@ -2825,7 +2825,10 @@ async def ai_chat_in_group(c, m):
         from ai_chat import ask_ai
         
         # Ask AI
-        result = ask_ai(question)
+        # Get user name for personalization
+        user_name = m.from_user.first_name if m.from_user else None
+        
+        result = ask_ai(question, user_name=user_name)
         
         if result.get("ok"):
             reply = result["reply"]
@@ -2875,7 +2878,8 @@ async def ai_chat_private(c, m):
     
     try:
         from ai_chat import ask_ai
-        result = ask_ai(question)
+        user_name = m.from_user.first_name if m.from_user else None
+        result = ask_ai(question, user_name=user_name)
         
         if result.get("ok"):
             reply = result["reply"]
@@ -2936,7 +2940,8 @@ async def ai_trigger_word(c, m):
     
     try:
         from ai_chat import ask_ai
-        result = ask_ai(question)
+        user_name = m.from_user.first_name if m.from_user else None
+        result = ask_ai(question, user_name=user_name)
         
         if result.get("ok"):
             reply = result["reply"]
