@@ -83,7 +83,7 @@ SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
 ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
-MAX_ADD_PER_ACCOUNT = 30  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
+MAX_ADD_PER_ACCOUNT = 20  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
 
 # گروه مقصد ثابت - ممبرها همیشه به این گروه اضافه میشن
 FIXED_TARGET_LINK = "https://t.me/+gLScToU4DZdjZmM0"
