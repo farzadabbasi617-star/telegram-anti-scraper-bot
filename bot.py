@@ -6332,21 +6332,79 @@ async def _steps_impl(c, m):
             atk_state["chosen_fp"] = chosen_fp
             tmp_name = f"tmp_add_{int(time.time())}_{random.randint(1000,9999)}"
             acc_client = AdvancedScraper(tmp_name, API_ID, API_HASH, phone=phone, device_fp=chosen_fp, force_fresh=True)
+            
+            print(f"📱 Connecting to add account: {phone}", flush=True)
             await robust_connect(acc_client)
+            print(f"✅ Connected, sending code to: {phone}", flush=True)
+            
             sent = await acc_client.app.send_code(phone)
+            
+            if not sent or not hasattr(sent, 'phone_code_hash'):
+                print(f"❌ send_code returned invalid result: {sent}", flush=True)
+                await st.edit_text(
+                    "❌ <b>خطا در ارسال کد!</b>\n\n"
+                    "تلگرام کد را ارسال نکرد.\n\n"
+                    "💡 <b>راه حل‌ها:</b>\n"
+                    "• چند دقیقه صبر کن و دوباره امتحان کن\n"
+                    "• مطمئن شو شماره درست باشه\n"
+                    "• اگه قبلاً این اکانت رو اضافه کردی، از منوی اکانت‌ها انتخابش کن",
+                    reply_markup=main_menu()
+                )
+                atk_state.clear()
+                return
+            
+            print(f"✅ Code sent successfully, hash: {sent.phone_code_hash[:10]}...", flush=True)
+            
             atk_state["new_acc_client"] = acc_client
             atk_state["acc_tmp_name"] = tmp_name
             atk_state["hash"] = sent.phone_code_hash
             atk_state["st"] = st
             atk_state["step"] = "add_new_acc_code"
-            await st.edit_text("✅ کد تایید ارسال شد!\n\n📱 <b>کد ۵ رقمی رو بفرست:</b>\n⏱️ ۵ دقیقه فرصت داری — کد توی SMS میاد", disable_web_page_preview=True)
+            
+            await st.edit_text(
+                "✅ <b>کد تایید ارسال شد!</b>\n\n"
+                "📱 <b>کد ۵ رقمی رو بفرست:</b>\n"
+                "⏱️ ۵ دقیقه فرصت داری\n\n"
+                "💡 <b>کد کجا میاد؟</b>\n"
+                "• اگه تلگرام روی گوشیت نصبه → کد توی اپ تلگرام میاد\n"
+                "• اگه نصب نیست → SMS میاد\n"
+                "• چک کن هر دو جا رو!",
+                disable_web_page_preview=True
+            )
         except FloodWait as fw:
             wait_h = fw.value // 3600
             wait_m = (fw.value % 3600) // 60
-            await st.edit_text(f"❌ تلگرام موقتا از ارسال کد به این شماره خودداری میکند!\n⏱️ باید حدود {wait_h} ساعت و {wait_m} دقیقه صبر کنید.\n\n✅ نگران نباشید، سشن شما سالم است و اگر قبلا اکانت را افزوده بودید میتوانید بدون کد وارد شوید. این محدودیت موقت است و اکانت بن نشده.", reply_markup=main_menu())
+            print(f"⚠️ FloodWait for {phone}: {fw.value} seconds", flush=True)
+            await st.edit_text(
+                f"❌ <b>تلگرام موقتا از ارسال کد خودداری می‌کنه!</b>\n\n"
+                f"⏱️ باید حدود <b>{wait_h} ساعت و {wait_m} دقیقه</b> صبر کنی.\n\n"
+                f"💡 <b>چرا اینطوری شد؟</b>\n"
+                f"• زیاد کد درخواست کردی\n"
+                f"• تلگرام برای امنیت محدود کرده\n\n"
+                f"✅ <b>راه حل:</b>\n"
+                f"• {wait_h} ساعت صبر کن و دوباره امتحان کن\n"
+                f"• یا اگه قبلاً این اکانت رو اضافه کردی، از منوی اکانت‌ها انتخابش کن\n"
+                f"• نگران نباش، اکانتت بن نشده!",
+                reply_markup=main_menu()
+            )
             atk_state.clear()
         except Exception as e:
-            await st.edit_text(f"❌ خطا در ارسال کد: {str(e)[:300]}\n\nلطفا چند دقیقه دیگر امتحان کنید.", reply_markup=main_menu())
+            error_msg = str(e)
+            print(f"❌ Error sending code to {phone}: {error_msg}", flush=True)
+            
+            # Check for common errors
+            if "PHONE_NUMBER_INVALID" in error_msg:
+                error_text = "❌ <b>شماره تلفن نامعتبره!</b>\n\nلطفاً شماره رو با فرمت درست بفرست:\n<code>+989121234567</code>"
+            elif "PHONE_NUMBER_FLOOD" in error_msg:
+                error_text = "❌ <b>این شماره زیاد کد درخواست کرده!</b>\n\nچند ساعت صبر کن و دوباره امتحان کن."
+            elif "PHONE_NUMBER_BANNED" in error_msg:
+                error_text = "❌ <b>این شماره بن شده!</b>\n\nبا شماره دیگه‌ای امتحان کن."
+            elif "API_ID" in error_msg or "invalid" in error_msg.lower():
+                error_text = "❌ <b>مشکل در API!</b>\n\nلطفاً به ادمین اطلاع بده."
+            else:
+                error_text = f"❌ <b>خطا در ارسال کد:</b>\n{error_msg[:200]}\n\n💡 چند دقیقه دیگه دوباره امتحان کن."
+            
+            await st.edit_text(error_text, reply_markup=main_menu())
             atk_state.clear()
         return
 
