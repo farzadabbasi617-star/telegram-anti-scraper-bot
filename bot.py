@@ -83,7 +83,7 @@ SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
 ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
-MAX_ADD_PER_ACCOUNT = 100  # محدودیت اضافه کردن عضو در هر اکانت (تا ۵۰ تا ۸-۱۵s, بعد ۱۲-۲۰s)
+MAX_ADD_PER_ACCOUNT = 30  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
 
 # گروه مقصد ثابت - ممبرها همیشه به این گروه اضافه میشن
 FIXED_TARGET_LINK = "https://t.me/+gLScToU4DZdjZmM0"
@@ -4067,8 +4067,8 @@ async def _cb_impl(c, q):
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
 
-    if d.startswith("simp_add_exec_"):
-        target_gid = int(d[len("simp_add_exec_"):])
+    if d.startswith("simp_add_tgt_") or d.startswith("simp_add_exec_"):
+        target_gid = int(d[len("simp_add_exec_"):]) if d.startswith("simp_add_exec_") else int(d[len("simp_add_tgt_"):])
         client = atk_state.get("_simp_client")
         phone = atk_state.get("_simp_phone")
         members = atk_state.get("_simp_members", [])
@@ -5591,14 +5591,14 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
             
-            # Delay
+            # Delay - بهینه‌سازی شده برای جلوگیری از PEER_FLOOD
             total_acc = already_added + added
-            if total_acc > 80:
-                await asyncio.sleep(random.randint(15, 25))
-            elif total_acc > 50:
-                await asyncio.sleep(random.randint(10, 18))
+            if total_acc > 25:
+                await asyncio.sleep(random.randint(12, 20))
+            elif total_acc > 15:
+                await asyncio.sleep(random.randint(8, 15))
             else:
-                await asyncio.sleep(random.randint(7, 13))
+                await asyncio.sleep(random.randint(5, 10))
             
         except FloodWait as fw:
             failed += 1
