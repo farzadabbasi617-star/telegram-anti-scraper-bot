@@ -2898,6 +2898,72 @@ async def ai_chat_private(c, m):
 
 # ═══════════════════════════════════════════════════════
 # END AI CHAT
+
+
+# ═══════════════════════════════════════════════════════
+# AI TRIGGER WORD (فلکسا)
+# ═══════════════════════════════════════════════════════
+
+AI_TRIGGER_WORDS = ["فلکسا", "الکسا", "alexa", "felxa"]
+
+@app.on_message(filters.text & filters.group & ~filters.command(["ai", "ask", "هوش"]))
+async def ai_trigger_word(c, m):
+    """Trigger AI with keyword instead of command"""
+    
+    text = m.text.strip().lower()
+    
+    # Check if message starts with trigger word
+    triggered = False
+    question = ""
+    
+    for trigger in AI_TRIGGER_WORDS:
+        if text.startswith(trigger):
+            triggered = True
+            # Remove trigger word from question
+            question = m.text.strip()[len(trigger):].strip()
+            break
+    
+    if not triggered or not question:
+        return  # Not a trigger, skip
+    
+    # Skip if too short
+    if len(question) < 3:
+        await m.reply_text("⚠️ سوال خیلی کوتاهه! بعد از فلکسا سوالت رو بنویس.")
+        return
+    
+    # Show typing
+    thinking_msg = await m.reply_text("🤖 فلکسا در حال فکر کردن...")
+    
+    try:
+        from ai_chat import ask_ai
+        result = ask_ai(question)
+        
+        if result.get("ok"):
+            reply = result["reply"]
+            model = result.get("model", "AI")
+            
+            if len(reply) > 3500:
+                reply = reply[:3500] + "\n\n...(پاسخ طولانی بود)"
+            
+            await thinking_msg.edit_text(
+                f"🤖 <b>فلکسا پاسخ میده:</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"💬 {reply}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🔧 مدل: {model}"
+            )
+        else:
+            error = result.get("error", "خطای ناشناخته")
+            await thinking_msg.edit_text(f"❌ خطا: {error}")
+    
+    except Exception as e:
+        await thinking_msg.edit_text(f"❌ خطا: {str(e)[:200]}")
+
+# ═══════════════════════════════════════════════════════
+# END AI TRIGGER WORD
+# ═══════════════════════════════════════════════════════
+
+
 # ═══════════════════════════════════════════════════════
 
 @app.on_message(filters.command("hide") & filters.group)
@@ -3068,7 +3134,8 @@ async def show_commands(c, m):
         f"🤖 <b>هوش مصنوعی:</b>\n"
         f"/ai [سوال] - پرسیدن سوال از هوش مصنوعی\n"
         f"/ask [سوال] - همان /ai\n"
-        f"/هوش [سوال] - همان /ai\n\n"
+        f"/هوش [سوال] - همان /ai\n"
+        f"<b>فلکسا</b> [سوال] - بدون نیاز به / (راحت‌تر!)\n\n"
         f"🙈 <b>مخفی کردن اعضا:</b>\n"
         f"/hide - مخفی کردن لیست اعضا (فقط ادمین‌ها ببینن)\n"
         f"/show - نمایش لیست اعضا (همه ببینن)\n\n"
