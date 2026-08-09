@@ -2968,6 +2968,58 @@ async def save_chat_history(c, m):
 # ═══════════════════════════════════════════════════════
 AI_TRIGGER_WORDS = ["فلکسا", "الکسا", "alexa", "felxa"]
 
+
+
+@app.on_message(filters.group & filters.text & ~filters.bot)
+async def flexa_auto_respond(c, m):
+    """Check if Flexa should proactively respond to a message"""
+    try:
+        # Skip if message is too short
+        if len(m.text.strip()) < 10:
+            return
+        
+        # Import auto-respond system
+        from flexa_auto_respond import should_respond, mark_responded, build_auto_response_prompt, get_auto_response_style
+        
+        # Check if Flexa should respond
+        if not should_respond(m.text, m.chat.id):
+            return
+        
+        # Mark as responded (for cooldown)
+        mark_responded(m.chat.id)
+        
+        # Show typing
+        await c.send_chat_action(m.chat.id, "typing")
+        
+        # Build prompt with context
+        user_name = m.from_user.first_name if m.from_user else "کاربر"
+        prompt = build_auto_response_prompt(m.text, m.chat.id, user_name)
+        
+        # Get AI response
+        from ai_chat import ask_ai
+        result = ask_ai(prompt, user_name="فلکسا")
+        
+        if result.get("ok"):
+            reply = result["reply"]
+            
+            # Truncate if too long
+            if len(reply) > 500:
+                reply = reply[:500] + "..."
+            
+            # Get random style
+            style = get_auto_response_style()
+            
+            # Send response (reply to the message)
+            await m.reply_text(
+                f"{style['prefix']}{reply}{style['suffix']}",
+                quote=True
+            )
+            
+            print(f"✅ Flexa auto-responded in {m.chat.id}", flush=True)
+    
+    except Exception as e:
+        print(f"⚠️ Auto-respond error: {e}", flush=True)
+
 @app.on_message(filters.text & filters.group & ~filters.command(["ai", "ask", "هوش"]))
 async def ai_trigger_word(c, m):
     """Trigger AI with keyword instead of command"""
