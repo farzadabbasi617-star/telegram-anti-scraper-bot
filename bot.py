@@ -2443,6 +2443,274 @@ async def toggle_delete_leaves(c, m):
     status = "✅ فعال" if GROUP_SETTINGS["delete_leave_messages"] else "❌ غیرفعال"
     await m.reply_text(f"🗑️ پاک کردن پیام خروج: {status}")
 
+
+# ═══════════════════════════════════════════════════════
+# ADDITIONAL GROUP MANAGEMENT COMMANDS
+# ═══════════════════════════════════════════════════════
+
+@app.on_message(filters.command("ban") & filters.group)
+async def ban_user(c, m):
+    """Ban a user from the group"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن بن کنن!")
+            return
+    except:
+        return
+    
+    if not m.reply_to_message:
+        await m.reply_text("⚠️ روی پیام کاربر ریپلای کن و /ban رو بفرست")
+        return
+    
+    user_id = m.reply_to_message.from_user.id
+    try:
+        await c.ban_chat_member(m.chat.id, user_id)
+        await m.reply_text(f"🔨 {m.reply_to_message.from_user.mention()} بن شد!")
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("unban") & filters.group)
+async def unban_user(c, m):
+    """Unban a user from the group"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن آنبن کنن!")
+            return
+    except:
+        return
+    
+    if len(m.command) < 2:
+        await m.reply_text("⚠️ آیدی کاربر رو بفرست: /unban 123456789")
+        return
+    
+    try:
+        user_id = int(m.command[1])
+        await c.unban_chat_member(m.chat.id, user_id)
+        await m.reply_text(f"✅ کاربر {user_id} آنبن شد!")
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("kick") & filters.group)
+async def kick_user(c, m):
+    """Kick a user from the group (can rejoin)"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن اخراج کنن!")
+            return
+    except:
+        return
+    
+    if not m.reply_to_message:
+        await m.reply_text("⚠️ روی پیام کاربر ریپلای کن و /kick رو بفرست")
+        return
+    
+    user_id = m.reply_to_message.from_user.id
+    try:
+        await c.ban_chat_member(m.chat.id, user_id)
+        await asyncio.sleep(1)
+        await c.unban_chat_member(m.chat.id, user_id)
+        await m.reply_text(f"👢 {m.reply_to_message.from_user.mention()} اخراج شد!")
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("mute") & filters.group)
+async def mute_user(c, m):
+    """Mute a user (can't send messages)"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن میوت کنن!")
+            return
+    except:
+        return
+    
+    if not m.reply_to_message:
+        await m.reply_text("⚠️ روی پیام کاربر ریپلای کن و /mute رو بفرست")
+        return
+    
+    user_id = m.reply_to_message.from_user.id
+    try:
+        await c.restrict_chat_member(
+            m.chat.id,
+            user_id,
+            permissions=ChatPermissions(can_send_messages=False)
+        )
+        await m.reply_text(f"🔇 {m.reply_to_message.from_user.mention()} میوت شد!")
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("unmute") & filters.group)
+async def unmute_user(c, m):
+    """Unmute a user"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن آنمیوت کنن!")
+            return
+    except:
+        return
+    
+    if not m.reply_to_message:
+        await m.reply_text("⚠️ روی پیام کاربر ریپلای کن و /unmute رو بفرست")
+        return
+    
+    user_id = m.reply_to_message.from_user.id
+    try:
+        await c.restrict_chat_member(
+            m.chat.id,
+            user_id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True
+            )
+        )
+        await m.reply_text(f"🔊 {m.reply_to_message.from_user.mention()} آنمیوت شد!")
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("warn") & filters.group)
+async def warn_user(c, m):
+    """Warn a user"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن اخطار بدن!")
+            return
+    except:
+        return
+    
+    if not m.reply_to_message:
+        await m.reply_text("⚠️ روی پیام کاربر ریپلای کن و /warn رو بفرست")
+        return
+    
+    user = m.reply_to_message.from_user
+    reason = " ".join(m.command[1:]) if len(m.command) > 1 else "دلیل مشخص نشده"
+    
+    await m.reply_text(
+        f"⚠️ <b>اخطار به {user.mention()}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📝 دلیل: {reason}\n"
+        f"👤 اخطار دهنده: {m.from_user.mention()}\n"
+        f"\n"
+        f"⚠️ لطفاً قوانین گروه رو رعایت کنید!"
+    )
+
+@app.on_message(filters.command("pin") & filters.group)
+async def pin_message(c, m):
+    """Pin a message"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن پیام پین کنن!")
+            return
+    except:
+        return
+    
+    if not m.reply_to_message:
+        await m.reply_text("⚠️ روی پیام ریپلای کن و /pin رو بفرست")
+        return
+    
+    try:
+        await c.pin_chat_message(m.chat.id, m.reply_to_message.id, disable_notification=False)
+        await m.reply_text("📌 پیام پین شد!")
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("unpin") & filters.group)
+async def unpin_message(c, m):
+    """Unpin a message"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن پیام آنپین کنن!")
+            return
+    except:
+        return
+    
+    if not m.reply_to_message:
+        await m.reply_text("⚠️ روی پیام پین شده ریپلای کن و /unpin رو بفرست")
+        return
+    
+    try:
+        await c.unpin_chat_message(m.chat.id, m.reply_to_message.id)
+        await m.reply_text("📌 پیام آنپین شد!")
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("del") & filters.group)
+async def delete_message(c, m):
+    """Delete a message"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن پیام پاک کنن!")
+            return
+    except:
+        return
+    
+    if not m.reply_to_message:
+        await m.reply_text("⚠️ روی پیام ریپلای کن و /del رو بفرست")
+        return
+    
+    try:
+        await m.reply_to_message.delete()
+        await m.delete()
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("commands") & filters.group)
+async def show_commands(c, m):
+    """Show all available group commands"""
+    
+    commands_text = (
+        f"📋 <b>دستورات ربات در گروه</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        
+        f"👥 <b>مدیریت اعضا:</b>\n"
+        f"/ban - بن کردن کاربر (ریپلای)\n"
+        f"/unban [id] - آنبن کردن کاربر\n"
+        f"/kick - اخراج کاربر (ریپلای)\n"
+        f"/mute - میوت کردن کاربر (ریپلای)\n"
+        f"/unmute - آنمیوت کردن کاربر (ریپلای)\n"
+        f"/warn [دلیل] - اخطار به کاربر (ریپلای)\n\n"
+        
+        f"📌 <b>مدیریت پیام‌ها:</b>\n"
+        f"/pin - پین کردن پیام (ریپلای)\n"
+        f"/unpin - آنپین کردن پیام (ریپلای)\n"
+        f"/del - پاک کردن پیام (ریپلای)\n\n"
+        
+        f"🔒 <b>قفل گروه:</b>\n"
+        f"/lock - قفل کردن گروه (هیچکس نتونه پیام بده)\n"
+        f"/unlock - باز کردن گروه\n\n"
+        
+        f"⚙️ <b>تنظیمات:</b>\n"
+        f"/welcome - روشن/خاموش کردن خوش‌آمدگویی\n"
+        f"/deletejoins - پاک کردن پیام عضویت\n"
+        f"/deleteleaves - پاک کردن پیام خروج\n"
+        f"/antilink - فیلتر لینک\n"
+        f"/antispam - ضد اسپم\n"
+        f"/groupsettings - نمایش همه تنظیمات\n\n"
+        
+        f"📊 <b>اطلاعات:</b>\n"
+        f"/botstatus - وضعیت ربات در گروه\n"
+        f"/commands - نمایش این لیست\n"
+        f"/help - راهنما\n\n"
+        
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"💡 <b>نکته:</b> همه دستورات فقط برای ادمین‌ها قابل استفاده است"
+    )
+    
+    await m.reply_text(commands_text, disable_web_page_preview=True)
+
+# ═══════════════════════════════════════════════════════
+# END ADDITIONAL GROUP MANAGEMENT COMMANDS
+# ═══════════════════════════════════════════════════════
+
 @app.on_message(filters.command("groupsettings") & filters.group)
 async def show_group_settings(c, m):
     """Show current group settings"""
