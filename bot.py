@@ -2257,7 +2257,7 @@ async def _cb_impl(c, q):
             
             groups = []
             async for dialog in client.app.get_dialogs(limit=500):
-                if dialog.chat.type in ["supergroup", "group"]:
+                if "group" in str(dialog.chat.type).lower():
                     cnt = getattr(dialog.chat, "members_count", 0) or 0
                     groups.append((dialog.chat.title, dialog.chat.id, cnt))
             
@@ -2424,7 +2424,7 @@ async def _cb_impl(c, q):
                 channels = []
                 async for dialog in test_client.app.get_dialogs(limit=200):
                     cht = dialog.chat
-                    if cht.type in ["supergroup", "group"]:
+                    if "group" in str(cht.type).lower():
                         groups.append((cht.title, cht.id))
                         log += f"  👥 {cht.title} ({cht.id})\n"
                     elif cht.type == "channel":
@@ -2576,7 +2576,7 @@ async def _cb_impl(c, q):
             # Load groups
             groups = []
             async for dialog in client.app.get_dialogs(limit=500):
-                if dialog.chat.type in ["supergroup", "group"]:
+                if "group" in str(dialog.chat.type).lower():
                     cnt = getattr(dialog.chat, "members_count", 0) or 0
                     groups.append((dialog.chat.title, dialog.chat.id, cnt))
             atk_state["quick_client"] = client
@@ -3056,7 +3056,7 @@ async def _cb_impl(c, q):
     if d == "select_group":
         groups = []
         async for dialog in app.get_dialogs():
-            if dialog.chat.type in ["supergroup", "group"] or (dialog.chat.type == "channel" and getattr(dialog.chat, 'megagroup', False)):
+            if "group" in str(dialog.chat.type).lower() or ("channel" in str(dialog.chat.type).lower() and getattr(dialog.chat, 'megagroup', False)):
                 groups.append((dialog.chat.title, dialog.chat.id))
         buttons = []
         for name, gid in groups:
@@ -3928,16 +3928,24 @@ async def _cb_impl(c, q):
             atk_state["_simp_phone"] = phone
             atk_state["_simp_me"] = me.first_name
             
-            # Load groups with retry
+            # Load groups with retry - fix enum type comparison
             groups = []
             try:
-                async for dialog in client.app.get_dialogs(limit=500):
-                    cht = dialog.chat
-                    if cht and cht.type in ["supergroup", "group"]:
-                        cnt = getattr(cht, "members_count", 0) or 0
-                        groups.append((cht.title or "بدون نام", cht.id, cnt))
+                for _w in range(3):
+                    async for dialog in client.app.get_dialogs(limit=500):
+                        cht = dialog.chat
+                        if not cht: continue
+                        # Fix: chat.type is an Enum in Pyrogram 2.x
+                        t = str(cht.type).lower()
+                        if "group" in t or "supergroup" in t:
+                            cnt = getattr(cht, "members_count", 0) or 0
+                            groups.append((cht.title or "بدون نام", cht.id, cnt))
+                    if groups:
+                        break
+                    await asyncio.sleep(2)
+                print(f"  Found {len(groups)} groups", flush=True)
             except Exception as ge:
-                print(f"dialogs error: {ge}", flush=True)
+                print(f"  dialogs error: {ge}", flush=True)
             
             text = f"✅ متصل: <b>{me.first_name}</b>\n\n"
             
@@ -4018,7 +4026,7 @@ async def _cb_impl(c, q):
         channels = []
         try:
             async for dialog in client.app.get_dialogs(limit=500):
-                if dialog.chat.type == "channel":
+                if "channel" in str(dialog.chat.type).lower():
                     cnt = getattr(dialog.chat, "members_count", 0) or 0
                     channels.append((dialog.chat.title, dialog.chat.id, cnt))
         except: pass
