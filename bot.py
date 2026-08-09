@@ -2242,7 +2242,7 @@ GROUP_SETTINGS = {
     "welcome_enabled": True,
     "anti_link": True,
     "anti_spam": True,
-    "spam_threshold": 5,  # messages per 10 seconds
+    "spam_threshold": 10,  # messages per 10 seconds (less strict)
 }
 
 # Track user messages for anti-spam
@@ -2319,15 +2319,15 @@ async def group_message_filter(c, m):
     except:
         pass
     
-    # Anti-link filter
+    # Anti-link filter (less strict - only real URLs)
     if GROUP_SETTINGS["anti_link"]:
-        text = m.text.lower()
-        link_patterns = [
-            "http://", "https://", "www.", ".com", ".ir", ".net", ".org",
-            "t.me/", "telegram.me/", "instagram.com/", "twitter.com/"
-        ]
+        import re
+        text = m.text
         
-        if any(pattern in text for pattern in link_patterns):
+        # Only match actual URLs, not .com in normal text
+        url_pattern = r'https?://[^\s]+|www\.[^\s]+|t\.me/[^\s]+|telegram\.me/[^\s]+'
+        
+        if re.search(url_pattern, text, re.IGNORECASE):
             try:
                 await m.delete()
                 await m.reply_text(
@@ -2662,6 +2662,61 @@ async def delete_message(c, m):
         await m.delete()
     except Exception as e:
         await m.reply_text(f"❌ خطا: {e}")
+
+
+
+@app.on_message(filters.command("stopall") & filters.group)
+async def stop_all_filters(c, m):
+    """Emergency: Disable all filters"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    GROUP_SETTINGS["anti_link"] = False
+    GROUP_SETTINGS["anti_spam"] = False
+    GROUP_SETTINGS["delete_join_messages"] = False
+    GROUP_SETTINGS["delete_leave_messages"] = False
+    
+    await m.reply_text(
+        "🛑 <b>همه فیلترها غیرفعال شدند!</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "❌ فیلتر لینک: غیرفعال\n"
+        "❌ ضد اسپم: غیرفعال\n"
+        "❌ پاک کردن پیام عضویت: غیرفعال\n"
+        "❌ پاک کردن پیام خروج: غیرفعال\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "💡 برای فعال کردن دوباره:\n"
+        "/antilink, /antispam, /deletejoins, /deleteleaves"
+    )
+
+@app.on_message(filters.command("startall") & filters.group)
+async def start_all_filters(c, m):
+    """Enable all filters"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    GROUP_SETTINGS["anti_link"] = True
+    GROUP_SETTINGS["anti_spam"] = True
+    GROUP_SETTINGS["delete_join_messages"] = True
+    GROUP_SETTINGS["delete_leave_messages"] = True
+    
+    await m.reply_text(
+        "✅ <b>همه فیلترها فعال شدند!</b>\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "✅ فیلتر لینک: فعال\n"
+        "✅ ضد اسپم: فعال\n"
+        "✅ پاک کردن پیام عضویت: فعال\n"
+        "✅ پاک کردن پیام خروج: فعال"
+    )
 
 @app.on_message(filters.command("commands") & filters.group)
 async def show_commands(c, m):
