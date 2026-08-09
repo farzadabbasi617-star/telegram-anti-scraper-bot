@@ -2231,12 +2231,251 @@ async def group_unlock_cmd(c, m):
     except Exception as e:
         await m.reply_text(f"❌ {str(e)[:200]}")
 
+# ═══════════════════════════════════════════════════════
+# GROUP MANAGEMENT SYSTEM
+# ═══════════════════════════════════════════════════════
+
+# Global settings for group management
+GROUP_SETTINGS = {
+    "delete_join_messages": True,
+    "delete_leave_messages": True,
+    "welcome_enabled": True,
+    "anti_link": True,
+    "anti_spam": True,
+    "spam_threshold": 5,  # messages per 10 seconds
+}
+
+# Track user messages for anti-spam
+_user_message_tracker = {}
+
 @app.on_message(filters.new_chat_members & filters.group)
 async def group_welcome(c, m):
-    for user in m.new_chat_members:
-        if user.is_bot or user.is_self:
-            continue
-        await m.reply_text(f"👋 سلام {user.mention()}! خوش اومدی به {m.chat.title} 🎉")
+    """Handle new members: welcome + delete service message"""
+    
+    # Delete the "X joined the group" service message
+    if GROUP_SETTINGS["delete_join_messages"]:
+        try:
+            await m.delete()
+        except Exception as e:
+            print(f"⚠️ Could not delete join message: {e}", flush=True)
+    
+    # Send welcome message
+    if GROUP_SETTINGS["welcome_enabled"]:
+        for user in m.new_chat_members:
+            if user.is_bot or user.is_self:
+                continue
+            
+            # Build welcome message
+            name = user.first_name or "کاربر"
+            if user.last_name:
+                name += f" {user.last_name}"
+            
+            mention = user.mention()
+            user_id = user.id
+            username = f"@{user.username}" if user.username else "ندارد"
+            
+            welcome_text = (
+                f"👋 <b>خوش اومدی {mention}!</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"👤 نام: {name}\n"
+                f"🆔 آیدی: <code>{user_id}</code>\n"
+                f"🏷️ یوزرنیم: {username}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🎉 به <b>{m.chat.title}</b> خوش اومدی!\n"
+                f"\n"
+                f"📜 لطفاً قوانین گروه رو رعایت کن"
+            )
+            
+            try:
+                welcome_msg = await m.reply_text(welcome_text, disable_web_page_preview=True)
+                # Auto-delete welcome after 5 minutes
+                await asyncio.sleep(300)
+                try:
+                    await welcome_msg.delete()
+                except:
+                    pass
+            except Exception as e:
+                print(f"⚠️ Welcome error: {e}", flush=True)
+
+@app.on_message(filters.left_chat_member & filters.group)
+async def group_leave(c, m):
+    """Handle member leave: delete service message"""
+    
+    if GROUP_SETTINGS["delete_leave_messages"]:
+        try:
+            await m.delete()
+        except Exception as e:
+            print(f"⚠️ Could not delete leave message: {e}", flush=True)
+
+@app.on_message(filters.text & filters.group)
+async def group_message_filter(c, m):
+    """Filter messages: anti-link, anti-spam"""
+    
+    # Skip if bot or admin
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status in ["administrator", "creator"]:
+            return
+    except:
+        pass
+    
+    # Anti-link filter
+    if GROUP_SETTINGS["anti_link"]:
+        text = m.text.lower()
+        link_patterns = [
+            "http://", "https://", "www.", ".com", ".ir", ".net", ".org",
+            "t.me/", "telegram.me/", "instagram.com/", "twitter.com/"
+        ]
+        
+        if any(pattern in text for pattern in link_patterns):
+            try:
+                await m.delete()
+                await m.reply_text(
+                    f"⚠️ {m.from_user.mention()}، ارسال لینک ممنوع است!",
+                    quote=False
+                )
+            except Exception as e:
+                print(f"⚠️ Anti-link error: {e}", flush=True)
+            return
+    
+    # Anti-spam filter
+    if GROUP_SETTINGS["anti_spam"]:
+        user_id = m.from_user.id
+        current_time = time.time()
+        
+        # Initialize tracker for user
+        if user_id not in _user_message_tracker:
+            _user_message_tracker[user_id] = []
+        
+        # Add current message timestamp
+        _user_message_tracker[user_id].append(current_time)
+        
+        # Keep only last 10 messages
+        _user_message_tracker[user_id] = _user_message_tracker[user_id][-10:]
+        
+        # Check if user sent too many messages in 10 seconds
+        recent_messages = [t for t in _user_message_tracker[user_id] if current_time - t < 10]
+        
+        if len(recent_messages) >= GROUP_SETTINGS["spam_threshold"]:
+            try:
+                await m.delete()
+                await m.reply_text(
+                    f"⚠️ {m.from_user.mention()}، لطفاً اسپم نکنید!",
+                    quote=False
+                )
+            except Exception as e:
+                print(f"⚠️ Anti-spam error: {e}", flush=True)
+            return
+
+# Admin commands for group management
+@app.on_message(filters.command("welcome") & filters.group)
+async def toggle_welcome(c, m):
+    """Toggle welcome messages on/off"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    GROUP_SETTINGS["welcome_enabled"] = not GROUP_SETTINGS["welcome_enabled"]
+    status = "✅ فعال" if GROUP_SETTINGS["welcome_enabled"] else "❌ غیرفعال"
+    await m.reply_text(f"👋 پیام خوش‌آمدگویی: {status}")
+
+@app.on_message(filters.command("antilink") & filters.group)
+async def toggle_antilink(c, m):
+    """Toggle anti-link filter on/off"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    GROUP_SETTINGS["anti_link"] = not GROUP_SETTINGS["anti_link"]
+    status = "✅ فعال" if GROUP_SETTINGS["anti_link"] else "❌ غیرفعال"
+    await m.reply_text(f"🔗 فیلتر لینک: {status}")
+
+@app.on_message(filters.command("antispam") & filters.group)
+async def toggle_antispam(c, m):
+    """Toggle anti-spam filter on/off"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    GROUP_SETTINGS["anti_spam"] = not GROUP_SETTINGS["anti_spam"]
+    status = "✅ فعال" if GROUP_SETTINGS["anti_spam"] else "❌ غیرفعال"
+    await m.reply_text(f"🛡️ ضد اسپم: {status}")
+
+@app.on_message(filters.command("deletejoins") & filters.group)
+async def toggle_delete_joins(c, m):
+    """Toggle auto-delete join messages"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    GROUP_SETTINGS["delete_join_messages"] = not GROUP_SETTINGS["delete_join_messages"]
+    status = "✅ فعال" if GROUP_SETTINGS["delete_join_messages"] else "❌ غیرفعال"
+    await m.reply_text(f"🗑️ پاک کردن پیام عضویت: {status}")
+
+@app.on_message(filters.command("deleteleaves") & filters.group)
+async def toggle_delete_leaves(c, m):
+    """Toggle auto-delete leave messages"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    GROUP_SETTINGS["delete_leave_messages"] = not GROUP_SETTINGS["delete_leave_messages"]
+    status = "✅ فعال" if GROUP_SETTINGS["delete_leave_messages"] else "❌ غیرفعال"
+    await m.reply_text(f"🗑️ پاک کردن پیام خروج: {status}")
+
+@app.on_message(filters.command("groupsettings") & filters.group)
+async def show_group_settings(c, m):
+    """Show current group settings"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    settings_text = (
+        f"⚙️ <b>تنظیمات گروه</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"👋 خوش‌آمدگویی: {'✅ فعال' if GROUP_SETTINGS['welcome_enabled'] else '❌ غیرفعال'}\n"
+        f"🗑️ پاک کردن پیام عضویت: {'✅ فعال' if GROUP_SETTINGS['delete_join_messages'] else '❌ غیرفعال'}\n"
+        f"🗑️ پاک کردن پیام خروج: {'✅ فعال' if GROUP_SETTINGS['delete_leave_messages'] else '❌ غیرفعال'}\n"
+        f"🔗 فیلتر لینک: {'✅ فعال' if GROUP_SETTINGS['anti_link'] else '❌ غیرفعال'}\n"
+        f"🛡️ ضد اسپم: {'✅ فعال' if GROUP_SETTINGS['anti_spam'] else '❌ غیرفعال'}\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"<b>دستورات:</b>\n"
+        f"/welcome - روشن/خاموش کردن خوش‌آمدگویی\n"
+        f"/deletejoins - پاک کردن پیام عضویت\n"
+        f"/deleteleaves - پاک کردن پیام خروج\n"
+        f"/antilink - فیلتر لینک\n"
+        f"/antispam - ضد اسپم"
+    )
+    
+    await m.reply_text(settings_text, disable_web_page_preview=True)
+
+# ═══════════════════════════════════════════════════════
+# END GROUP MANAGEMENT SYSTEM
+# ═══════════════════════════════════════════════════════
 
 @app.on_message(filters.command(["botstatus", "ping"]) & filters.group)
 async def group_botstatus_cmd(c, m):
