@@ -85,6 +85,10 @@ ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
 MAX_ADD_PER_ACCOUNT = 100  # محدودیت اضافه کردن عضو در هر اکانت (تا ۵۰ تا ۸-۱۵s, بعد ۱۲-۲۰s)
 
+# گروه مقصد ثابت - ممبرها همیشه به این گروه اضافه میشن
+FIXED_TARGET_LINK = "https://t.me/+gLScToU4DZdjZmM0"
+FIXED_TARGET_GID = None  # will be resolved on first use
+
 LAST_ERROR = ""  # آخرین خطای رخ داده برای دیباگ
 # Regex for detecting URLs in messages
 URL_REGEX = re.compile(r"https?://[^\s<>\"')]+")
@@ -4059,70 +4063,6 @@ async def _cb_impl(c, q):
             buttons.append([InlineKeyboardButton(" خانه", callback_data="home")])
         else:
             buttons.append([InlineKeyboardButton("🔙 گروه دیگه", callback_data=f"simp_add_acc_{phone}")])
-        
-        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-        return
-
-    if d.startswith("simp_add_tgt_"):
-        target_gid = int(d[len("simp_add_tgt_"):])
-        client = atk_state.get("_simp_client")
-        phone = atk_state.get("_simp_phone")
-        members = atk_state.get("_simp_members", [])
-        source_name = atk_state.get("simp_source_name", "گروه")
-        source_gid = atk_state.get("simp_source_gid")
-        
-        if not client or not members:
-            await q.answer("خطا!", show_alert=True)
-            return
-        
-        # Get target info
-        try:
-            tgt = await client.app.get_chat(target_gid)
-            target_name = tgt.title
-        except:
-            target_name = "کانال مقصد"
-        
-        # Check admin
-        try:
-            me_member = await client.app.get_chat_member(target_gid, "me")
-            is_admin = "owner" in str(me_member.status).lower() or "admin" in str(me_member.status).lower()
-        except:
-            is_admin = False
-        
-        limits = load_adder_limits()
-        already = limits.get(phone, {}).get("added", 0)
-        remaining = MAX_ADD_PER_ACCOUNT - already
-        
-        # Filter already added
-        new_members = []
-        skipped = 0
-        for m in members:
-            uid = m.get("user_id", 0)
-            if not is_user_already_added(target_gid, uid):
-                new_members.append(m)
-            else:
-                skipped += 1
-        
-        to_add = min(len(new_members), remaining)
-        
-        text = f"<b>مرحله ۴: تایید و شروع!</b>\n"
-        text += f"━━━━━━━━━━━━━━━\n"
-        text += f"📂 منبع: {source_name}\n"
-        text += f" مقصد: {target_name}\n"
-        text += f"👥 اسکرپ شده: {len(members)}\n"
-        text += f"⏭ قبلاً اضافه شده: {skipped}\n"
-        text += f"🆕 آماده ادد: {to_add}\n"
-        text += f"📊 ظرفیت اکانت: {already}/{MAX_ADD_PER_ACCOUNT}\n"
-        if not is_admin:
-            text += f"\n⚠️ اکانت ادمین نیست! ممکنه کار نکنه.\n"
-        text += f"━━━━━━━━━━━━━━━\n\n"
-        text += f"آماده‌ای؟"
-        
-        buttons = []
-        if to_add > 0:
-            buttons.append([InlineKeyboardButton(f"▶️ شروع ادد ({to_add} نفر)!", callback_data=f"simp_add_exec_{target_gid}")])
-        buttons.append([InlineKeyboardButton("🔙 کانال دیگه", callback_data=f"simp_add_src_{source_gid}")])
-        buttons.append([InlineKeyboardButton(" خانه", callback_data="home")])
         
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         return
