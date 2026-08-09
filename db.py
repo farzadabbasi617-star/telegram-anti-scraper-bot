@@ -742,3 +742,24 @@ def fav_list():
 
 def is_fav(url):
     return url in fav_list()
+
+
+def delete_user(user_id: int) -> bool:
+    try:
+        cur = get_conn().cursor()
+        cur.execute("DELETE FROM scraped_users WHERE user_id=%s", (int(user_id),))
+        deleted = cur.rowcount > 0
+        cur.close()
+        return deleted
+    except: return False
+
+
+def delete_users_bulk(user_ids: list) -> int:
+    if not user_ids: return 0
+    try:
+        cur = get_conn().cursor()
+        cur.execute("DELETE FROM scraped_users WHERE user_id = ANY(%s)", (list(map(int, user_ids)),))
+        deleted = cur.rowcount
+        cur.close()
+        return deleted
+    except: return 0

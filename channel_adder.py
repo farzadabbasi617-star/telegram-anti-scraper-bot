@@ -50,7 +50,7 @@ os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # حداکثر ادد در هر اکانت (برای جلوگیری از بن)
-MAX_ADD_PER_ACCOUNT = 100
+MAX_ADD_PER_ACCOUNT = 30
 
 # فیلتر user ID معتبر
 MIN_UID = 10_000
@@ -311,20 +311,20 @@ def save_users_csv(users, filename):
 
 async def add_members_to_channel(client, channel_id, channel_name, user_ids, phone):
     """
-    اضافه کردن کاربران به کانال با متد AddContact + InviteToChannel
+    FIXED: Add members to channel with warmup + AddContact + InviteToChannel
     
-    این تنها متدی است که برای کانال‌ها کار میکند.
-    add_chat_members فقط برای گروه/سوپرگروه کار میکند.
+    Improvements:
+    - Scans account's groups first to resolve peers (warmup)
+    - Falls back to direct resolve for remaining users
+    - Progress reporting
+    - Better delay strategy for 30-user limit
     """
     limits = load_add_limits()
     already = limits.get(phone, {}).get("added", 0)
     remaining = MAX_ADD_PER_ACCOUNT - already
 
-    # فیلتر: حذف کاربرای تکراری
-    filtered = []
-    for uid in user_ids:
-        if not is_already_added(channel_id, uid):
-            filtered.append(uid)
+    # Filter: skip already-added
+    filtered = [uid for uid in user_ids if not is_already_added(channel_id, uid)]
     
     total = min(len(filtered), remaining)
     if total == 0:
@@ -338,7 +338,7 @@ async def add_members_to_channel(client, channel_id, channel_name, user_ids, pho
     print(f"📈 ظرفیت: {already}/{MAX_ADD_PER_ACCOUNT}")
     print(f"{'='*50}\n")
 
-    # Resolve target channel یکبار
+    # Resolve target channel once
     try:
         target_peer = await client.resolve_peer(channel_id)
     except Exception as e:
@@ -347,35 +347,74 @@ async def add_members_to_channel(client, channel_id, channel_name, user_ids, pho
 
     added = 0
     failed = 0
+    skipped = 0
     errors = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "channel_admin": 0, "other": 0}
     start_time = time.time()
 
+    # ─── Warmup: scan account's groups to build peer cache ───
+    print(f"🔥 Warmup: scanning groups to resolve peers...", flush=True)
+    valid_peers = {}
+    uid_set_for_warmup = set(filtered[:total])
+    
+    try:
+        async for dialog in client.get_dialogs(limit=200):
+            if "group" in str(dialog.chat.type).lower():
+                try:
+                    async for member in client.get_chat_members(dialog.chat.id, limit=500):
+                        u = member.user
+                        if u and u.id in uid_set_for_warmup:
+                            try:
+                                valid_peers[u.id] = await client.resolve_peer(u.id)
+                            except: pass
+                except: pass
+                await asyncio.sleep(0.3)
+                if len(valid_peers) >= total * 0.8:
+                    break
+        print(f"  ✅ Warmup: {len(valid_peers)}/{total} peers resolved", flush=True)
+    except Exception as we:
+        print(f"  ⚠️ Warmup error: {we}", flush=True)
+
+    # Fallback: direct resolve for remaining
+    for uid in filtered[:total]:
+        if uid not in valid_peers:
+            try:
+                valid_peers[uid] = await client.resolve_peer(uid)
+            except: pass
+            await asyncio.sleep(0.02)
+    
+    print(f"  📊 Total resolved: {len(valid_peers)}/{total}", flush=True)
+
+    # ─── Main add loop ───
     for i, uid in enumerate(filtered[:total]):
         try:
-            # ─── Step 1: Resolve user ───
-            try:
-                user_peer = await client.resolve_peer(uid)
-            except Exception:
-                failed += 1
-                errors["peer"] += 1
-                continue
+            # Get peer from warmup cache or resolve directly
+            if uid in valid_peers:
+                user_peer = valid_peers[uid]
+            else:
+                try:
+                    user_peer = await client.resolve_peer(uid)
+                    valid_peers[uid] = user_peer
+                except Exception:
+                    failed += 1
+                    errors["peer"] += 1
+                    skipped += 1
+                    continue
 
-            # ─── Step 2: Add to contacts ───
+            # AddContact (needed for channel invite)
             try:
                 await client.invoke(
                     AddContact(
                         id=user_peer,
-                        first_name=str(uid),
+                        first_name=str(uid)[:30],
                         last_name="",
                         phone="",
                         add_phone_privacy_exception=False
                     )
                 )
-                await asyncio.sleep(0.5)
-            except Exception:
-                pass  # قبلاً در مخاطبین هست یا خطای بی‌ضرر
+                await asyncio.sleep(0.3)
+            except: pass  # already in contacts
 
-            # ─── Step 3: Invite to channel ───
+            # InviteToChannel
             await client.invoke(
                 InviteToChannel(
                     channel=target_peer,
@@ -386,14 +425,14 @@ async def add_members_to_channel(client, channel_id, channel_name, user_ids, pho
             added += 1
             mark_added(channel_id, channel_name, uid)
 
-            # آپدیت محدودیت
+            # Update limits
             limits[phone] = {"added": already + added, "last_used": int(time.time())}
             save_add_limits(limits)
 
         except FloodWait as fw:
             failed += 1
             errors["flood"] += 1
-            print(f"  ⏱️ FloodWait {fw.value}s — صبر...")
+            print(f"  ⏱️ FloodWait {fw.value}s — صبر...", flush=True)
             await asyncio.sleep(fw.value + 5)
             continue
 
@@ -411,10 +450,10 @@ async def add_members_to_channel(client, channel_id, channel_name, user_ids, pho
             continue
 
         except (ChatAdminRequired, ChannelPrivate):
-            print(f"\n❌ ادمین نیستی یا کانال پرایوته!")
+            print(f"\n❌ ادمین نیستی یا کانال پرایوته!", flush=True)
             failed += 1
             errors["channel_admin"] += 1
-            break  # ادامه فایده نداره
+            break
 
         except UsersTooMuch:
             failed += 1
@@ -435,35 +474,28 @@ async def add_members_to_channel(client, channel_id, channel_name, user_ids, pho
             await asyncio.sleep(random.randint(2, 5))
             continue
 
-        # ─── Progress ───
+        # Progress
         done = added + failed
         elapsed = int(time.time() - start_time)
         mins, secs = elapsed // 60, elapsed % 60
         speed = int(added / (elapsed / 60)) if elapsed > 30 else 0
         pct = int(done * 100 / total) if total > 0 else 0
-
         bar_filled = pct // 5
         bar = "█" * bar_filled + "░" * (20 - bar_filled)
 
-        print(
-            f"  [{bar}] {pct}% | "
-            f"✅ {added} ❌ {failed} | "
-            f"⏱ {mins:02d}:{secs:02d} | "
-            f"⚡ {speed}/min | "
-            f"UID: {uid}"
-        )
+        print(f"  [{bar}] {pct}% | ✅ {added} ❌ {failed} | ⏱ {mins:02d}:{secs:02d} | UID: {uid}", flush=True)
 
-        # ─── Delay between adds ───
+        # Delay (adjusted for 30-user limit)
         total_done = already + added
-        if total_done > 80:
-            delay = random.randint(15, 25)  # خیلی آهسته نزدیک سقف
-        elif total_done > 50:
-            delay = random.randint(10, 18)  # متوسط
+        if total_done > 25:
+            delay = random.randint(12, 20)
+        elif total_done > 15:
+            delay = random.randint(8, 15)
         else:
-            delay = random.randint(7, 13)   # نرمال
+            delay = random.randint(5, 10)
         await asyncio.sleep(delay)
 
-    # ─── گزارش نهایی ───
+    # Final report
     elapsed = int(time.time() - start_time)
     mins, secs = elapsed // 60, elapsed % 60
 
@@ -472,11 +504,12 @@ async def add_members_to_channel(client, channel_id, channel_name, user_ids, pho
     print(f"{'='*50}")
     print(f"✅ اضافه شده: {added}")
     print(f"❌ ناموفق:    {failed}")
+    print(f"⏭ رد شده:    {skipped}")
     print(f"⏱ زمان:       {mins:02d}:{secs:02d}")
     print(f"📊 ظرفیت:     {already + added}/{MAX_ADD_PER_ACCOUNT}")
 
     if failed > 0:
-        print(f"\n📋 دلایل خطا:")
+        print(f"\n دلایل خطا:")
         if errors["peer"]:    print(f"   🔍 Peer Invalid: {errors['peer']}")
         if errors["privacy"]: print(f"   🔒 Privacy:      {errors['privacy']}")
         if errors["already"]: print(f"   👥 قبلاً عضو:     {errors['already']}")
@@ -485,6 +518,7 @@ async def add_members_to_channel(client, channel_id, channel_name, user_ids, pho
 
     print(f"{'='*50}\n")
     return added, failed
+
 
 
 # ══════════════════════════════════════════════
