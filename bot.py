@@ -6101,29 +6101,41 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             break
         
         try:
-            # Method 1: Try resolve_peer (uses Pyrogram's internal cache)
             user_peer = None
-            try:
-                user_peer = await client.app.resolve_peer(uid)
-            except Exception:
-                pass
             
-            # Method 2: If resolve_peer failed, try with access_hash=0
+            # 🏆 Method 1: Username (BEST - always works if username exists)
+            username = member.get("username", "").strip()
+            if username:
+                try:
+                    # Remove @ if present
+                    clean_username = username.lstrip("@")
+                    user_peer = await client.app.resolve_peer(clean_username)
+                except Exception:
+                    pass  # Fall through to next method
+            
+            # Method 2: Try resolve_peer with user_id (works if in cache)
+            if user_peer is None:
+                try:
+                    user_peer = await client.app.resolve_peer(uid)
+                except Exception:
+                    pass
+            
+            # Method 3: access_hash from member data (if saved during scrape)
+            if user_peer is None and member.get("access_hash"):
+                try:
+                    user_peer = InputPeerUser(user_id=uid, access_hash=int(member["access_hash"]))
+                except:
+                    pass
+            
+            # Method 4: Last resort - access_hash=0 (rarely works)
             if user_peer is None:
                 try:
                     user_peer = InputPeerUser(user_id=uid, access_hash=0)
                 except:
                     skipped += 1
                     errors_detail["peer"] += 1
-                    if not first_error: first_error = f"Can't resolve {uid}"
+                    if not first_error: first_error = f"Can't resolve {uid} (no username)"
                     continue
-            
-            # Method 3: Try username if available
-            if user_peer is None and member.get("username"):
-                try:
-                    user_peer = await client.app.resolve_peer(member["username"])
-                except:
-                    pass
             
             if user_peer is None:
                 skipped += 1
