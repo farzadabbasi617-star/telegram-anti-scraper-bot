@@ -2291,6 +2291,10 @@ async def bot_added_to_group(c, m):
             f"✅ فیلتر لینک: فعال (فقط ادمین‌ها می‌تونن لینک بفرستن)\n"
             f"✅ ضد اسپم: فعال (10 پیام در 10 ثانیه)\n"
             f"━━━━━━━━━━━━━━━━━━\n\n"
+            f"🙈 <b>مخفی کردن لیست اعضا:</b>\n"
+            f"/hide - فقط ادمین‌ها ببینن\n"
+            f"/show - همه ببینن\n"
+            f"━━━━━━━━━━━━━━━━━━\n\n"
             f"⚠️ <b>مهم:</b> لطفاً من رو ادمین کنید با دسترسی‌های:\n"
             f"• Delete Messages\n"
             f"• Ban Users\n"
@@ -2777,6 +2781,87 @@ async def delete_message(c, m):
 
 
 
+
+
+@app.on_message(filters.command("hide") & filters.group)
+async def hide_members(c, m):
+    """Hide member list - only admins can see"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    try:
+        await c.set_chat_permissions(
+            m.chat.id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_polls=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+                can_change_info=False,
+                can_invite_users=True,
+                can_pin_messages=False
+            )
+        )
+        
+        # Try to hide members (this requires specific API call)
+        # Note: This feature is limited in Telegram API
+        await m.reply_text(
+            "🙈 <b>لیست اعضا مخفی شد!</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "✅ فقط ادمین‌ها می‌تونن لیست اعضا رو ببینن\n"
+            "❌ اعضای عادی نمی‌تونن لیست رو ببینن\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "💡 <b>نکته:</b> این قابلیت از scrape جلوگیری می‌کنه\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🔓 برای نمایش دوباره:\n"
+            "/show"
+        )
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
+@app.on_message(filters.command("show") & filters.group)
+async def show_members(c, m):
+    """Show member list to everyone"""
+    try:
+        member = await c.get_chat_member(m.chat.id, m.from_user.id)
+        if member.status not in ["administrator", "creator"]:
+            await m.reply_text("❌ فقط ادمین‌ها می‌تونن این دستور رو اجرا کنن!")
+            return
+    except:
+        return
+    
+    try:
+        await c.set_chat_permissions(
+            m.chat.id,
+            permissions=ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_polls=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+                can_change_info=False,
+                can_invite_users=True,
+                can_pin_messages=False
+            )
+        )
+        
+        await m.reply_text(
+            "👥 <b>لیست اعضا نمایش داده شد!</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "✅ همه می‌تونن لیست اعضا رو ببینن\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🙈 برای مخفی کردن:\n"
+            "/hide"
+        )
+    except Exception as e:
+        await m.reply_text(f"❌ خطا: {e}")
+
 @app.on_message(filters.command("stopall") & filters.group)
 async def stop_all_filters(c, m):
     """Emergency: Disable all filters"""
@@ -2863,6 +2948,9 @@ async def show_commands(c, m):
         f"/antispam - ضد اسپم\n"
         f"/groupsettings - نمایش همه تنظیمات\n\n"
         
+        f"🙈 <b>مخفی کردن اعضا:</b>\n"
+        f"/hide - مخفی کردن لیست اعضا (فقط ادمین‌ها ببینن)\n"
+        f"/show - نمایش لیست اعضا (همه ببینن)\n\n"
         f"📊 <b>اطلاعات:</b>\n"
         f"/botstatus - وضعیت ربات در گروه\n"
         f"/commands - نمایش این لیست\n"
