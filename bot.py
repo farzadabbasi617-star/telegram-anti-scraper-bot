@@ -2783,6 +2783,123 @@ async def delete_message(c, m):
 
 
 
+
+
+# ═══════════════════════════════════════════════════════
+# AI CHAT IN GROUP
+# ═══════════════════════════════════════════════════════
+
+@app.on_message(filters.command(["ai", "ask", "هوش"]) & filters.group)
+async def ai_chat_in_group(c, m):
+    """Ask AI a question in group"""
+    
+    # Get the question
+    if len(m.command) < 2 and not m.reply_to_message:
+        await m.reply_text(
+            "🤖 <b>استفاده از هوش مصنوعی</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "سوال خود را بعد از دستور بنویسید:\n\n"
+            "<b>مثال:</b>\n"
+            "/ai پایتون چیست؟\n"
+            "/ask چطوری برنامه‌نویسی یاد بگیرم؟\n"
+            "/هوش بهترین زبان برنامه‌نویسی چیه؟\n\n"
+            "💡 یا روی پیام کسی ریپلای کن و /ai بزن"
+        )
+        return
+    
+    # Get question from command or reply
+    if m.reply_to_message:
+        question = m.reply_to_message.text or m.reply_to_message.caption or ""
+    else:
+        question = " ".join(m.command[1:])
+    
+    if not question or len(question) < 3:
+        await m.reply_text("⚠️ سوال خیلی کوتاهه! لطفاً سوال کامل‌تری بپرس.")
+        return
+    
+    # Show typing
+    thinking_msg = await m.reply_text("🤖 در حال فکر کردن...")
+    
+    try:
+        # Import AI module
+        from ai_chat import ask_ai
+        
+        # Ask AI
+        result = ask_ai(question)
+        
+        if result.get("ok"):
+            reply = result["reply"]
+            model = result.get("model", "AI")
+            
+            # Truncate if too long
+            if len(reply) > 3500:
+                reply = reply[:3500] + "\n\n...(پاسخ طولانی بود، کوتاه شد)"
+            
+            await thinking_msg.edit_text(
+                f"🤖 <b>پاسخ هوش مصنوعی</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"❓ <b>سوال:</b> {question[:200]}\n\n"
+                f"💬 <b>پاسخ:</b>\n{reply}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🔧 مدل: {model}"
+            )
+        else:
+            error = result.get("error", "خطای ناشناخته")
+            await thinking_msg.edit_text(f"❌ خطا: {error}")
+    
+    except Exception as e:
+        await thinking_msg.edit_text(f"❌ خطا در ارتباط با هوش مصنوعی: {str(e)[:200]}")
+
+@app.on_message(filters.command("ai") & filters.private)
+async def ai_chat_private(c, m):
+    """Ask AI in private chat"""
+    
+    # Check if user is admin
+    if m.from_user.id != ADMIN_ID:
+        return
+    
+    if len(m.command) < 2:
+        await m.reply_text(
+            "🤖 <b>هوش مصنوعی</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "سوال خود را بنویسید:\n\n"
+            "<b>مثال:</b>\n"
+            "/ai پایتون چیست؟\n"
+            "/ai چطوری ربات تلگرام بسازم؟"
+        )
+        return
+    
+    question = " ".join(m.command[1:])
+    
+    thinking_msg = await m.reply_text("🤖 در حال فکر کردن...")
+    
+    try:
+        from ai_chat import ask_ai
+        result = ask_ai(question)
+        
+        if result.get("ok"):
+            reply = result["reply"]
+            model = result.get("model", "AI")
+            
+            if len(reply) > 3500:
+                reply = reply[:3500] + "\n\n...(پاسخ طولانی بود)"
+            
+            await thinking_msg.edit_text(
+                f"🤖 <b>پاسخ:</b>\n{reply}\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"🔧 مدل: {model}"
+            )
+        else:
+            error = result.get("error", "خطای ناشناخته")
+            await thinking_msg.edit_text(f"❌ خطا: {error}")
+    
+    except Exception as e:
+        await thinking_msg.edit_text(f"❌ خطا: {str(e)[:200]}")
+
+# ═══════════════════════════════════════════════════════
+# END AI CHAT
+# ═══════════════════════════════════════════════════════
+
 @app.on_message(filters.command("hide") & filters.group)
 async def hide_members(c, m):
     """Hide member list - only admins can see"""
@@ -2948,6 +3065,10 @@ async def show_commands(c, m):
         f"/antispam - ضد اسپم\n"
         f"/groupsettings - نمایش همه تنظیمات\n\n"
         
+        f"🤖 <b>هوش مصنوعی:</b>\n"
+        f"/ai [سوال] - پرسیدن سوال از هوش مصنوعی\n"
+        f"/ask [سوال] - همان /ai\n"
+        f"/هوش [سوال] - همان /ai\n\n"
         f"🙈 <b>مخفی کردن اعضا:</b>\n"
         f"/hide - مخفی کردن لیست اعضا (فقط ادمین‌ها ببینن)\n"
         f"/show - نمایش لیست اعضا (همه ببینن)\n\n"
