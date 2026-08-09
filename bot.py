@@ -4039,27 +4039,30 @@ async def _cb_impl(c, q):
         atk_state["_simp_members"] = members
         atk_state["simp_source_count"] = len(members)
         
-        # Load channels for target selection
-        channels = []
+        # Load channels AND groups (supergroups) for target selection
+        targets = []
         try:
             async for dialog in client.app.get_dialogs(limit=500):
-                if "channel" in str(dialog.chat.type).lower():
+                chat_type = str(dialog.chat.type).lower()
+                # Include both channels and supergroups (not basic groups)
+                if "channel" in chat_type or "supergroup" in chat_type:
                     cnt = getattr(dialog.chat, "members_count", 0) or 0
-                    channels.append((dialog.chat.title, dialog.chat.id, cnt))
+                    icon = "📡" if "channel" in chat_type else "👥"
+                    targets.append((dialog.chat.title, dialog.chat.id, cnt, icon))
         except: pass
         
         text = f"✅ اسکرپ کامل شد!\n"
         text += f"━━━━━━━━━━━━━━━\n"
         text += f"📂 منبع: {source_name}\n"
         text += f"👥 اعضا: {len(members)} نفر\n\n"
-        text += "<b>مرحله ۳: کانال مقصد را انتخاب کن</b>\n"
+        text += "<b>مرحله ۳: کانال یا گروه مقصد را انتخاب کن</b>\n"
         
         buttons = []
-        for cname, cid, ccnt in sorted(channels, key=lambda x:-x[2])[:15]:
-            buttons.append([InlineKeyboardButton(f"📡 {cname[:28]} ({ccnt:,})", callback_data=f"simp_add_tgt_{cid}")])
+        for tname, tid, tcnt, icon in sorted(targets, key=lambda x:-x[2])[:20]:
+            buttons.append([InlineKeyboardButton(f"{icon} {tname[:28]} ({tcnt:,})", callback_data=f"simp_add_tgt_{tid}")])
         
-        if not channels:
-            text += "\n⚠️ کانالی پیدا نشد!"
+        if not targets:
+            text += "\n⚠️ کانال یا گروهی پیدا نشد!"
             buttons.append([InlineKeyboardButton(" خانه", callback_data="home")])
         else:
             buttons.append([InlineKeyboardButton("🔙 گروه دیگه", callback_data=f"simp_add_acc_{phone}")])
