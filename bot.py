@@ -1395,7 +1395,7 @@ async def _execute_direct_add(q, target_gid):
                     except Exception as re:
                         # Skip this user - can't resolve
                         failed += 1
-                        errors["peer"] += 1
+                        errors_detail["peer"] += 1
                         if not first_error: first_error = f"Can't resolve {uid}"
                         continue
 
