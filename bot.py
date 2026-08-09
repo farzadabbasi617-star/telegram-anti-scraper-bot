@@ -6454,16 +6454,21 @@ async def _steps_impl(c, m):
             try:
                 sent = await acc_client.app.send_code(phone)
                 atk_state["hash"] = sent.phone_code_hash
-                await st.edit_text(
-                    "⏰ کد قبلی منقضی شده بود — کد جدید ارسال شد!\n\n"
+                # Use reply instead of edit to avoid MESSAGE_NOT_MODIFIED
+                await m.reply_text(
+                    "⏰ <b>کد قبلی منقضی شده بود</b>\n\n"
+                    "✅ <b>کد جدید ارسال شد!</b>\n\n"
                     "📱 <b>کد ۵ رقمی جدید رو وارد کن:</b>\n\n"
                     "⏱️ <b>۵ دقیقه فرصت داری!</b> سریع باش\n"
                     "💡 نکته: کد SMS ممکنه ۳۰-۶۰ ثانیه طول بکشه",
-                    disable_web_page_preview=True)
+                    disable_web_page_preview=True
+                )
             except Exception as e2:
-                # Use reply to avoid MESSAGE_NOT_MODIFIED
-                await m.reply_text(f"❌ خطا در ارسال مجدد کد: {str(e2)[:200]}\nلطفاً از منو دوباره شروع کنید.", reply_markup=main_menu())
-                atk_state.clear()
+                await m.reply_text(
+                    f"❌ خطا در ارسال مجدد کد: {str(e2)[:200]}\n\n"
+                    "لطفاً از منو دوباره شروع کنید.",
+                    reply_markup=main_menu()
+                )
                 atk_state.clear()
             return
         except Exception as e:
@@ -6594,9 +6599,12 @@ async def _steps_impl(c, m):
             try:
                 sent = await new_client.app.send_code(phone)
                 atk_state["hash"] = sent.phone_code_hash
-                await st.edit_text("⏰ کد منقضی شده بود — کد جدید ارسال شد!\n📱 کد ۵ رقمی جدید رو بفرست:")
+                await m.reply_text(
+                    "⏰ <b>کد منقضی شده بود</b>\n\n"
+                    "✅ <b>کد جدید ارسال شد!</b>\n"
+                    "📱 کد ۵ رقمی جدید رو بفرست:"
+                )
             except Exception as e2:
-                # Use reply to avoid MESSAGE_NOT_MODIFIED
                 await m.reply_text(f"❌ خطا در ارسال مجدد: {str(e2)[:200]}", reply_markup=main_menu())
                 atk_state.clear()
             return
@@ -6751,9 +6759,11 @@ async def _steps_impl(c, m):
             try:
                 sent = await atk.app.send_code(phone)
                 atk_state["hash"] = sent.phone_code_hash
-                await st.edit_text("⏰ کد جدید ارسال شد! کد ۵ رقمی رو بفرست:")
+                await m.reply_text(
+                    "⏰ <b>کد جدید ارسال شد!</b>\n"
+                    "📱 کد ۵ رقمی رو بفرست:"
+                )
             except Exception as e2:
-                # Use reply to avoid MESSAGE_NOT_MODIFIED
                 await m.reply_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
                 atk_state.clear()
             return
@@ -6893,9 +6903,11 @@ async def _steps_impl(c, m):
             try:
                 sent = await add_client.app.send_code(phone)
                 atk_state["hash"] = sent.phone_code_hash
-                await st.edit_text("⏰ کد جدید ارسال شد! کد ۵ رقمی رو بفرست:")
+                await m.reply_text(
+                    "⏰ <b>کد جدید ارسال شد!</b>\n"
+                    "📱 کد ۵ رقمی رو بفرست:"
+                )
             except Exception as e2:
-                # Use reply to avoid MESSAGE_NOT_MODIFIED
                 await m.reply_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
                 atk_state.clear()
             return
