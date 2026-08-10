@@ -3733,6 +3733,27 @@ async def _cb_impl(c, q):
         await q.message.edit_text(q.message.text + f"\n\n✅ فیلتر منبع اعمال شد", reply_markup=main_menu())
         return
 
+    if d == "stop_parallel_add":
+        # Set stop flag
+        stop_flag = atk_state.get("stop_parallel_add")
+        if stop_flag:
+            stop_flag["stop"] = True
+            print("⏹️ Stop flag set for parallel add", flush=True)
+        
+        await q.answer("⏹️ توقف درخواست شد، چند لحظه صبر کنید...", show_alert=False)
+        
+        # Update message
+        try:
+            await q.message.edit_text(
+                "⏹️ <b>توقف درخواست شد</b>\n\n"
+                "در حال متوقف کردن عملیات...\n"
+                "لطفاً صبر کنید تا اکانت فعلی کارش تمام شود.",
+                reply_markup=None
+            )
+        except:
+            pass
+        return
+
     if d == "stop_op":
         # درخواست توقف هر عملیات در حال اجرا
         for obj in ["atk", "new_acc_client", "new_client", "add_client"]:
@@ -7954,8 +7975,14 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     # Use sequential execution instead of threading (Pyrogram has issues with threads)
     results = []
     completed = 0
+    total_added = 0
+    total_failed = 0
+    total_skipped = 0
     
-    # Update progress message
+    # Global stop flag
+    stop_flag = {"stop": False}
+    
+    # Update progress message with stop button
     try:
         await q.message.edit_text(
             f"🚀 <b>شروع اد موازی</b>\n"
@@ -7966,24 +7993,75 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             f"📱 {num_accounts} اکانت\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"⏳ در حال پردازش اکانت‌ها...\n"
-            f"✅ تکمیل شده: 0/{num_accounts}"
+            f"✅ تکمیل شده: 0/{num_accounts}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⏹️ توقف", callback_data="stop_parallel_add")]
+            ])
         )
     except:
         pass
     
+    # Store stop flag globally
+    atk_state["stop_parallel_add"] = stop_flag
+    
+    # Track remaining members for redistribution
+    remaining_members = list(members)
+    
     # Execute accounts sequentially (more reliable than threading)
     for i, (phone, info) in enumerate(accs.items()):
+        # Check stop flag
+        if stop_flag.get("stop"):
+            print(f"⏹️ Stop requested, stopping parallel add", flush=True)
+            break
+        
         if phone in account_members:
-            print(f"📱 Processing {phone} ({i+1}/{num_accounts})", flush=True)
+            # Get members for this account (use remaining capacity)
+            limits = load_adder_limits()
+            already_added = limits.get(phone, {}).get("added", 0)
+            capacity = MAX_ADD_PER_ACCOUNT - already_added
+            
+            if capacity <= 0:
+                print(f"⚠️ {phone} has no remaining capacity (already added {already_added})", flush=True)
+                results.append((phone, 0, 0, 0))
+                completed += 1
+                continue
+            
+            # Take members up to capacity
+            member_list = remaining_members[:capacity]
+            remaining_members = remaining_members[capacity:]
+            
+            print(f"📱 Processing {phone} ({i+1}/{num_accounts}) - capacity: {capacity}, members: {len(member_list)}", flush=True)
+            
+            # Update progress before starting
+            try:
+                await q.message.edit_text(
+                    f"🚀 <b>اد موازی در حال اجرا</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ تکمیل شده: {completed}/{num_accounts}\n"
+                    f"📱 در حال کار: {phone}\n"
+                    f"📊 ظرفیت: {capacity}\n"
+                    f"━━━━━━━━━━━━━━━━━━\n"
+                    f"✅ اضافه شده: {total_added}\n"
+                    f"❌ خطا: {total_failed}\n"
+                    f"⏭️ رد شده: {total_skipped}",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("⏹️ توقف", callback_data="stop_parallel_add")]
+                    ])
+                )
+            except:
+                pass
             
             try:
                 # Run each account in current event loop
-                result = await add_with_account_async(phone, info, account_members[phone])
+                result = await add_with_account_async(phone, info, member_list)
                 results.append(result)
                 completed += 1
-                print(f"✅ {phone} completed: {result[1]} added, {result[2]} failed", flush=True)
+                total_added += result[1]
+                total_failed += result[2]
+                total_skipped += result[3]
+                print(f"✅ {phone} completed: {result[1]} added, {result[2]} failed, {result[3]} skipped", flush=True)
                 
-                # Update progress
+                # Update progress after completion
                 try:
                     await q.message.edit_text(
                         f"🚀 <b>اد موازی در حال اجرا</b>\n"
@@ -7991,7 +8069,13 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                         f"✅ تکمیل شده: {completed}/{num_accounts}\n"
                         f"📱 آخرین اکانت: {phone}\n"
                         f"✅ اضافه شده: {result[1]}\n"
-                        f"⏳ در حال پردازش..."
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"✅ کل اضافه شده: {total_added}\n"
+                        f"❌ کل خطا: {total_failed}\n"
+                        f"⏭️ کل رد شده: {total_skipped}",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("⏹️ توقف", callback_data="stop_parallel_add")]
+                        ])
                     )
                 except:
                     pass
