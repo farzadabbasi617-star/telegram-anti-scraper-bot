@@ -7730,15 +7730,38 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
         """Add members with one account"""
         from pyrogram import Client
         from attacker import safe_phone_filename as spfn
+        import shutil
+        import tempfile
+        
         fp = info.get("device_fp") or random.choice(DEVICE_FP)
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
         
         print(f"🔐 [{phone}] Starting connection...", flush=True)
         
+        # Copy session file to temp location to avoid disk I/O conflicts
+        temp_dir = tempfile.mkdtemp()
+        temp_sess_name = f"temp_{spfn(phone)}_{int(time.time())}"
+        temp_sess_path = os.path.join(temp_dir, temp_sess_name)
+        
         try:
-            # Use Pyrogram Client directly
+            # Copy session file and remove WAL/journal files
+            if os.path.exists(sess_path + ".session"):
+                shutil.copy2(sess_path + ".session", temp_sess_path + ".session")
+                print(f"📋 [{phone}] Copied session to temp: {temp_sess_path}", flush=True)
+                
+                # Remove any WAL/journal files from temp
+                for ext in [".session-wal", ".session-journal", ".session-shm"]:
+                    temp_file = temp_sess_path + ext
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+                        print(f"🗑️ [{phone}] Removed {ext} from temp", flush=True)
+            else:
+                print(f"⚠️ [{phone}] Session file not found: {sess_path}.session", flush=True)
+                raise Exception(f"Session file not found for {phone}")
+            
+            # Use Pyrogram Client with temp session
             client = Client(
-                sess_path,
+                temp_sess_path,
                 api_id=API_ID,
                 api_hash=API_HASH,
                 phone_number=phone,
@@ -7854,6 +7877,14 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                 print(f"✅ [{phone}] Disconnected", flush=True)
             except:
                 pass
+            
+            # Clean up temp directory
+            try:
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir)
+                    print(f"🧹 [{phone}] Cleaned up temp directory", flush=True)
+            except Exception as e:
+                print(f"⚠️ [{phone}] Failed to clean temp: {e}", flush=True)
             
             return phone, added, failed, skipped
         
