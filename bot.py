@@ -231,8 +231,13 @@ async def safe_connect_with_recovery(client, phone, max_retries=3):
             await client.connect()
             
             # Test connection
-            me = await client.get_me()
-            print(f"✅ Connected: {me.first_name}", flush=True)
+            try:
+                me = await client.get_me()
+                print(f"✅ Connected: {me.first_name}", flush=True)
+            except AttributeError:
+                # AdvancedScraper doesn't have get_me, use app.get_me
+                me = await client.app.get_me()
+                print(f"✅ Connected: {me.first_name}", flush=True)
             return True
             
         except Exception as e:
@@ -7943,7 +7948,10 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                         if i < 3:  # Only verify first 3 to avoid too many API calls
                             try:
                                 await asyncio.sleep(1)  # Wait a bit for Telegram to update
-                                member_check = await client.get_chat_member(target_chat.id, uid)
+                                try:
+                                    member_check = await client.get_chat_member(target_chat.id, uid)
+                                except AttributeError:
+                                    member_check = await client.app.get_chat_member(target_chat.id, uid)
                                 if member_check and member_check.status in ["member", "administrator", "creator"]:
                                     print(f"✅ [{phone}] Verified: {uid} is in the group!", flush=True)
                                 else:
