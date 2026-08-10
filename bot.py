@@ -7844,24 +7844,42 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                     if username:
                         try:
                             clean_username = username.lstrip("@")
+                            if i < 3:
+                                print(f"🔍 [{phone}] Resolving @{clean_username}...", flush=True)
                             user_peer = await client.app.resolve_peer(clean_username)
-                        except:
+                            if i < 3:
+                                print(f"✅ [{phone}] Resolved @{clean_username}", flush=True)
+                        except Exception as e:
+                            if i < 3:
+                                print(f"❌ [{phone}] Failed to resolve @{clean_username}: {e}", flush=True)
                             pass
                     
                     if user_peer is None:
                         try:
+                            if i < 3:
+                                print(f"🔍 [{phone}] Resolving UID {uid}...", flush=True)
                             user_peer = await client.app.resolve_peer(uid)
-                        except:
+                            if i < 3:
+                                print(f"✅ [{phone}] Resolved UID {uid}", flush=True)
+                        except Exception as e:
+                            if i < 3:
+                                print(f"❌ [{phone}] Failed to resolve UID {uid}: {e}", flush=True)
                             pass
                     
                     if user_peer is None:
                         skipped += 1
+                        if i < 3:
+                            print(f"⏭️ [{phone}] Skipped {uid}: could not resolve peer", flush=True)
                         continue
                     
                     # Invite to channel
+                    if i < 3:
+                        print(f"📨 [{phone}] Inviting {uid} to channel...", flush=True)
                     await client.invoke(
                         InviteToChannel(channel=target_peer, users=[user_peer])
                     )
+                    if i < 3:
+                        print(f"✅ [{phone}] Successfully invited {uid}!", flush=True)
                     
                     added += 1
                     mark_user_as_added(target_gid, "", uid)
