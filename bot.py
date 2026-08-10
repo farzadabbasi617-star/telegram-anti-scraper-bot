@@ -7723,6 +7723,7 @@ async def _do_quick_add(q, gid, gname, uid_list, client, phone):
 async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     """Execute parallel add with multiple accounts using threading to avoid disk I/O conflicts"""
     from pyrogram.raw.functions.channels import InviteToChannel
+    from pyrogram.raw.functions.contacts import AddContact
     from pyrogram.raw.types import InputPeerUser
     from pyrogram.errors import FloodWait, PeerIdInvalid, UserAlreadyParticipant
     from pyrogram.errors import UserPrivacyRestricted, UserNotMutualContact
@@ -7901,6 +7902,29 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                         if i < 3:
                             print(f"⏭️ [{phone}] Skipped {uid}: could not resolve peer", flush=True)
                         continue
+                    
+                    # Add to contacts first (required for successful invite)
+                    if i < 3:
+                        print(f"📇 [{phone}] Adding {uid} to contacts...", flush=True)
+                    try:
+                        await client.invoke(
+                            AddContact(
+                                id=user_peer,
+                                first_name=str(uid)[:30],
+                                last_name="",
+                                phone="",
+                                add_phone_privacy_exception=False
+                            )
+                        )
+                        if i < 3:
+                            print(f"✅ [{phone}] Added {uid} to contacts", flush=True)
+                    except Exception as contact_error:
+                        if i < 3:
+                            print(f"⚠️ [{phone}] Contact add failed (continuing): {type(contact_error).__name__}", flush=True)
+                        # Continue anyway - contact might already exist
+                    
+                    # Small delay after adding contact
+                    await asyncio.sleep(0.5)
                     
                     # Invite to channel
                     print(f"📨 [{phone}] Inviting {uid} to channel...", flush=True)
