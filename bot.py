@@ -7870,14 +7870,14 @@ if __name__ == "__main__":
             print(f"webhook clear err: {_e}", flush=True)
     Thread(target=run_health, daemon=True).start()
     Thread(target=keep_awake_loop, daemon=True).start()
-    # Run with retry on FloodWait
-    while True:
-        try:
-                # Start auto-reset background task
+    # Start auto-reset background task
     asyncio.create_task(auto_reset_adder_limits())
     print("✅ Auto-reset task started (resets every 24h)", flush=True)
     
-app.run()
+    # Run with retry on FloodWait
+    while True:
+        try:
+            app.run()
             break
         except Exception as e:
             msg = str(e)
