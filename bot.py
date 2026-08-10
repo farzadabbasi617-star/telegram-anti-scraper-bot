@@ -7751,23 +7751,32 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
         fp = info.get("device_fp") or random.choice(DEVICE_FP)
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
         
+        print(f"🔐 [{phone}] Starting connection...", flush=True)
+        
         try:
-            # Use Pyrogram Client directly to avoid AdvancedScraper's asyncio.Lock issues
+            # Use Pyrogram Client directly
             client = Client(
                 sess_path,
                 api_id=API_ID,
                 api_hash=API_HASH,
+                phone_number=phone,
                 device_model=fp.get("device_model", "Unknown"),
                 system_version=fp.get("system_version", "Unknown"),
                 app_version=fp.get("app_version", "1.0"),
                 lang_code=fp.get("lang_code", "en")
             )
             
-            # Connect without WAL mode
-            await client.connect()
+            print(f"🔗 [{phone}] Connecting...", flush=True)
+            
+            # Start the client (handles authentication from session file)
+            await client.start()
+            
+            print(f"✅ [{phone}] Connected successfully", flush=True)
             
             # Resolve target
+            print(f"🎯 [{phone}] Resolving target...", flush=True)
             target_peer = await client.resolve_peer(target_gid)
+            print(f"✅ [{phone}] Target resolved", flush=True)
             
             # Check limits
             limits = load_adder_limits()
@@ -7853,7 +7862,9 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                     await asyncio.sleep(random.randint(2, 5))
             
             try:
-                await client.disconnect()
+                print(f"🔌 [{phone}] Disconnecting...", flush=True)
+                await client.stop()
+                print(f"✅ [{phone}] Disconnected", flush=True)
             except:
                 pass
             
