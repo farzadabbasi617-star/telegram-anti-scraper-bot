@@ -7783,10 +7783,18 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             
             print(f"✅ [{phone}] Connected successfully", flush=True)
             
-            # Resolve target
+            # Resolve target using username (more reliable than ID)
             print(f"🎯 [{phone}] Resolving target...", flush=True)
-            target_peer = await client.resolve_peer(target_gid)
-            print(f"✅ [{phone}] Target resolved", flush=True)
+            try:
+                # Try to get chat by username first
+                target_chat = await client.get_chat(f"@{DEFAULT_TARGET_USERNAME}")
+                target_peer = await client.resolve_peer(target_chat.id)
+                print(f"✅ [{phone}] Target resolved via username: {target_chat.title}", flush=True)
+            except Exception as e:
+                print(f"⚠️ [{phone}] Username resolve failed, trying ID: {e}", flush=True)
+                # Fallback to ID
+                target_peer = await client.resolve_peer(target_gid)
+                print(f"✅ [{phone}] Target resolved via ID", flush=True)
             
             # Check limits
             limits = load_adder_limits()
