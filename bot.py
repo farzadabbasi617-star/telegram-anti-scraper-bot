@@ -7900,22 +7900,34 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                     
                 except FloodWait as fw:
                     failed += 1
+                    print(f"⏱️ [{phone}] FloodWait {fw.value}s for {uid}", flush=True)
                     await asyncio.sleep(fw.value + 5)
                 except UserAlreadyParticipant:
                     skipped += 1
+                    if i < 3:
+                        print(f"⏭️ [{phone}] {uid} already in channel", flush=True)
                     mark_user_as_added(target_gid, "", uid)
-                except (UserPrivacyRestricted, UserNotMutualContact):
+                except (UserPrivacyRestricted, UserNotMutualContact) as e:
                     failed += 1
-                except PeerIdInvalid:
+                    if i < 3:
+                        print(f"🔒 [{phone}] Privacy restricted for {uid}: {type(e).__name__}", flush=True)
+                except PeerIdInvalid as e:
                     failed += 1
-                except ChatAdminRequired:
+                    if i < 3:
+                        print(f"❌ [{phone}] Invalid peer for {uid}: {e}", flush=True)
+                except ChatAdminRequired as e:
                     failed += 1
+                    print(f"❌ [{phone}] Not admin in target channel: {e}", flush=True)
                     break
-                except UsersTooMuch:
+                except UsersTooMuch as e:
                     failed += 1
+                    if i < 3:
+                        print(f"⚠️ [{phone}] Channel full or user in too many channels: {uid}", flush=True)
                     await asyncio.sleep(15)
-                except Exception:
+                except Exception as e:
                     failed += 1
+                    if i < 3:
+                        print(f"❌ [{phone}] Unexpected error for {uid}: {type(e).__name__}: {e}", flush=True)
                     await asyncio.sleep(random.randint(2, 5))
             
             try:
