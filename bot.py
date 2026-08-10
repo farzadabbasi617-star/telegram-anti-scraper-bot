@@ -7995,13 +7995,57 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     # Global stop flag
     stop_flag = {"stop": False}
     
+    # Get target group name
+    target_name = str(target_gid)  # Fallback to ID
+    try:
+        # Try to get target name from first account
+        first_phone = list(accs.keys())[0]
+        first_info = accs[first_phone]
+        from attacker import safe_phone_filename as spfn
+        fp = first_info.get("device_fp") or random.choice(DEVICE_FP)
+        sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(first_phone)}")
+        
+        # Quick connect to get target name
+        import tempfile
+        import shutil
+        temp_dir = tempfile.mkdtemp()
+        temp_sess_path = os.path.join(temp_dir, f"temp_{spfn(first_phone)}_{int(time.time())}")
+        
+        if os.path.exists(sess_path + ".session"):
+            shutil.copy2(sess_path + ".session", temp_sess_path + ".session")
+            
+            from pyrogram import Client
+            temp_client = Client(
+                temp_sess_path,
+                api_id=API_ID,
+                api_hash=API_HASH,
+                phone_number=first_phone,
+                device_model=fp.get("device_model", "Unknown"),
+                system_version=fp.get("system_version", "Unknown"),
+                app_version=fp.get("app_version", "1.0"),
+                lang_code=fp.get("lang_code", "en")
+            )
+            
+            await temp_client.start()
+            target_chat = await temp_client.get_chat(f"@{DEFAULT_TARGET_USERNAME}")
+            target_name = target_chat.title
+            await temp_client.stop()
+            
+            print(f"📛 Target group name: {target_name}", flush=True)
+        
+        # Cleanup
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+    except Exception as e:
+        print(f"⚠️ Could not get target name: {e}", flush=True)
+    
     # Update progress message with stop button
     try:
         await q.message.edit_text(
             f"🚀 <b>شروع اد موازی</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
             f"➕ {type_labels.get(add_type, 'همه')}\n"
-            f"🎯 مقصد: {target_gid}\n"
+            f"🎯 مقصد: {target_name}\n"
             f"👥 {len(members)} نفر\n"
             f"📱 {num_accounts} اکانت\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -8050,6 +8094,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                 await q.message.edit_text(
                     f"🚀 <b>اد موازی در حال اجرا</b>\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
+                    f"🎯 مقصد: {target_name}\n"
                     f"✅ تکمیل شده: {completed}/{num_accounts}\n"
                     f"📱 در حال کار: {phone}\n"
                     f"📊 ظرفیت: {capacity}\n"
@@ -8079,6 +8124,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                     await q.message.edit_text(
                         f"🚀 <b>اد موازی در حال اجرا</b>\n"
                         f"━━━━━━━━━━━━━━━━━━\n"
+                        f"🎯 مقصد: {target_name}\n"
                         f"✅ تکمیل شده: {completed}/{num_accounts}\n"
                         f"📱 آخرین اکانت: {phone}\n"
                         f"✅ اضافه شده: {result[1]}\n"
