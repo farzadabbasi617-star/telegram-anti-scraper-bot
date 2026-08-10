@@ -83,7 +83,7 @@ SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
 ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
-MAX_ADD_PER_ACCOUNT = 50  # 🔒 Supergroup: 200/day safe, we use 50 to be conservative  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
+MAX_ADD_PER_ACCOUNT = 200  # For older accounts (2+ years). New accounts: use 50  # 🔒 Supergroup: 200/day safe, we use 50 to be conservative  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
 
 # گروه مقصد ثابت - ممبرها همیشه به این گروه اضافه میشن
 FIXED_TARGET_LINK = "https://t.me/+gLScToU4DZdjZmM0"
@@ -7947,14 +7947,16 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                     limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
                     save_adder_limits(limits)
                     
-                    # Delay
+                    # Delay (adjusted for 200 limit)
                     total_acc = already_added + added
-                    if total_acc > 25:
-                        await asyncio.sleep(random.randint(12, 20))
-                    elif total_acc > 15:
-                        await asyncio.sleep(random.randint(8, 15))
+                    if total_acc > 150:
+                        await asyncio.sleep(random.randint(20, 30))  # 20-30s for last 50
+                    elif total_acc > 100:
+                        await asyncio.sleep(random.randint(15, 25))  # 15-25s for 100-150
+                    elif total_acc > 50:
+                        await asyncio.sleep(random.randint(10, 20))  # 10-20s for 50-100
                     else:
-                        await asyncio.sleep(random.randint(5, 10))
+                        await asyncio.sleep(random.randint(8, 15))   # 8-15s for first 50
                     
                 except FloodWait as fw:
                     failed += 1
