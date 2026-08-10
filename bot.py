@@ -2188,6 +2188,11 @@ bg_scraper_started = False
 
 async def auto_reset_adder_limits():
     """Automatically reset adder limits every 24 hours"""
+    import pickle
+    
+    # Use a simple file to track last reset time (more reliable than database)
+    RESET_FILE = "last_auto_reset.txt"
+    
     while True:
         try:
             await asyncio.sleep(3600)  # Check every hour
@@ -2196,13 +2201,12 @@ async def auto_reset_adder_limits():
             limits = load_adder_limits()
             now = int(time.time())
             
-            # Get last reset time from config
+            # Get last reset time from file
+            last_reset = 0
             try:
-                cur = db.get_conn().cursor()
-                cur.execute("SELECT value FROM config WHERE key = 'last_auto_reset'")
-                result = cur.fetchone()
-                last_reset = int(result[0]) if result else 0
-                cur.close()
+                if os.path.exists(RESET_FILE):
+                    with open(RESET_FILE, 'r') as f:
+                        last_reset = int(f.read().strip())
             except:
                 last_reset = 0
             
@@ -2218,12 +2222,8 @@ async def auto_reset_adder_limits():
                 
                 # Update last reset time
                 try:
-                    cur = db.get_conn().cursor()
-                    cur.execute("""
-                        INSERT INTO config (key, value) VALUES ('last_auto_reset', %s)
-                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
-                    """, (str(now),))
-                    cur.close()
+                    with open(RESET_FILE, 'w') as f:
+                        f.write(str(now))
                     print(f"✅ Auto-reset completed at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
                 except Exception as e:
                     print(f"⚠️ Could not save last_reset time: {e}", flush=True)
