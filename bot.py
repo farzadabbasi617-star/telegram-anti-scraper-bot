@@ -7438,8 +7438,9 @@ class _MsgWrapper:
 
 
 async def _execute_simple_add(q, target_gid, client, phone, members, source_name):
-    """Execute simple add flow - Professional method (like top GitHub projects)"""
+    """Execute simple add flow with all advanced features"""
     from pyrogram.raw.functions.channels import InviteToChannel
+    from pyrogram.raw.functions.contacts import AddContact
     from pyrogram.raw.types import InputPeerUser
     from pyrogram.errors import FloodWait, PeerIdInvalid, UserAlreadyParticipant
     from pyrogram.errors import UserPrivacyRestricted, UserNotMutualContact
@@ -7451,6 +7452,9 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
     skipped = 0
     errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "channels": 0, "other": 0}
     first_error = ""
+    account_limited = False
+    account_banned = False
+    flood_wait_time = 0
     start_t = time.time()
     
     limits = load_adder_limits()
@@ -7459,14 +7463,20 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
     
     # Get target name
     try:
-        tgt = await client.app.get_chat(target_gid)
+        try:
+            tgt = await client.get_chat(target_gid)
+        except AttributeError:
+            tgt = await client.app.get_chat(target_gid)
         target_name = tgt.title
     except:
         target_name = "گروه مقصد"
     
     # Resolve target once
     try:
-        target_peer = await client.resolve_peer(target_gid)
+        try:
+            target_peer = await client.resolve_peer(target_gid)
+        except AttributeError:
+            target_peer = await client.app.resolve_peer(target_gid)
     except Exception as e:
         await prog.edit_text(f"❌ گروه مقصد resolve نشد: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
@@ -7480,12 +7490,22 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             pct = int((added + failed + skipped) * 100 / max(1, total))
             bar = "█" * (pct // 5) + "░" * (20 - pct // 5)
             spd = int(added / (elapsed / 60)) if elapsed > 30 else 0
+            
+            # Build status text
+            status_text = ""
+            if account_banned:
+                status_text = "\n🚫 اکانت بن شده!"
+            elif account_limited:
+                hours = flood_wait_time // 3600
+                status_text = f"\n⏱️ اکانت محدود ({hours}h)"
+            
             txt = (
                 f"📂 {source_name} → 👥 {target_name}\n"
                 f"{bar} {pct}%\n"
                 f"✅ {added} ❌ {failed} ⏭ {skipped}\n"
                 f"⏱ {m:02d}:{s:02d} ⚡ {spd}/min\n"
                 f"📊 ظرفیت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
+                f"{status_text}"
             )
             await prog.edit_text(txt, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("️⏹️ توقف", callback_data="stop_op")]]))
         except: pass
@@ -7549,10 +7569,58 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
                 errors_detail["peer"] += 1
                 continue
             
-            # Direct InviteToChannel (NO AddContact - it wastes time and triggers limits)
-            await client.invoke(
-                InviteToChannel(channel=target_peer, users=[user_peer])
-            )
+            # Add contact first (helps with adding) - only for first 3
+            if added < 3:
+                try:
+                    from pyrogram.raw.functions.contacts import AddContact
+                    try:
+                        await client.invoke(
+                            AddContact(
+                                id=user_peer,
+                                first_name=str(uid)[:30],
+                                last_name="",
+                                phone="",
+                                add_phone_privacy_exception=False
+                            )
+                        )
+                    except AttributeError:
+                        await client.app.invoke(
+                            AddContact(
+                                id=user_peer,
+                                first_name=str(uid)[:30],
+                                last_name="",
+                                phone="",
+                                add_phone_privacy_exception=False
+                            )
+                        )
+                    await asyncio.sleep(0.5)
+                except Exception:
+                    pass  # Contact might already exist
+            
+            # InviteToChannel
+            try:
+                await client.invoke(
+                    InviteToChannel(channel=target_peer, users=[user_peer])
+                )
+            except AttributeError:
+                await client.app.invoke(
+                    InviteToChannel(channel=target_peer, users=[user_peer])
+                )
+            
+            # Verification: check if user is actually in the group (first 3 only)
+            if added < 3:
+                try:
+                    await asyncio.sleep(1)
+                    try:
+                        member_check = await client.get_chat_member(target_gid, uid)
+                    except AttributeError:
+                        member_check = await client.app.get_chat_member(target_gid, uid)
+                    if member_check and member_check.status in ["member", "administrator", "creator"]:
+                        print(f"✅ Verified: {uid} is in the group!", flush=True)
+                    else:
+                        print(f"⚠️ Warning: {uid} may not be in the group (status: {member_check.status if member_check else 'None'})", flush=True)
+                except Exception as verify_err:
+                    print(f"⚠️ Could not verify {uid}: {type(verify_err).__name__}", flush=True)
             
             added += 1
             mark_user_as_added(target_gid, target_name, uid)
@@ -7581,7 +7649,15 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
         except FloodWait as fw:
             failed += 1
             errors_detail["flood"] += 1
-            wait = fw.value + 10
+            flood_wait_time = max(flood_wait_time, fw.value)
+            
+            # Mark account as limited if wait time is long
+            if fw.value > 3600:  # More than 1 hour
+                account_limited = True
+                print(f"🚫 Account limited for {fw.value // 3600} hours!", flush=True)
+                break  # Stop adding with this account
+            
+            wait = min(fw.value + 10, 300)  # Max 5 minutes
             await prog.edit_text(f"⏱️ Flood Wait {fw.value}s — صبر...")
             await asyncio.sleep(wait)
         except UserAlreadyParticipant:
@@ -7605,15 +7681,25 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             await asyncio.sleep(15)
         except Exception as e:
             failed += 1
-            es = str(e).lower()
+            error_msg = str(e)
+            es = error_msg.lower()
+            
+            # Check if account is banned
+            if "AUTH_KEY_UNREGISTERED" in error_msg or "SESSION_EXPIRED" in error_msg:
+                account_banned = True
+                print(f"🚫 Account BANNED or session expired!", flush=True)
+                break
+            
             if "channels_too_much" in es:
                 errors_detail["channels"] += 1
             elif "peer_flood" in es:
                 errors_detail["flood"] += 1
-                await asyncio.sleep(3600)  # 1 hour break on PEER_FLOOD
+                account_limited = True
+                print(f"🚫 Account limited (PEER_FLOOD)!", flush=True)
+                break
             else:
                 errors_detail["other"] += 1
-            if not first_error: first_error = str(e)[:200]
+            if not first_error: first_error = error_msg[:200]
         
         if (added + failed + skipped) % 3 == 0:
             await upd()
@@ -7621,6 +7707,17 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
     # Final report
     elapsed = int(time.time() - start_t)
     m, s = elapsed // 60, elapsed % 60
+    
+    # Build account status
+    account_status = ""
+    if account_banned:
+        account_status = "\n━━━━━━━━━━━━━━━\n🚫 <b>وضعیت اکانت:</b> بن شده/منقضی"
+    elif account_limited:
+        hours = flood_wait_time // 3600
+        account_status = f"\n━━━━━━━━━━━━━━━\n⏱️ <b>وضعیت اکانت:</b> محدود ({hours} ساعت)"
+    else:
+        account_status = "\n━━━━━━━━━━━━━━━\n✅ <b>وضعیت اکانت:</b> سالم"
+    
     text = f"✅ <b>تمام شد!</b>\n"
     text += f"━━━━━━━━━━━━━━━\n"
     text += f"📂 منبع: {source_name}\n"
@@ -7630,6 +7727,7 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
     text += f"⏭ رد شده: {skipped}\n"
     text += f"⏱ زمان: {m:02d}:{s:02d}\n"
     text += f"📊 ظرفیت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
+    text += account_status
     
     if failed > 0 or errors_detail.get("peer", 0) > 0:
         text += f"\n\n<b>جزئیات خطا:</b>\n"
