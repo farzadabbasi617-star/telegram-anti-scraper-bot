@@ -2180,6 +2180,60 @@ def _db_count_users():
 bg_scraper_started = False
 
 # ─── Test: Group commands (directly on app, not module) ───
+
+
+# ═══════════════════════════════════════════════════════
+# AUTO-RESET ADDER LIMITS EVERY 24 HOURS
+# ═══════════════════════════════════════════════════════
+
+async def auto_reset_adder_limits():
+    """Automatically reset adder limits every 24 hours"""
+    while True:
+        try:
+            await asyncio.sleep(3600)  # Check every hour
+            
+            # Check if 24 hours passed since last reset
+            limits = load_adder_limits()
+            now = int(time.time())
+            
+            # Get last reset time from config
+            try:
+                cur = db.get_conn().cursor()
+                cur.execute("SELECT value FROM config WHERE key = 'last_auto_reset'")
+                result = cur.fetchone()
+                last_reset = int(result[0]) if result else 0
+                cur.close()
+            except:
+                last_reset = 0
+            
+            # If 24 hours passed, reset all limits
+            if now - last_reset >= 86400:  # 24 hours
+                print(f"🔄 Auto-resetting adder limits (24h passed)", flush=True)
+                
+                # Reset all limits
+                for phone in list(limits.keys()):
+                    limits[phone] = {"added": 0, "last_used": now}
+                
+                save_adder_limits(limits)
+                
+                # Update last reset time
+                try:
+                    cur = db.get_conn().cursor()
+                    cur.execute("""
+                        INSERT INTO config (key, value) VALUES ('last_auto_reset', %s)
+                        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+                    """, (str(now),))
+                    cur.close()
+                    print(f"✅ Auto-reset completed at {time.strftime('%Y-%m-%d %H:%M:%S')}", flush=True)
+                except Exception as e:
+                    print(f"⚠️ Could not save last_reset time: {e}", flush=True)
+        
+        except Exception as e:
+            print(f"❌ Auto-reset error: {e}", flush=True)
+            await asyncio.sleep(3600)  # Wait 1 hour before retry
+
+# ═══════════════════════════════════════════════════════
+
 @app.on_message(filters.command(["help", "start"]) & filters.group)
 async def group_help_cmd(c, m):
     """Simple group help - works directly on app"""
@@ -4733,6 +4787,9 @@ async def _cb_impl(c, q):
             InlineKeyboardButton("🌐 اد همه", callback_data="add_by_type_all"),
         ])
         buttons.append([
+            InlineKeyboardButton("⚡ اد موازی با همه اکانت‌ها", callback_data="parallel_add_breakdown"),
+        ])
+        buttons.append([
             InlineKeyboardButton("👥 لیست مخاطبین", callback_data="show_list_0"),
             InlineKeyboardButton("🏠 خانه", callback_data="home"),
         ])
@@ -4848,6 +4905,146 @@ async def _cb_impl(c, q):
         except Exception as e:
             await prog.edit_text(f"❌ خطا: {str(e)[:200]}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
+
+
+
+    # ==================== ⚡ اد موازی از تفکیک ====================
+    if d == "parallel_add_breakdown":
+        accs = list_saved_accounts()
+        if not accs or len(accs) < 2:
+            await q.answer("حداقل ۲ اکانت نیاز داری برای اد موازی!", show_alert=True)
+            return
+        
+        # Show type selection
+        text = "⚡ <b>اد موازی با همه اکانت‌ها</b>\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"📱 {len(accs)} اکانت آماده\n\n"
+        text += "نوع کاربران رو انتخاب کن:"
+        
+        buttons = [
+            [InlineKeyboardButton("📱 شماره‌دارها", callback_data="parallel_type_phone")],
+            [InlineKeyboardButton("🏷️ username دارها", callback_data="parallel_type_username")],
+            [InlineKeyboardButton("🆔 فقط ID", callback_data="parallel_type_id")],
+            [InlineKeyboardButton("🌐 همه", callback_data="parallel_type_all")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    # ==================== 🔧 نوع انتخاب شد برای اد موازی ====================
+    if d.startswith("parallel_type_"):
+        add_type = d[len("parallel_type_"):]
+        atk_state["parallel_add_type"] = add_type
+        
+        accs = list_saved_accounts()
+        if not accs:
+            await q.answer("اکانتی پیدا نشد!", show_alert=True)
+            return
+        
+        # Connect to first account to get targets
+        first_phone = list(accs.keys())[0]
+        fp = accs[first_phone].get("device_fp") or random.choice(DEVICE_FP)
+        from attacker import safe_phone_filename as spfn
+        sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(first_phone)}")
+        
+        prog = await q.message.edit_text("🔐 در حال اتصال برای دریافت لیست گروه‌ها...")
+        
+        try:
+            client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=first_phone, device_fp=fp)
+            _enable_wal_on_session(client.app.name)
+            await robust_connect(client, max_retries=3)
+            _enable_wal_on_session(client.app.name)
+            
+            targets = []
+            async for dialog in client.app.get_dialogs(limit=500):
+                chat_type = str(dialog.chat.type).lower()
+                if "channel" in chat_type or "supergroup" in chat_type:
+                    cnt = getattr(dialog.chat, "members_count", 0) or 0
+                    icon = "📡" if "channel" in chat_type else "👥"
+                    targets.append((dialog.chat.title, dialog.chat.id, cnt, icon))
+            
+            try:
+                await client.disconnect()
+            except:
+                pass
+            
+            type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
+            
+            text = f"⚡ <b>اد موازی {type_labels.get(add_type, 'همه')}</b>\n"
+            text += f"━━━━━━━━━━━━━━━━━━\n"
+            text += f"📱 {len(accs)} اکانت آماده\n\n"
+            text += "گروه/کانال مقصد رو انتخاب کن:\n"
+            
+            buttons = []
+            for tname, tid, tcnt, icon in sorted(targets, key=lambda x:-x[2])[:20]:
+                buttons.append([InlineKeyboardButton(f"{icon} {tname[:28]} ({tcnt:,})", callback_data=f"parallel_tgt_{tid}")])
+            
+            if not targets:
+                text += "\n⚠️ هیچ Supergroup/کانالی پیدا نشد!"
+                buttons.append([InlineKeyboardButton("🏠 خانه", callback_data="home")])
+            else:
+                buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")])
+            
+            await prog.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception as e:
+            await prog.edit_text(f"❌ خطا: {str(e)[:200]}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+        return
+
+    # ==================== 🎯 مقصد انتخاب شد - شروع اد موازی ====================
+    if d.startswith("parallel_tgt_"):
+        target_gid = int(d[len("parallel_tgt_"):])
+        add_type = atk_state.get("parallel_add_type", "all")
+        
+        accs = list_saved_accounts()
+        if not accs:
+            await q.answer("اکانتی پیدا نشد!", show_alert=True)
+            return
+        
+        # Get users based on type
+        try:
+            cur = db.get_conn().cursor()
+            if add_type == "phone":
+                cur.execute("SELECT user_id, username, first_name, last_name, phone FROM scraped_users WHERE phone IS NOT NULL AND phone != ''")
+            elif add_type == "username":
+                cur.execute("""SELECT user_id, username, first_name, last_name, phone FROM scraped_users 
+                    WHERE username IS NOT NULL AND username != '' AND (phone IS NULL OR phone = '')""")
+            elif add_type == "id":
+                cur.execute("""SELECT user_id, username, first_name, last_name, phone FROM scraped_users 
+                    WHERE (phone IS NULL OR phone = '') AND (username IS NULL OR username = '')""")
+            else:
+                cur.execute("SELECT user_id, username, first_name, last_name, phone FROM scraped_users")
+            
+            rows = cur.fetchall()
+            cur.close()
+            
+            members = [{"user_id": r[0], "username": r[1] or "", "first_name": r[2] or "", "last_name": r[3] or "", "phone": r[4] or ""} for r in rows]
+        except Exception as e:
+            await q.message.edit_text(f"❌ خطا در خواندن دیتابیس: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+            return
+        
+        if not members:
+            await q.answer("کاربری پیدا نشد!", show_alert=True)
+            return
+        
+        random.shuffle(members)
+        
+        type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
+        
+        await q.message.edit_text(
+            f"🚀 <b>شروع اد موازی</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"➕ {type_labels.get(add_type, 'همه')}\n"
+            f"👥 {len(members)} نفر\n"
+            f"📱 {len(accs)} اکانت\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"⏳ در حال شروع..."
+        )
+        
+        # Start parallel add task
+        asyncio.create_task(_execute_parallel_add(q, target_gid, accs, members, add_type))
+        return
+
 
     # ==================== 🎯 مقصد انتخاب شد - شروع اد ====================
     if d.startswith("type_add_tgt_"):
@@ -7471,6 +7668,188 @@ async def _do_quick_add(q, gid, gname, uid_list, client, phone):
         [InlineKeyboardButton("🏠 خانه", callback_data="home")],
     ]))
 
+
+
+async def _execute_parallel_add(q, target_gid, accs, members, add_type):
+    """Execute parallel add with multiple accounts"""
+    from pyrogram.raw.functions.channels import InviteToChannel
+    from pyrogram.raw.types import InputPeerUser
+    from pyrogram.errors import FloodWait, PeerIdInvalid, UserAlreadyParticipant
+    from pyrogram.errors import UserPrivacyRestricted, UserNotMutualContact
+    from pyrogram.errors import ChatAdminRequired, UsersTooMuch
+    
+    start_t = time.time()
+    total_members = len(members)
+    num_accounts = len(accs)
+    
+    # Split members among accounts
+    members_per_account = total_members // num_accounts
+    account_members = {}
+    
+    for i, (phone, info) in enumerate(accs.items()):
+        start_idx = i * members_per_account
+        end_idx = start_idx + members_per_account if i < num_accounts - 1 else total_members
+        account_members[phone] = members[start_idx:end_idx]
+    
+    # Stats
+    stats = {phone: {"added": 0, "failed": 0, "skipped": 0} for phone in accs.keys()}
+    
+    async def add_with_account(phone, info, member_list):
+        """Add members with one account"""
+        fp = info.get("device_fp") or random.choice(DEVICE_FP)
+        from attacker import safe_phone_filename as spfn
+        sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
+        
+        try:
+            client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
+            _enable_wal_on_session(client.app.name)
+            await robust_connect(client, max_retries=3)
+            _enable_wal_on_session(client.app.name)
+            
+            # Resolve target
+            target_peer = await client.app.resolve_peer(target_gid)
+            
+            # Check limits
+            limits = load_adder_limits()
+            already_added = limits.get(phone, {}).get("added", 0)
+            remaining = MAX_ADD_PER_ACCOUNT - already_added
+            
+            added = 0
+            failed = 0
+            skipped = 0
+            
+            for member in member_list[:remaining]:
+                uid = member.get("user_id", 0)
+                if uid <= 10000 or uid >= 10**11:
+                    skipped += 1
+                    continue
+                
+                if is_user_already_added(target_gid, uid):
+                    skipped += 1
+                    continue
+                
+                try:
+                    # Resolve user
+                    user_peer = None
+                    username = member.get("username", "").strip()
+                    
+                    if username:
+                        try:
+                            clean_username = username.lstrip("@")
+                            user_peer = await client.app.resolve_peer(clean_username)
+                        except:
+                            pass
+                    
+                    if user_peer is None:
+                        try:
+                            user_peer = await client.app.resolve_peer(uid)
+                        except:
+                            pass
+                    
+                    if user_peer is None:
+                        skipped += 1
+                        continue
+                    
+                    # Invite to channel
+                    await client.app.invoke(
+                        InviteToChannel(channel=target_peer, users=[user_peer])
+                    )
+                    
+                    added += 1
+                    mark_user_as_added(target_gid, "", uid)
+                    
+                    # Update limits
+                    limits = load_adder_limits()
+                    limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
+                    save_adder_limits(limits)
+                    
+                    # Delay
+                    total_acc = already_added + added
+                    if total_acc > 25:
+                        await asyncio.sleep(random.randint(12, 20))
+                    elif total_acc > 15:
+                        await asyncio.sleep(random.randint(8, 15))
+                    else:
+                        await asyncio.sleep(random.randint(5, 10))
+                    
+                except FloodWait as fw:
+                    failed += 1
+                    await asyncio.sleep(fw.value + 5)
+                except UserAlreadyParticipant:
+                    skipped += 1
+                    mark_user_as_added(target_gid, "", uid)
+                except (UserPrivacyRestricted, UserNotMutualContact):
+                    failed += 1
+                except PeerIdInvalid:
+                    failed += 1
+                except ChatAdminRequired:
+                    failed += 1
+                    break
+                except UsersTooMuch:
+                    failed += 1
+                    await asyncio.sleep(15)
+                except Exception:
+                    failed += 1
+                    await asyncio.sleep(random.randint(2, 5))
+            
+            try:
+                await client.disconnect()
+            except:
+                pass
+            
+            return phone, added, failed, skipped
+        
+        except Exception as e:
+            print(f"❌ Error with {phone}: {e}", flush=True)
+            return phone, 0, 0, 0
+    
+    # Start all accounts in parallel
+    tasks = []
+    for phone, info in accs.items():
+        if phone in account_members:
+            tasks.append(add_with_account(phone, info, account_members[phone]))
+    
+    # Wait for all to complete
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Calculate totals
+    total_added = 0
+    total_failed = 0
+    total_skipped = 0
+    
+    for result in results:
+        if isinstance(result, tuple) and len(result) == 4:
+            phone, added, failed, skipped = result
+            total_added += added
+            total_failed += failed
+            total_skipped += skipped
+    
+    # Final report
+    elapsed = int(time.time() - start_t)
+    m, s = elapsed // 60, elapsed % 60
+    
+    type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
+    
+    text = f"✅ <b>اد موازی تمام شد!</b>\n"
+    text += f"━━━━━━━━━━━━━━━━━━\n"
+    text += f"➕ {type_labels.get(add_type, 'همه')}\n"
+    text += f"📱 {num_accounts} اکانت\n"
+    text += f"✅ اضافه شده: {total_added}\n"
+    text += f"❌ ناموفق: {total_failed}\n"
+    text += f"⏭ رد شده: {total_skipped}\n"
+    text += f"⏱ زمان: {m:02d}:{s:02d}\n"
+    
+    buttons = [
+        [InlineKeyboardButton("🔄 اد دوباره", callback_data="user_breakdown")],
+        [InlineKeyboardButton("🏠 خانه", callback_data="home")]
+    ]
+    
+    try:
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    except:
+        pass
+
+
 if __name__ == "__main__":
     # Import and register group manager handlers
     try:
@@ -7494,7 +7873,11 @@ if __name__ == "__main__":
     # Run with retry on FloodWait
     while True:
         try:
-            app.run()
+                # Start auto-reset background task
+    asyncio.create_task(auto_reset_adder_limits())
+    print("✅ Auto-reset task started (resets every 24h)", flush=True)
+    
+app.run()
             break
         except Exception as e:
             msg = str(e)
