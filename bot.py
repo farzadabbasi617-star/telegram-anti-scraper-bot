@@ -231,7 +231,7 @@ async def safe_connect_with_recovery(client, phone, max_retries=3):
             await client.connect()
             
             # Test connection
-            me = await client.app.get_me()
+            me = await client.get_me()
             print(f"✅ Connected: {me.first_name}", flush=True)
             return True
             
@@ -3952,7 +3952,7 @@ async def _cb_impl(c, q):
             _enable_wal_on_session(client.app.name)
             await client.connect()
             _enable_wal_on_session(client.app.name)
-            me = await client.app.get_me()
+            me = await client.get_me()
             # Load groups
             groups = []
             async for dialog in client.app.get_dialogs(limit=500):
@@ -4876,7 +4876,7 @@ async def _cb_impl(c, q):
             _enable_wal_on_session(client.app.name)
             await robust_connect(client, max_retries=3)
             _enable_wal_on_session(client.app.name)
-            me = await client.app.get_me()
+            me = await client.get_me()
             
             atk_state["_type_add_client"] = client
             atk_state["_type_add_phone"] = phone
@@ -5743,7 +5743,7 @@ async def _cb_impl(c, q):
                 except: 
                     await asyncio.sleep(2)
             
-            me = await client.app.get_me()
+            me = await client.get_me()
             
             # Store client
             atk_state["_simp_client"] = client
@@ -7440,7 +7440,7 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
     
     # Resolve target once
     try:
-        target_peer = await client.app.resolve_peer(target_gid)
+        target_peer = await client.resolve_peer(target_gid)
     except Exception as e:
         await prog.edit_text(f"❌ گروه مقصد resolve نشد: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
@@ -7524,7 +7524,7 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
                 continue
             
             # Direct InviteToChannel (NO AddContact - it wastes time and triggers limits)
-            await client.app.invoke(
+            await client.invoke(
                 InviteToChannel(channel=target_peer, users=[user_peer])
             )
             
@@ -7746,18 +7746,28 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     
     async def add_with_account_async(phone, info, member_list):
         """Add members with one account"""
-        fp = info.get("device_fp") or random.choice(DEVICE_FP)
+        from pyrogram import Client
         from attacker import safe_phone_filename as spfn
+        fp = info.get("device_fp") or random.choice(DEVICE_FP)
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
         
         try:
-            # Create client WITHOUT WAL mode to avoid disk I/O conflicts
-            client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
-            # DON'T enable WAL - it causes disk I/O conflicts in parallel
-            await robust_connect(client, max_retries=3)
+            # Use Pyrogram Client directly to avoid AdvancedScraper's asyncio.Lock issues
+            client = Client(
+                sess_path,
+                api_id=API_ID,
+                api_hash=API_HASH,
+                device_model=fp.get("device_model", "Unknown"),
+                system_version=fp.get("system_version", "Unknown"),
+                app_version=fp.get("app_version", "1.0"),
+                lang_code=fp.get("lang_code", "en")
+            )
+            
+            # Connect without WAL mode
+            await client.connect()
             
             # Resolve target
-            target_peer = await client.app.resolve_peer(target_gid)
+            target_peer = await client.resolve_peer(target_gid)
             
             # Check limits
             limits = load_adder_limits()
@@ -7801,7 +7811,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                         continue
                     
                     # Invite to channel
-                    await client.app.invoke(
+                    await client.invoke(
                         InviteToChannel(channel=target_peer, users=[user_peer])
                     )
                     
