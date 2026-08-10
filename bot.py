@@ -7726,24 +7726,6 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     stats_lock = threading.Lock()
     stats = {phone: {"added": 0, "failed": 0, "skipped": 0, "error": None} for phone in accs.keys()}
     
-    def add_with_account_sync(phone, info, member_list, delay_seconds):
-        """Synchronous version to run in thread pool"""
-        import asyncio
-        
-        # Add delay to stagger account starts
-        time.sleep(delay_seconds)
-        
-        # Create new event loop for this thread
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        try:
-            return loop.run_until_complete(
-                add_with_account_async(phone, info, member_list)
-            )
-        finally:
-            loop.close()
-    
     async def add_with_account_async(phone, info, member_list):
         """Add members with one account"""
         from pyrogram import Client
@@ -7879,7 +7861,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             print(f"❌ Error with {phone}: {e}", flush=True)
             return phone, 0, 0, 0
     
-    # Run accounts in thread pool with staggered starts
+    # Use sequential execution instead of threading (Pyrogram has issues with threads)
     results = []
     completed = 0
     
@@ -7893,36 +7875,23 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             f"👥 {len(members)} نفر\n"
             f"📱 {num_accounts} اکانت\n"
             f"━━━━━━━━━━━━━━━━━━\n"
-            f"⏳ در حال اتصال اکانت‌ها...\n"
+            f"⏳ در حال پردازش اکانت‌ها...\n"
             f"✅ تکمیل شده: 0/{num_accounts}"
         )
     except:
         pass
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=num_accounts) as executor:
-        futures = []
-        for i, (phone, info) in enumerate(accs.items()):
-            if phone in account_members:
-                # Stagger starts by 2 seconds to avoid simultaneous disk access
-                delay = i * 2
-                print(f"📱 Submitting {phone} with {delay}s delay", flush=True)
-                future = executor.submit(
-                    add_with_account_sync,
-                    phone,
-                    info,
-                    account_members[phone],
-                    delay
-                )
-                futures.append((phone, future))
-        
-        # Wait for all to complete with progress updates
-        for phone, future in futures:
+    # Execute accounts sequentially (more reliable than threading)
+    for i, (phone, info) in enumerate(accs.items()):
+        if phone in account_members:
+            print(f"📱 Processing {phone} ({i+1}/{num_accounts})", flush=True)
+            
             try:
-                print(f"⏳ Waiting for {phone}...", flush=True)
-                result = future.result(timeout=600)  # 10 minute timeout per account
+                # Run each account in current event loop
+                result = await add_with_account_async(phone, info, account_members[phone])
                 results.append(result)
                 completed += 1
-                print(f"✅ {phone} completed", flush=True)
+                print(f"✅ {phone} completed: {result[1]} added, {result[2]} failed", flush=True)
                 
                 # Update progress
                 try:
@@ -7930,18 +7899,16 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                         f"🚀 <b>اد موازی در حال اجرا</b>\n"
                         f"━━━━━━━━━━━━━━━━━━\n"
                         f"✅ تکمیل شده: {completed}/{num_accounts}\n"
+                        f"📱 آخرین اکانت: {phone}\n"
+                        f"✅ اضافه شده: {result[1]}\n"
                         f"⏳ در حال پردازش..."
                     )
                 except:
                     pass
                 
-            except concurrent.futures.TimeoutError:
-                print(f"⏰ {phone} timeout after 10 minutes", flush=True)
-                results.append(None)
-                completed += 1
             except Exception as e:
                 print(f"❌ {phone} error: {e}", flush=True)
-                results.append(None)
+                results.append((phone, 0, 0, 0))
                 completed += 1
     
     # Calculate totals
