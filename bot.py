@@ -7768,8 +7768,13 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             
             print(f"🔗 [{phone}] Connecting...", flush=True)
             
-            # Start the client (handles authentication from session file)
-            await client.start()
+            # Start the client with timeout (60 seconds)
+            try:
+                await asyncio.wait_for(client.start(), timeout=60)
+                print(f"✅ [{phone}] Connected successfully", flush=True)
+            except asyncio.TimeoutError:
+                print(f"⏰ [{phone}] Connection timeout after 60s", flush=True)
+                raise Exception(f"Connection timeout for {phone}")
             
             print(f"✅ [{phone}] Connected successfully", flush=True)
             
