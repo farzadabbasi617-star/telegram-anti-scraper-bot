@@ -7746,7 +7746,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     
     # Shared stats with thread lock
     stats_lock = threading.Lock()
-    stats = {phone: {"added": 0, "failed": 0, "skipped": 0, "error": None} for phone in accs.keys()}
+    stats = {phone: {"added": 0, "failed": 0, "skipped": 0, "error": None, "banned": False, "limited": False, "flood_wait": 0} for phone in accs.keys()}
     
     async def add_with_account_async(phone, info, member_list):
         """Add members with one account"""
@@ -7973,7 +7973,18 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                 except FloodWait as fw:
                     failed += 1
                     print(f"⏱️ [{phone}] FloodWait {fw.value}s for {uid}", flush=True)
-                    await asyncio.sleep(fw.value + 5)
+                    
+                    # Track if account is limited
+                    with stats_lock:
+                        stats[phone]["limited"] = True
+                        stats[phone]["flood_wait"] = max(stats[phone]["flood_wait"], fw.value)
+                    
+                    # If flood wait is very long (>1 hour), mark as limited
+                    if fw.value > 3600:
+                        print(f"🚫 [{phone}] Account limited for {fw.value // 3600} hours!", flush=True)
+                    
+                    await asyncio.sleep(min(fw.value + 5, 300))  # Max 5 minutes wait
+                    break  # Stop this account, move to next
                 except UserAlreadyParticipant:
                     skipped += 1
                     if i < 3:
@@ -7990,6 +8001,11 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                 except ChatAdminRequired as e:
                     failed += 1
                     print(f"❌ [{phone}] Not admin in target channel: {e}", flush=True)
+                    
+                    # Mark account as having issues
+                    with stats_lock:
+                        stats[phone]["error"] = "Not admin"
+                    
                     break
                 except UsersTooMuch as e:
                     failed += 1
@@ -8020,7 +8036,22 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             return phone, added, failed, skipped
         
         except Exception as e:
+            error_msg = str(e)
             print(f"❌ Error with {phone}: {e}", flush=True)
+            
+            # Check if account is banned or has critical error
+            with stats_lock:
+                if "AUTH_KEY_UNREGISTERED" in error_msg or "SESSION_EXPIRED" in error_msg:
+                    stats[phone]["banned"] = True
+                    stats[phone]["error"] = "Banned/Session expired"
+                    print(f"🚫 [{phone}] Account BANNED or session expired!", flush=True)
+                elif "FLOOD_WAIT" in error_msg or "PEER_FLOOD" in error_msg:
+                    stats[phone]["limited"] = True
+                    stats[phone]["error"] = "Flood limited"
+                    print(f"🚫 [{phone}] Account LIMITED!", flush=True)
+                else:
+                    stats[phone]["error"] = f"Error: {type(e).__name__}"
+            
             return phone, 0, 0, 0
     
     # Use sequential execution instead of threading (Pyrogram has issues with threads)
@@ -8129,6 +8160,18 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             
             # Update progress before starting
             try:
+                # Count banned/limited accounts
+                banned_count = sum(1 for s in stats.values() if s.get("banned"))
+                limited_count = sum(1 for s in stats.values() if s.get("limited"))
+                
+                warning_text = ""
+                if banned_count > 0 or limited_count > 0:
+                    warning_text = f"\n━━━━━━━━━━━━━━━━━━\n"
+                    if banned_count > 0:
+                        warning_text += f"🚫 بن شده: {banned_count}\n"
+                    if limited_count > 0:
+                        warning_text += f"⏱️ محدود: {limited_count}\n"
+                
                 await q.message.edit_text(
                     f"🚀 <b>اد موازی در حال اجرا</b>\n"
                     f"━━━━━━━━━━━━━━━━━━\n"
@@ -8139,7 +8182,8 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                     f"━━━━━━━━━━━━━━━━━━\n"
                     f"✅ اضافه شده: {total_added}\n"
                     f"❌ خطا: {total_failed}\n"
-                    f"⏭️ رد شده: {total_skipped}",
+                    f"⏭️ رد شده: {total_skipped}"
+                    f"{warning_text}",
                     reply_markup=InlineKeyboardMarkup([
                         [InlineKeyboardButton("⏹️ توقف", callback_data="stop_parallel_add")]
                     ])
@@ -8216,8 +8260,22 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
         error_summary = "\n━━━━━━━━━━━━━━━━━━\n<b>📊 جزئیات هر اکانت:</b>\n"
         for phone, added, failed, skipped in results:
             if added > 0 or failed > 0 or skipped > 0:
-                status = "✅" if added > 0 else "❌" if failed > 0 else "⏭️"
-                error_summary += f"{status} {phone[-4:]}: {added} اد | {failed} خطا | {skipped} رد\n"
+                # Check account status
+                account_stats = stats.get(phone, {})
+                if account_stats.get("banned"):
+                    status = "🚫"
+                    error_summary += f"{status} {phone[-4:]}: بن شده/منقضی\n"
+                elif account_stats.get("limited"):
+                    flood_wait = account_stats.get("flood_wait", 0)
+                    hours = flood_wait // 3600
+                    status = "⏱️"
+                    error_summary += f"{status} {phone[-4:]}: محدود ({hours}h) | {added} اد\n"
+                elif account_stats.get("error"):
+                    status = "⚠️"
+                    error_summary += f"{status} {phone[-4:]}: {account_stats['error']}\n"
+                else:
+                    status = "✅" if added > 0 else "❌" if failed > 0 else "⏭️"
+                    error_summary += f"{status} {phone[-4:]}: {added} اد | {failed} خطا | {skipped} رد\n"
     
     text = f"✅ <b>اد موازی تمام شد!</b>\n"
     text += f"━━━━━━━━━━━━━━━━━━\n"
