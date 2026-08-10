@@ -7801,18 +7801,39 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             already_added = limits.get(phone, {}).get("added", 0)
             remaining = MAX_ADD_PER_ACCOUNT - already_added
             
+            print(f"📊 [{phone}] Members to add: {len(member_list)}", flush=True)
+            print(f"📊 [{phone}] Already added today: {already_added}", flush=True)
+            print(f"📊 [{phone}] Remaining capacity: {remaining}", flush=True)
+            
+            if len(member_list) == 0:
+                print(f"⚠️ [{phone}] No members to add!", flush=True)
+                return phone, 0, 0, 0
+            
+            if remaining <= 0:
+                print(f"⚠️ [{phone}] No remaining capacity (already added {already_added} today)", flush=True)
+                return phone, 0, 0, 0
+            
             added = 0
             failed = 0
             skipped = 0
             
-            for member in member_list[:remaining]:
+            for i, member in enumerate(member_list[:remaining]):
                 uid = member.get("user_id", 0)
+                username = member.get("username", "")
+                
+                if i < 3 or i % 10 == 0:  # Log first 3 and every 10th
+                    print(f"👤 [{phone}] Processing member {i+1}/{len(member_list[:remaining])}: {uid} (@{username})", flush=True)
+                
                 if uid <= 10000 or uid >= 10**11:
                     skipped += 1
+                    if i < 3:
+                        print(f"⏭️ [{phone}] Skipped {uid}: invalid UID range", flush=True)
                     continue
                 
                 if is_user_already_added(target_gid, uid):
                     skipped += 1
+                    if i < 3:
+                        print(f"⏭️ [{phone}] Skipped {uid}: already added before", flush=True)
                     continue
                 
                 try:
