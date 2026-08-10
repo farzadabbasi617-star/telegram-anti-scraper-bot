@@ -7846,7 +7846,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                             clean_username = username.lstrip("@")
                             if i < 3:
                                 print(f"🔍 [{phone}] Resolving @{clean_username}...", flush=True)
-                            user_peer = await client.app.resolve_peer(clean_username)
+                            user_peer = await client.resolve_peer(clean_username)
                             if i < 3:
                                 print(f"✅ [{phone}] Resolved @{clean_username}", flush=True)
                         except Exception as e:
@@ -7858,7 +7858,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                         try:
                             if i < 3:
                                 print(f"🔍 [{phone}] Resolving UID {uid}...", flush=True)
-                            user_peer = await client.app.resolve_peer(uid)
+                            user_peer = await client.resolve_peer(uid)
                             if i < 3:
                                 print(f"✅ [{phone}] Resolved UID {uid}", flush=True)
                         except Exception as e:
