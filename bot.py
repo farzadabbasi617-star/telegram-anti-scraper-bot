@@ -7700,12 +7700,14 @@ async def _do_quick_add(q, gid, gname, uid_list, client, phone):
 
 
 async def _execute_parallel_add(q, target_gid, accs, members, add_type):
-    """Execute parallel add with multiple accounts"""
+    """Execute parallel add with multiple accounts using threading to avoid disk I/O conflicts"""
     from pyrogram.raw.functions.channels import InviteToChannel
     from pyrogram.raw.types import InputPeerUser
     from pyrogram.errors import FloodWait, PeerIdInvalid, UserAlreadyParticipant
     from pyrogram.errors import UserPrivacyRestricted, UserNotMutualContact
     from pyrogram.errors import ChatAdminRequired, UsersTooMuch
+    import concurrent.futures
+    import threading
     
     start_t = time.time()
     total_members = len(members)
@@ -7720,20 +7722,39 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
         end_idx = start_idx + members_per_account if i < num_accounts - 1 else total_members
         account_members[phone] = members[start_idx:end_idx]
     
-    # Stats
-    stats = {phone: {"added": 0, "failed": 0, "skipped": 0} for phone in accs.keys()}
+    # Shared stats with thread lock
+    stats_lock = threading.Lock()
+    stats = {phone: {"added": 0, "failed": 0, "skipped": 0, "error": None} for phone in accs.keys()}
     
-    async def add_with_account(phone, info, member_list):
+    def add_with_account_sync(phone, info, member_list, delay_seconds):
+        """Synchronous version to run in thread pool"""
+        import asyncio
+        
+        # Add delay to stagger account starts
+        time.sleep(delay_seconds)
+        
+        # Create new event loop for this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
+        try:
+            return loop.run_until_complete(
+                add_with_account_async(phone, info, member_list)
+            )
+        finally:
+            loop.close()
+    
+    async def add_with_account_async(phone, info, member_list):
         """Add members with one account"""
         fp = info.get("device_fp") or random.choice(DEVICE_FP)
         from attacker import safe_phone_filename as spfn
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
         
         try:
+            # Create client WITHOUT WAL mode to avoid disk I/O conflicts
             client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=phone, device_fp=fp)
-            _enable_wal_on_session(client.app.name)
+            # DON'T enable WAL - it causes disk I/O conflicts in parallel
             await robust_connect(client, max_retries=3)
-            _enable_wal_on_session(client.app.name)
             
             # Resolve target
             target_peer = await client.app.resolve_peer(target_gid)
@@ -7832,14 +7853,31 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
             print(f"❌ Error with {phone}: {e}", flush=True)
             return phone, 0, 0, 0
     
-    # Start all accounts in parallel
-    tasks = []
-    for phone, info in accs.items():
-        if phone in account_members:
-            tasks.append(add_with_account(phone, info, account_members[phone]))
-    
-    # Wait for all to complete
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # Run accounts in thread pool with staggered starts
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_accounts) as executor:
+        futures = []
+        for i, (phone, info) in enumerate(accs.items()):
+            if phone in account_members:
+                # Stagger starts by 2 seconds to avoid simultaneous disk access
+                delay = i * 2
+                future = executor.submit(
+                    add_with_account_sync,
+                    phone,
+                    info,
+                    account_members[phone],
+                    delay
+                )
+                futures.append(future)
+        
+        # Wait for all to complete
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                print(f"❌ Thread error: {e}", flush=True)
+                results.append(None)
     
     # Calculate totals
     total_added = 0
