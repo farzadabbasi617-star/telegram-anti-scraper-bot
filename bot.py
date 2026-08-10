@@ -7865,12 +7865,31 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     
     # Run accounts in thread pool with staggered starts
     results = []
+    completed = 0
+    
+    # Update progress message
+    try:
+        await q.message.edit_text(
+            f"🚀 <b>شروع اد موازی</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"➕ {type_labels.get(add_type, 'همه')}\n"
+            f"🎯 مقصد: {target_gid}\n"
+            f"👥 {len(members)} نفر\n"
+            f"📱 {num_accounts} اکانت\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"⏳ در حال اتصال اکانت‌ها...\n"
+            f"✅ تکمیل شده: 0/{num_accounts}"
+        )
+    except:
+        pass
+    
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_accounts) as executor:
         futures = []
         for i, (phone, info) in enumerate(accs.items()):
             if phone in account_members:
                 # Stagger starts by 2 seconds to avoid simultaneous disk access
                 delay = i * 2
+                print(f"📱 Submitting {phone} with {delay}s delay", flush=True)
                 future = executor.submit(
                     add_with_account_sync,
                     phone,
@@ -7878,16 +7897,36 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                     account_members[phone],
                     delay
                 )
-                futures.append(future)
+                futures.append((phone, future))
         
-        # Wait for all to complete
-        for future in concurrent.futures.as_completed(futures):
+        # Wait for all to complete with progress updates
+        for phone, future in futures:
             try:
-                result = future.result()
+                print(f"⏳ Waiting for {phone}...", flush=True)
+                result = future.result(timeout=600)  # 10 minute timeout per account
                 results.append(result)
-            except Exception as e:
-                print(f"❌ Thread error: {e}", flush=True)
+                completed += 1
+                print(f"✅ {phone} completed", flush=True)
+                
+                # Update progress
+                try:
+                    await q.message.edit_text(
+                        f"🚀 <b>اد موازی در حال اجرا</b>\n"
+                        f"━━━━━━━━━━━━━━━━━━\n"
+                        f"✅ تکمیل شده: {completed}/{num_accounts}\n"
+                        f"⏳ در حال پردازش..."
+                    )
+                except:
+                    pass
+                
+            except concurrent.futures.TimeoutError:
+                print(f"⏰ {phone} timeout after 10 minutes", flush=True)
                 results.append(None)
+                completed += 1
+            except Exception as e:
+                print(f"❌ {phone} error: {e}", flush=True)
+                results.append(None)
+                completed += 1
     
     # Calculate totals
     total_added = 0
