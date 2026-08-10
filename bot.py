@@ -5851,26 +5851,13 @@ async def _cb_impl(c, q):
         return
 
     if d == "pick_account_add":
-        # NEW FLOW: Account → Source Group → Scrape → Target → Add
-        accs = list_saved_accounts()
-        if not accs:
-            await q.answer("اول یه اکانت اضافه کن!", show_alert=True)
-            return
+        # NEW FLOW: Go to user_breakdown to select member type first
+        # Then select account, then add from database
+        await q.message.edit_text("در حال بارگذاری...", reply_markup=None)
         
-        atk_state["add_step"] = "pick_source"
-        
-        # Show accounts to pick
-        buttons = []
-        for phone, info in accs.items():
-            name = info.get("name", phone)[:20]
-            buttons.append([InlineKeyboardButton(f" {name} ({phone})", callback_data=f"simp_add_acc_{phone}")])
-        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="home")])
-        
-        await q.message.edit_text(
-            " <b>ادد ممبر - مرحله ۱</b>\n"
-            "━━━━━━━━━━━━━━━\n"
-            "اکانتی که میخوای باهاش ادد بزنی رو انتخاب کن:",
-            reply_markup=InlineKeyboardMarkup(buttons))
+        # Redirect to user_breakdown
+        q.data = "user_breakdown"
+        await _cb_impl(c, q)
         return
 
     # ── SIMPLE ADD FLOW ───
