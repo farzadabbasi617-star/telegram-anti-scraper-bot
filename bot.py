@@ -7938,6 +7938,18 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                         added += 1
                         mark_user_as_added(target_gid, "", uid)
                         print(f"📊 [{phone}] Added count: {added}", flush=True)
+                        
+                        # Verification: check if user is actually in the group
+                        if i < 3:  # Only verify first 3 to avoid too many API calls
+                            try:
+                                await asyncio.sleep(1)  # Wait a bit for Telegram to update
+                                member_check = await client.get_chat_member(target_chat.id, uid)
+                                if member_check and member_check.status in ["member", "administrator", "creator"]:
+                                    print(f"✅ [{phone}] Verified: {uid} is in the group!", flush=True)
+                                else:
+                                    print(f"⚠️ [{phone}] Warning: {uid} may not be in the group (status: {member_check.status if member_check else 'None'})", flush=True)
+                            except Exception as verify_err:
+                                print(f"⚠️ [{phone}] Could not verify {uid}: {type(verify_err).__name__}", flush=True)
                     except Exception as invite_error:
                         print(f"❌ [{phone}] Invite failed for {uid}: {type(invite_error).__name__}: {invite_error}", flush=True)
                         raise  # Re-raise to be caught by outer exception handler
@@ -8145,19 +8157,29 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                 total_skipped += result[3]
                 print(f"✅ {phone} completed: {result[1]} added, {result[2]} failed, {result[3]} skipped", flush=True)
                 
-                # Update progress after completion
+                # Update progress after completion with error details
                 try:
+                    error_details = ""
+                    if result[2] > 0 or result[3] > 0:
+                        error_details = f"\n━━━━━━━━━━━━━━━━━━\n"
+                        if result[1] > 0:
+                            error_details += f"✅ {phone}: {result[1]} اد شد\n"
+                        if result[2] > 0:
+                            error_details += f"❌ {phone}: {result[2]} ناموفق\n"
+                        if result[3] > 0:
+                            error_details += f"⏭️ {phone}: {result[3]} رد شد\n"
+                    
                     await q.message.edit_text(
                         f"🚀 <b>اد موازی در حال اجرا</b>\n"
                         f"━━━━━━━━━━━━━━━━━━\n"
                         f"🎯 مقصد: {target_name}\n"
                         f"✅ تکمیل شده: {completed}/{num_accounts}\n"
                         f"📱 آخرین اکانت: {phone}\n"
-                        f"✅ اضافه شده: {result[1]}\n"
                         f"━━━━━━━━━━━━━━━━━━\n"
                         f"✅ کل اضافه شده: {total_added}\n"
                         f"❌ کل خطا: {total_failed}\n"
-                        f"⏭️ کل رد شده: {total_skipped}",
+                        f"⏭️ کل رد شده: {total_skipped}"
+                        f"{error_details}",
                         reply_markup=InlineKeyboardMarkup([
                             [InlineKeyboardButton("⏹️ توقف", callback_data="stop_parallel_add")]
                         ])
@@ -8188,6 +8210,15 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     
     type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
     
+    # Build detailed error summary
+    error_summary = ""
+    if results:
+        error_summary = "\n━━━━━━━━━━━━━━━━━━\n<b>📊 جزئیات هر اکانت:</b>\n"
+        for phone, added, failed, skipped in results:
+            if added > 0 or failed > 0 or skipped > 0:
+                status = "✅" if added > 0 else "❌" if failed > 0 else "⏭️"
+                error_summary += f"{status} {phone[-4:]}: {added} اد | {failed} خطا | {skipped} رد\n"
+    
     text = f"✅ <b>اد موازی تمام شد!</b>\n"
     text += f"━━━━━━━━━━━━━━━━━━\n"
     text += f"➕ {type_labels.get(add_type, 'همه')}\n"
@@ -8196,6 +8227,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
     text += f"❌ ناموفق: {total_failed}\n"
     text += f"⏭ رد شده: {total_skipped}\n"
     text += f"⏱ زمان: {m:02d}:{s:02d}\n"
+    text += error_summary
     
     buttons = [
         [InlineKeyboardButton("🔄 اد دوباره", callback_data="user_breakdown")],
