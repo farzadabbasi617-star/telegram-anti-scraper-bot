@@ -7811,6 +7811,15 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                 target_chat = await client.get_chat(f"@{DEFAULT_TARGET_USERNAME}")
                 target_peer = await client.resolve_peer(target_chat.id)
                 print(f"✅ [{phone}] Target resolved via username: {target_chat.title}", flush=True)
+                print(f"📊 [{phone}] Target ID: {target_chat.id}, Type: {target_chat.type}", flush=True)
+                print(f"📊 [{phone}] Target members: {target_chat.members_count}", flush=True)
+                
+                # Verify we're admin
+                try:
+                    me = await client.get_chat_member(target_chat.id, "me")
+                    print(f"👑 [{phone}] My status in target: {me.status}", flush=True)
+                except Exception as admin_err:
+                    print(f"⚠️ [{phone}] Could not check admin status: {admin_err}", flush=True)
             except Exception as e:
                 print(f"⚠️ [{phone}] Username resolve failed, trying ID: {e}", flush=True)
                 # Fallback to ID
@@ -7894,16 +7903,20 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type):
                         continue
                     
                     # Invite to channel
-                    if i < 3:
-                        print(f"📨 [{phone}] Inviting {uid} to channel...", flush=True)
-                    await client.invoke(
-                        InviteToChannel(channel=target_peer, users=[user_peer])
-                    )
-                    if i < 3:
-                        print(f"✅ [{phone}] Successfully invited {uid}!", flush=True)
-                    
-                    added += 1
-                    mark_user_as_added(target_gid, "", uid)
+                    print(f"📨 [{phone}] Inviting {uid} to channel...", flush=True)
+                    try:
+                        result = await client.invoke(
+                            InviteToChannel(channel=target_peer, users=[user_peer])
+                        )
+                        print(f"✅ [{phone}] Successfully invited {uid}! Result: {type(result).__name__}", flush=True)
+                        
+                        # Only count as added if we got a valid result
+                        added += 1
+                        mark_user_as_added(target_gid, "", uid)
+                        print(f"📊 [{phone}] Added count: {added}", flush=True)
+                    except Exception as invite_error:
+                        print(f"❌ [{phone}] Invite failed for {uid}: {type(invite_error).__name__}: {invite_error}", flush=True)
+                        raise  # Re-raise to be caught by outer exception handler
                     
                     # Update limits
                     limits = load_adder_limits()
