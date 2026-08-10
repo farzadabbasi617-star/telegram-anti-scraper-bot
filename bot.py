@@ -5769,7 +5769,10 @@ async def _cb_impl(c, q):
                 except: 
                     await asyncio.sleep(2)
             
-            me = await client.get_me()
+            try:
+                me = await client.get_me()
+            except AttributeError:
+                me = await client.app.get_me()
             
             # Store client
             atk_state["_simp_client"] = client
