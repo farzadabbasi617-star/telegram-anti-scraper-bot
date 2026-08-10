@@ -2231,6 +2231,14 @@ def auto_reset_adder_limits_thread():
 
 # ═══════════════════════════════════════════════════════
 
+
+# ═══════════════════════════════════════════════════════
+# DEFAULT TARGET GROUP FOR ADDING MEMBERS
+# ═══════════════════════════════════════════════════════
+DEFAULT_TARGET_USERNAME = "gament_super_gp"  # Default group for adding members
+
+# ═══════════════════════════════════════════════════════
+
 @app.on_message(filters.command(["help", "start"]) & filters.group)
 async def group_help_cmd(c, m):
     """Simple group help - works directly on app"""
@@ -4939,13 +4947,14 @@ async def _cb_impl(c, q):
             await q.answer("اکانتی پیدا نشد!", show_alert=True)
             return
         
-        # Connect to first account to get targets
+        # Use default target group
+        prog = await q.message.edit_text(f"🎯 مقصد پیش‌فرض: @{DEFAULT_TARGET_USERNAME}\n\n⏳ در حال شروع اد موازی...")
+        
+        # Resolve default target group
         first_phone = list(accs.keys())[0]
         fp = accs[first_phone].get("device_fp") or random.choice(DEVICE_FP)
         from attacker import safe_phone_filename as spfn
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(first_phone)}")
-        
-        prog = await q.message.edit_text("🔐 در حال اتصال برای دریافت لیست گروه‌ها...")
         
         try:
             client = AdvancedScraper(sess_path, API_ID, API_HASH, phone=first_phone, device_fp=fp)
@@ -4953,37 +4962,60 @@ async def _cb_impl(c, q):
             await robust_connect(client, max_retries=3)
             _enable_wal_on_session(client.app.name)
             
-            targets = []
-            async for dialog in client.app.get_dialogs(limit=500):
-                chat_type = str(dialog.chat.type).lower()
-                if "channel" in chat_type or "supergroup" in chat_type:
-                    cnt = getattr(dialog.chat, "members_count", 0) or 0
-                    icon = "📡" if "channel" in chat_type else "👥"
-                    targets.append((dialog.chat.title, dialog.chat.id, cnt, icon))
+            # Resolve default target
+            target_chat = await client.app.get_chat(f"@{DEFAULT_TARGET_USERNAME}")
+            target_gid = target_chat.id
+            target_name = target_chat.title
             
             try:
                 await client.disconnect()
             except:
                 pass
             
+            # Get users based on type
+            try:
+                cur = db.get_conn().cursor()
+                if add_type == "phone":
+                    cur.execute("SELECT user_id, username, first_name, last_name, phone FROM scraped_users WHERE phone IS NOT NULL AND phone != ''")
+                elif add_type == "username":
+                    cur.execute("""SELECT user_id, username, first_name, last_name, phone FROM scraped_users 
+                        WHERE username IS NOT NULL AND username != '' AND (phone IS NULL OR phone = '')""")
+                elif add_type == "id":
+                    cur.execute("""SELECT user_id, username, first_name, last_name, phone FROM scraped_users 
+                        WHERE (phone IS NULL OR phone = '') AND (username IS NULL OR username = '')""")
+                else:
+                    cur.execute("SELECT user_id, username, first_name, last_name, phone FROM scraped_users")
+                
+                rows = cur.fetchall()
+                cur.close()
+                
+                members = [{"user_id": r[0], "username": r[1] or "", "first_name": r[2] or "", "last_name": r[3] or "", "phone": r[4] or ""} for r in rows]
+            except Exception as e:
+                await prog.edit_text(f"❌ خطا در خواندن دیتابیس: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
+                return
+            
+            if not members:
+                await q.answer("کاربری پیدا نشد!", show_alert=True)
+                return
+            
+            random.shuffle(members)
+            
             type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
             
-            text = f"⚡ <b>اد موازی {type_labels.get(add_type, 'همه')}</b>\n"
-            text += f"━━━━━━━━━━━━━━━━━━\n"
-            text += f"📱 {len(accs)} اکانت آماده\n\n"
-            text += "گروه/کانال مقصد رو انتخاب کن:\n"
+            await prog.edit_text(
+                f"🚀 <b>شروع اد موازی</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"➕ {type_labels.get(add_type, 'همه')}\n"
+                f"🎯 مقصد: {target_name}\n"
+                f"👥 {len(members)} نفر\n"
+                f"📱 {len(accs)} اکانت\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"⏳ در حال شروع..."
+            )
             
-            buttons = []
-            for tname, tid, tcnt, icon in sorted(targets, key=lambda x:-x[2])[:20]:
-                buttons.append([InlineKeyboardButton(f"{icon} {tname[:28]} ({tcnt:,})", callback_data=f"parallel_tgt_{tid}")])
+            # Start parallel add task
+            asyncio.create_task(_execute_parallel_add(q, target_gid, accs, members, add_type))
             
-            if not targets:
-                text += "\n⚠️ هیچ Supergroup/کانالی پیدا نشد!"
-                buttons.append([InlineKeyboardButton("🏠 خانه", callback_data="home")])
-            else:
-                buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")])
-            
-            await prog.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
         except Exception as e:
             await prog.edit_text(f"❌ خطا: {str(e)[:200]}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
