@@ -2186,16 +2186,13 @@ bg_scraper_started = False
 # AUTO-RESET ADDER LIMITS EVERY 24 HOURS
 # ═══════════════════════════════════════════════════════
 
-async def auto_reset_adder_limits():
-    """Automatically reset adder limits every 24 hours"""
-    import pickle
-    
-    # Use a simple file to track last reset time (more reliable than database)
+def auto_reset_adder_limits_thread():
+    """Automatically reset adder limits every 24 hours (runs in separate thread)"""
     RESET_FILE = "last_auto_reset.txt"
     
     while True:
         try:
-            await asyncio.sleep(3600)  # Check every hour
+            time.sleep(3600)  # Check every hour
             
             # Check if 24 hours passed since last reset
             limits = load_adder_limits()
@@ -2230,7 +2227,7 @@ async def auto_reset_adder_limits():
         
         except Exception as e:
             print(f"❌ Auto-reset error: {e}", flush=True)
-            await asyncio.sleep(3600)  # Wait 1 hour before retry
+            time.sleep(3600)  # Wait 1 hour before retry
 
 # ═══════════════════════════════════════════════════════
 
@@ -7870,9 +7867,9 @@ if __name__ == "__main__":
             print(f"webhook clear err: {_e}", flush=True)
     Thread(target=run_health, daemon=True).start()
     Thread(target=keep_awake_loop, daemon=True).start()
-    # Start auto-reset background task
-    asyncio.create_task(auto_reset_adder_limits())
-    print("✅ Auto-reset task started (resets every 24h)", flush=True)
+    # Start auto-reset background thread
+    Thread(target=auto_reset_adder_limits_thread, daemon=True).start()
+    print("✅ Auto-reset thread started (resets every 24h)", flush=True)
     
     # Run with retry on FloodWait
     while True:
