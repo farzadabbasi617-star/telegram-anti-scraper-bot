@@ -5034,6 +5034,96 @@ async def _cb_impl(c, q):
         asyncio.create_task(_execute_simple_add(q, target_gid, client, phone, members, type_labels.get(add_type, 'همه')))
         return
 
+
+    # ==================== Mode selection handlers ====================
+    if d == "parallel_mode_safe":
+        atk_state["add_mode"] = "safe"
+        text = "🐌 <b>Safe Mode</b>\n\n"
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        text += "✅ حالت ایمن انتخاب شد\n\n"
+        text += "• تاخیر: 90-180 ثانیه\n"
+        text += "• استراحت: هر 10 اد، 5-10 دقیقه\n"
+        text += "• زمان: ~5 ساعت\n\n"
+        text += "آماده شروع؟"
+        
+        buttons = [
+            [InlineKeyboardButton("▶️ شروع", callback_data="parallel_start_add")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "parallel_mode_fast":
+        atk_state["add_mode"] = "fast"
+        text = "⚡ <b>Fast Mode</b>\n\n"
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        text += "⚠️ حالت سریع انتخاب شد\n\n"
+        text += "• تاخیر: 30-60 ثانیه\n"
+        text += "• استراحت: هر 20 اد، 2-3 دقیقه\n"
+        text += "• زمان: ~2 ساعت\n\n"
+        text += "آماده شروع؟"
+        
+        buttons = [
+            [InlineKeyboardButton("▶️ شروع", callback_data="parallel_start_add")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "parallel_mode_ultra":
+        atk_state["add_mode"] = "ultra"
+        text = "⚡⚡⚡ <b>Ultra Fast Mode</b>\n\n"
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        text += "🔴 <b>هشدار جدی:</b>\n\n"
+        text += "• تاخیر: فقط 1-3 ثانیه!\n"
+        text += "• استراحت: هیچی!\n"
+        text += "• زمان: ~5-10 دقیقه\n\n"
+        text += "⚠️ <b>عواقب:</b>\n"
+        text += "• اکانت‌ها 24-48 ساعت محدود میشن\n"
+        text += "• انتظار: 50-100 اد قبل از محدودیت\n"
+        text += "• بعد از محدودیت، اکانت‌ها برمی‌گردن\n\n"
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        text += "مطمئنی؟"
+        
+        buttons = [
+            [InlineKeyboardButton("⚡⚡⚡ شروع Ultra Fast", callback_data="parallel_start_add")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "parallel_start_add":
+        # Get stored data
+        target_gid = atk_state.get("parallel_target_gid")
+        accs = atk_state.get("parallel_accs", {})
+        members = atk_state.get("parallel_members", [])
+        add_type = atk_state.get("add_member_type", "all")
+        add_mode = atk_state.get("add_mode", "safe")
+        
+        if not target_gid or not accs or not members:
+            await q.answer("خطا! اطلاعات ناقص", show_alert=True)
+            return
+        
+        type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
+        
+        await q.message.edit_text(
+            f"🚀 <b>شروع اد موازی</b>\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"➕ {type_labels.get(add_type, 'همه')}\n"
+            f"📱 {len(accs)} اکانت\n"
+            f"👥 {len(members)} نفر\n"
+            f"⚡ Mode: {add_mode.upper()}\n"
+            f"━━━━━━━━━━━━━━━\n"
+            f"⏳ در حال شروع..."
+        )
+        
+        # Start parallel add with mode
+        asyncio.create_task(_execute_parallel_add(q, target_gid, accs, members, add_type, add_mode))
+        return
+
     # ==================== 🔧 اکانت انتخاب شد برای اد نوعی ====================
     if d.startswith("type_add_acc_"):
         phone = d[len("type_add_acc_"):]
@@ -5120,6 +5210,111 @@ async def _cb_impl(c, q):
     if d.startswith("parallel_type_"):
         add_type = d[len("parallel_type_"):]
         atk_state["parallel_add_type"] = add_type
+        
+        accs = list_saved_accounts()
+        if not accs:
+            await q.answer("اکانتی پیدا نشد!", show_alert=True)
+            return
+        
+        # Show mode selection
+        type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
+        
+        text = f"⚡ <b>اد موازی</b>\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"➕ {type_labels.get(add_type, 'همه')}\n"
+        text += f"📱 {len(accs)} اکانت\n"
+        text += f"🎯 مقصد: @{DEFAULT_TARGET_USERNAME}\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"حالت اد رو انتخاب کن:\n\n"
+        text += f"🐌 <b>Safe:</b> ~5 ساعت (ایمن)\n"
+        text += f"⚡ <b>Fast:</b> ~2 ساعت (متوسط)\n"
+        text += f"⚡⚡⚡ <b>Ultra:</b> ~5-10 دقیقه (خطرناک!)\n"
+        
+        buttons = [
+            [InlineKeyboardButton("🐌 Safe Mode", callback_data="parallel_mode_safe")],
+            [InlineKeyboardButton("⚡ Fast Mode", callback_data="parallel_mode_fast")],
+            [InlineKeyboardButton("⚡⚡⚡ Ultra Fast", callback_data="parallel_mode_ultra")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    # ==================== 🔧 Mode انتخاب شد ====================
+    if d == "parallel_mode_safe":
+        atk_state["add_mode"] = "safe"
+        add_type = atk_state.get("parallel_add_type", "all")
+        type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
+        
+        text = f"🐌 <b>Safe Mode</b>\n\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"✅ حالت ایمن انتخاب شد\n\n"
+        text += f"➕ {type_labels.get(add_type, 'همه')}\n"
+        text += f"• تاخیر: 90-180 ثانیه\n"
+        text += f"• استراحت: هر 10 اد، 5-10 دقیقه\n"
+        text += f"• زمان: ~5 ساعت\n\n"
+        text += f"آماده شروع؟"
+        
+        buttons = [
+            [InlineKeyboardButton("▶️ شروع", callback_data="parallel_start_confirmed")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "parallel_mode_fast":
+        atk_state["add_mode"] = "fast"
+        add_type = atk_state.get("parallel_add_type", "all")
+        type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
+        
+        text = f"⚡ <b>Fast Mode</b>\n\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"⚠️ حالت سریع انتخاب شد\n\n"
+        text += f"➕ {type_labels.get(add_type, 'همه')}\n"
+        text += f"• تاخیر: 30-60 ثانیه\n"
+        text += f"• استراحت: هر 20 اد، 2-3 دقیقه\n"
+        text += f"• زمان: ~2 ساعت\n\n"
+        text += f"آماده شروع؟"
+        
+        buttons = [
+            [InlineKeyboardButton("▶️ شروع", callback_data="parallel_start_confirmed")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "parallel_mode_ultra":
+        atk_state["add_mode"] = "ultra"
+        add_type = atk_state.get("parallel_add_type", "all")
+        type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
+        
+        text = f"⚡⚡⚡ <b>Ultra Fast Mode</b>\n\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"🔴 <b>هشدار جدی:</b>\n\n"
+        text += f"➕ {type_labels.get(add_type, 'همه')}\n"
+        text += f"• تاخیر: فقط 1-3 ثانیه!\n"
+        text += f"• استراحت: هیچی!\n"
+        text += f"• زمان: ~5-10 دقیقه\n\n"
+        text += f"⚠️ <b>عواقب:</b>\n"
+        text += f"• اکانت‌ها 24-48 ساعت محدود میشن\n"
+        text += f"• انتظار: 50-100 اد قبل از محدودیت\n"
+        text += f"• بعد از محدودیت، اکانت‌ها برمی‌گردن\n\n"
+        text += f"━━━━━━━━━━━━━━━━━━\n"
+        text += f"مطمئنی؟"
+        
+        buttons = [
+            [InlineKeyboardButton("⚡⚡⚡ شروع Ultra Fast", callback_data="parallel_start_confirmed")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="user_breakdown")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "parallel_start_confirmed":
+        add_type = atk_state.get("parallel_add_type", "all")
+        add_mode = atk_state.get("add_mode", "safe")
         
         accs = list_saved_accounts()
         if not accs:
@@ -7966,7 +8161,7 @@ async def _do_quick_add(q, gid, gname, uid_list, client, phone):
 
 
 
-async def _execute_parallel_add(q, target_gid, accs, members, add_type):
+async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode="safe"):
     """Execute parallel add with multiple accounts using threading to avoid disk I/O conflicts"""
     from pyrogram.raw.functions.channels import InviteToChannel
     from pyrogram.raw.functions.contacts import AddContact
