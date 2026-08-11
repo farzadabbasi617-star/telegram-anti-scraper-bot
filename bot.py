@@ -83,7 +83,7 @@ SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
 ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
-MAX_ADD_PER_ACCOUNT = 200  # For older accounts (2+ years). New accounts: use 50  # 🔒 Supergroup: 200/day safe, we use 50 to be conservative  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
+MAX_ADD_PER_ACCOUNT = 100  # Safer limit to avoid quick limitations  # For older accounts (2+ years). New accounts: use 50  # 🔒 Supergroup: 200/day safe, we use 50 to be conservative  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
 
 # گروه مقصد ثابت - ممبرها همیشه به این گروه اضافه میشن
 FIXED_TARGET_LINK = "https://t.me/+gLScToU4DZdjZmM0"
@@ -7771,12 +7771,12 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
             
-            # ═══ Professional delay strategy ═══
+            # ═══ Safer delay strategy ═══
             total_done = already_added + added
             
-            # Every 20 successful adds, take a 3-5 min break
-            if total_done > 0 and total_done % 20 == 0:
-                break_time = random.randint(180, 300)
+            # Every 10 successful adds, take a 5-10 min break
+            if total_done > 0 and total_done % 10 == 0:
+                break_time = random.randint(300, 600)
                 await prog.edit_text(
                     f"☕ استراحت {break_time // 60} دقیقه‌ای...\n"
                     f"✅ {added} نفر تا الان اد شدن\n"
@@ -7785,8 +7785,8 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
                 )
                 await asyncio.sleep(break_time)
             else:
-                # Normal delay: 30-90 seconds (like top GitHub projects)
-                delay = random.randint(30, 90)
+                # Safer delay: 90-180 seconds (1.5-3 minutes)
+                delay = random.randint(90, 180)
                 await asyncio.sleep(delay)
             
         except FloodWait as fw:
