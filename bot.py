@@ -49,6 +49,7 @@ from db import (
     delete_account as _db_delete_account, save_session_blob as _db_save_sess,
     get_config as _db_get_config, set_config as _db_set_config,
     get_adder_limits as _db_get_limits, set_adder_limit as _db_set_limit,
+    get_account_status as _db_get_account_status, clear_account_limitation as _db_clear_limitation,
     reset_adder_limits as _db_reset_limits, mark_added as _db_mark_added,
     is_added as _db_is_added, count_added as _db_count_added,
     set_bg_scan, get_bg_scan, get_owner_phone, set_owner_phone,
@@ -618,8 +619,15 @@ def load_adder_limits():
 
 def save_adder_limits(limits):
     for phone, info in limits.items():
-        added = info.get("added",0) if isinstance(info, dict) else int(info or 0)
-        _db_set_limit(phone, added)
+        if isinstance(info, dict):
+            added = info.get("added", 0)
+            limitation_type = info.get("limitation_type")
+            limitation_until = info.get("limitation_until", 0)
+        else:
+            added = int(info or 0)
+            limitation_type = None
+            limitation_until = 0
+        _db_set_limit(phone, added, limitation_type, limitation_until)
 
 config = load_config()
 CURRENT_GROUP_ID = config.get("defend_group")
@@ -4150,9 +4158,10 @@ async def _cb_impl(c, q):
         text += "🔸 <b>دانلود CSV</b> — خروجی اکسل از داده‌ها\n"
         btns = [
             [InlineKeyboardButton("📱 مدیریت اکانت‌ها", callback_data="manage_accounts"),
-             InlineKeyboardButton("⏱️ اسکن خودکار", callback_data="bg_menu")],
-            [InlineKeyboardButton("🔄 ریست آمار ادد", callback_data="reset_adder_all"),
-             InlineKeyboardButton("🧹 حذف تکراری‌ها", callback_data="dedup_users")],
+             InlineKeyboardButton("📊 وضعیت اکانت‌ها", callback_data="account_status")],
+            [InlineKeyboardButton("⏱️ اسکن خودکار", callback_data="bg_menu"),
+             InlineKeyboardButton("🔄 ریست آمار ادد", callback_data="reset_adder_all")],
+            [InlineKeyboardButton("🧹 حذف تکراری‌ها", callback_data="dedup_users"),
             [InlineKeyboardButton("🗑️ پاک کردن لیست ممبر", callback_data="clear_users"),
              InlineKeyboardButton("📥 CSV ممبرها", callback_data="export_users_csv")],
             [InlineKeyboardButton("📥 CSV تاریخچه ادد", callback_data="export_added_csv"),
@@ -5181,6 +5190,73 @@ async def _cb_impl(c, q):
         return
 
 
+
+
+    # ==================== 📊 وضعیت اکانت‌ها ====================
+    if d == "account_status":
+        accs = list_saved_accounts()
+        if not accs:
+            await q.answer("هیچ اکانتی ذخیره نشده!", show_alert=True)
+            return
+        
+        limits = load_adder_limits()
+        
+        text = "📊 <b>وضعیت اکانت‌ها</b>\n"
+        text += "━━━━━━━━━━━━━━━━━━\n\n"
+        
+        for phone, info in accs.items():
+            name = info.get("name", phone)
+            limit_info = limits.get(phone, {})
+            
+            added = limit_info.get("added", 0)
+            limitation_type = limit_info.get("limitation_type")
+            limitation_until = limit_info.get("limitation_until", 0)
+            
+            # Check if limitation has expired
+            is_limited = False
+            remaining_time = ""
+            if limitation_type and limitation_until > 0:
+                remaining_seconds = limitation_until - time.time()
+                if remaining_seconds > 0:
+                    is_limited = True
+                    hours = int(remaining_seconds // 3600)
+                    minutes = int((remaining_seconds % 3600) // 60)
+                    remaining_time = f"{hours}h {minutes}m"
+            
+            # Status icon
+            if is_limited:
+                status_icon = "🔴"
+                status_text = f"محدود ({limitation_type})"
+            elif added >= MAX_ADD_PER_ACCOUNT:
+                status_icon = "⚠️"
+                status_text = "پر شده"
+            else:
+                status_icon = "✅"
+                status_text = "سالم"
+            
+            text += f"{status_icon} <b>{name}</b>\n"
+            text += f"   📱 {phone}\n"
+            text += f"   📊 وضعیت: {status_text}\n"
+            text += f"   ➕ اد امروز: {added}/{MAX_ADD_PER_ACCOUNT}\n"
+            
+            if is_limited:
+                text += f"   ⏰ پایان محدودیت: {remaining_time}\n"
+            
+            text += "\n"
+        
+        text += "━━━━━━━━━━━━━━━━━━\n"
+        text += "💡 <b>راهنما:</b>\n"
+        text += "✅ سالم - آماده اد\n"
+        text += "⚠️ پر شده - ظرفیت تمام شده\n"
+        text += "🔴 محدود - FloodWait یا محدودیت\n"
+        
+        buttons = [
+            [InlineKeyboardButton("🔄 بروزرسانی", callback_data="account_status")],
+            [InlineKeyboardButton("🔙 بازگشت", callback_data="home")]
+        ]
+        
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
 
     # ==================== ⚡ اد موازی از تفکیک ====================
     if d == "parallel_add_breakdown":

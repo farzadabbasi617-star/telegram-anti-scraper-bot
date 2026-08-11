@@ -355,22 +355,31 @@ def get_config():
 def get_adder_limits():
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT phone, added, last_used FROM adder_limits_tbl")
+        cur.execute("SELECT phone, added, last_used, limitation_type, limitation_until FROM adder_limits_tbl")
         out = {}
         for r in cur.fetchall():
-            out[r["phone"]] = {"added": r["added"] or 0, "last_used": r["last_used"]}
+            out[r["phone"]] = {
+                "added": r["added"] or 0,
+                "last_used": r["last_used"],
+                "limitation_type": r.get("limitation_type"),
+                "limitation_until": r.get("limitation_until") or 0
+            }
         cur.close()
         return out
     except:
         return {}
 
-def set_adder_limit(phone, added):
+def set_adder_limit(phone, added, limitation_type=None, limitation_until=0):
     cur = get_conn().cursor()
     cur.execute("""
-        INSERT INTO adder_limits_tbl (phone, added, last_used)
-        VALUES (%s,%s,%s)
-        ON CONFLICT (phone) DO UPDATE SET added=EXCLUDED.added, last_used=EXCLUDED.last_used
-    """, (phone, int(added), int(time.time())))
+        INSERT INTO adder_limits_tbl (phone, added, last_used, limitation_type, limitation_until)
+        VALUES (%s,%s,%s,%s,%s)
+        ON CONFLICT (phone) DO UPDATE SET 
+            added=EXCLUDED.added, 
+            last_used=EXCLUDED.last_used,
+            limitation_type=EXCLUDED.limitation_type,
+            limitation_until=EXCLUDED.limitation_until
+    """, (phone, int(added), int(time.time()), limitation_type, int(limitation_until)))
     cur.close()
     # Also update account table count
     try:
@@ -385,6 +394,43 @@ def reset_adder_limits():
     cur.close()
 
 # ---------------- Added history ----------------
+
+def clear_account_limitation(phone):
+    """Clear limitation for an account"""
+    cur = get_conn().cursor()
+    cur.execute("""
+        UPDATE adder_limits_tbl 
+        SET limitation_type=NULL, limitation_until=0 
+        WHERE phone=%s
+    """, (phone,))
+    cur.close()
+
+def get_account_status(phone):
+    """Get detailed status for an account"""
+    limits = get_adder_limits()
+    info = limits.get(phone, {})
+    
+    limitation_type = info.get("limitation_type")
+    limitation_until = info.get("limitation_until", 0)
+    
+    # Check if limitation has expired
+    if limitation_type and limitation_until > 0:
+        if time.time() >= limitation_until:
+            # Limitation expired, clear it
+            clear_account_limitation(phone)
+            limitation_type = None
+            limitation_until = 0
+    
+    return {
+        "phone": phone,
+        "added": info.get("added", 0),
+        "last_used": info.get("last_used", 0),
+        "limitation_type": limitation_type,
+        "limitation_until": limitation_until,
+        "is_limited": limitation_type is not None,
+        "remaining_seconds": max(0, limitation_until - time.time()) if limitation_until > 0 else 0
+    }
+
 def mark_added(group_id, user_id, phone):
     try:
         cur = get_conn().cursor()
