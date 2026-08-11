@@ -4162,7 +4162,7 @@ async def _cb_impl(c, q):
             [InlineKeyboardButton("⏱️ اسکن خودکار", callback_data="bg_menu"),
              InlineKeyboardButton("🔄 ریست آمار ادد", callback_data="reset_adder_all")],
             [InlineKeyboardButton("🧹 حذف تکراری‌ها", callback_data="dedup_users"),
-            [InlineKeyboardButton("🗑️ پاک کردن لیست ممبر", callback_data="clear_users"),
+             InlineKeyboardButton("🗑️ پاک کردن لیست ممبر", callback_data="clear_users"),
              InlineKeyboardButton("📥 CSV ممبرها", callback_data="export_users_csv")],
             [InlineKeyboardButton("📥 CSV تاریخچه ادد", callback_data="export_added_csv"),
              InlineKeyboardButton("🔝 منوی اصلی", callback_data="home")],
