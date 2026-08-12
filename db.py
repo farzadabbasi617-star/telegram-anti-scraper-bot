@@ -166,6 +166,8 @@ def init_tables():
             limitation_until BIGINT DEFAULT 0
         )
     """)
+    cur.execute("ALTER TABLE adder_limits_tbl ADD COLUMN IF NOT EXISTS limitation_type TEXT DEFAULT NULL;")
+    cur.execute("ALTER TABLE adder_limits_tbl ADD COLUMN IF NOT EXISTS limitation_until BIGINT DEFAULT 0;")
     cur.execute("""
         CREATE TABLE IF NOT EXISTS config_tbl (
             group_id BIGINT PRIMARY KEY DEFAULT 0,

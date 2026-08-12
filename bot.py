@@ -2105,6 +2105,12 @@ def main_menu():
 
     buttons = []
 
+    from pyrogram.types import WebAppInfo
+    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
+    buttons.append([
+        InlineKeyboardButton("📱 🚀 فتح مینی‌اپ و داشبورد مدیریتی", web_app=WebAppInfo(url=app_url))
+    ])
+
     # ═══════════════ 🟢 TELEGRAM SECTION ═══════════════
     buttons.append([InlineKeyboardButton("🟢 ═══ تلگرام ═══ 🟢", callback_data="noop")])
 
@@ -3423,6 +3429,18 @@ async def start_cmd(c, m):
     except:
         pass
     await m.reply_text(build_welcome_text(), reply_markup=main_menu(), disable_web_page_preview=True)
+
+@app.on_message(filters.command(["app", "miniapp", "dashboard"]) & filters.private & filters.user(ADMIN_ID))
+async def miniapp_cmd(c, m):
+    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
+    from pyrogram.types import WebAppInfo
+    await m.reply_text(
+        "📱 **مینی‌اپ تلگرام آماده شد!**\n"
+        "جهت باز کردن داشبورد مدیریت، پایش اکانت‌ها و اتاق حمله روی دکمه زیر کلیک کنید:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🚀 باز کردن مینی‌اپ تلگرام (TMA)", web_app=WebAppInfo(url=app_url))]
+        ])
+    )
 
 # Honeypot callback watcher (catches non-admin users in protected group clicking trap buttons)
 @app.on_callback_query(~filters.user(ADMIN_ID))
@@ -7713,12 +7731,24 @@ class Health(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
 def run_health():
+    """Run Web App + REST API + Health check on PORT 10000"""
+    import asyncio
+    from aiohttp import web
+    from web_app import create_web_app
+
     while True:
         try:
-            server = HTTPServer(("0.0.0.0", PORT), Health)
-            server.serve_forever()
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            web_app = create_web_app(app_bot=app, atk_state=atk_state)
+            runner = web.AppRunner(web_app)
+            loop.run_until_complete(runner.setup())
+            site = web.TCPSite(runner, '0.0.0.0', PORT)
+            loop.run_until_complete(site.start())
+            print(f"🚀 Telegram Mini App & API server live on port {PORT}", flush=True)
+            loop.run_forever()
         except Exception as e:
-            print(f"⚠️ Health server error: {e}, restarting in 5s...", flush=True)
+            print(f"⚠️ Web app server error: {e}, restarting in 5s...", flush=True)
             time.sleep(5)
 
 # ضدخواب: هر ۵ دقیقه خودش به خودش درخواست میزنه که رندر متوجه فعال بودن سرویس بشه

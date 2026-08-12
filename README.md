@@ -6,15 +6,18 @@
 
 ---
 
-## 💎 Senior Architect & High-Availability Upgrades (2026-08-12)
+## 🚀 Telegram Mini App (TMA) & Senior Architect Upgrades (2026-08-12)
 
+- ✅ **Telegram Mini App (TMA) & Web Dashboard:** Full Persian RTL SPA built with Tailwind CSS, Vazirmatn font, and Telegram WebApp SDK. Accessible directly inside Telegram via WebApp button or `/app` command.
+- ✅ **Clean Two-Category Attack Structure:**
+  1. 📱 **ادد تک اکانت (Single Account Add):** Select specific account, filter target member type (Phone/Username/ID/All), and invite to target group.
+  2. ⚡ **ادد موازی (Parallel Multi-Account Add):** Select speed mode (Safe/Fast/Ultra Fast), member filter, and launch concurrent multi-account adds across all healthy accounts.
+- ✅ **Real-Time Account Health Console:** Displays live health status, today's add count / 100 limit progress bar, and FloodWait countdown timer for every account.
+- ✅ **Automated 24h Daily Reset:** Resets daily add counters every 24 hours to guarantee accounts stay within safe 100-add daily limits.
 - ✅ **Neon PostgreSQL Auto-Reconnect & Socket Health Checks:** Eliminates connection drop freezes when Neon database sleeps or drops idle sockets.
-- ✅ **`@db_retry` Resilient Query Execution:** Decorator wraps all DB transactions, catching transient `OperationalError`/`InterfaceError` and auto-reconnecting transparently without user impact.
+- ✅ **`@db_retry` Resilient Query Execution:** Decorator wraps all DB transactions, catching transient `OperationalError`/`InterfaceError` and auto-reconnecting transparently.
 - ✅ **High-Performance Multi-Column Indexes:** Created indexes on `scraped_users(source_group_id, added_at, phone, username)` and `scanned_chats_tbl(category)` for sub-millisecond queries across 25,000+ members.
 - ✅ **Optional AES Session Encryption:** Built-in AES-CTR session blob encryption via `SESSION_ENCRYPTION_KEY` environment variable.
-- ✅ **Async Thread Offloader (`async_db_call`):** Offloads heavy DB queries to background worker threads to keep Pyrogram's asyncio event loop 100% fluid.
-- ✅ **Crash-Proof Health Check & Keep-Alive:** Wrapped HTTP health server and ping routines in restart loops.
-- ✅ **Stale Session Garbage Collector:** Automatically purges temporary `_newtmp_*` login files older than 24h.
 
 ---
 
