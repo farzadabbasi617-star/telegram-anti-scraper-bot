@@ -2106,9 +2106,10 @@ def main_menu():
     buttons = []
 
     from pyrogram.types import WebAppInfo
-    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
+    pub_base = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
+    app_url = f"{pub_base}/app?v={int(time.time())}"
     buttons.append([
-        InlineKeyboardButton("📱 🚀 فتح مینی‌اپ و داشبورد مدیریتی", web_app=WebAppInfo(url=app_url))
+        InlineKeyboardButton("📱 🚀 فتح مینی‌اپ و داشبورد مدیریتی (v3.5)", web_app=WebAppInfo(url=app_url))
     ])
 
     # ═══════════════ 🟢 TELEGRAM SECTION ═══════════════
@@ -3432,13 +3433,14 @@ async def start_cmd(c, m):
 
 @app.on_message(filters.command(["app", "miniapp", "dashboard"]) & filters.private & filters.user(ADMIN_ID))
 async def miniapp_cmd(c, m):
-    app_url = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
+    pub_base = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
+    app_url = f"{pub_base}/app?v={int(time.time())}"
     from pyrogram.types import WebAppInfo
     await m.reply_text(
-        "📱 **مینی‌اپ تلگرام آماده شد!**\n"
+        "📱 **مینی‌اپ تلگرام (نسخه جدید v3.5) آماده شد!**\n"
         "جهت باز کردن داشبورد مدیریت، پایش اکانت‌ها و اتاق حمله روی دکمه زیر کلیک کنید:",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🚀 باز کردن مینی‌اپ تلگرام (TMA)", web_app=WebAppInfo(url=app_url))]
+            [InlineKeyboardButton("🚀 باز کردن مینی‌اپ تلگرام (v3.5)", web_app=WebAppInfo(url=app_url))]
         ])
     )
 

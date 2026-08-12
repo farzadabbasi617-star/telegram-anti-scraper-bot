@@ -350,7 +350,10 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 🛡️
             </div>
             <div>
-                <h1 class="text-base font-extrabold text-white tracking-tight">سامانه آنتی‌اسکریپت</h1>
+                <div class="flex items-center gap-2">
+                    <h1 class="text-base font-extrabold text-white tracking-tight">سامانه آنتی‌اسکریپت</h1>
+                    <span class="text-[10px] bg-blue-500/30 text-blue-300 px-2 py-0.5 rounded-md font-mono border border-blue-500/40">v3.5 - ADM Live</span>
+                </div>
                 <div class="flex items-center gap-1.5 text-xs text-emerald-400 font-medium mt-0.5">
                     <span id="header-dot" class="w-2 h-2 rounded-full bg-emerald-500 pulse-live"></span>
                     <span id="status-text">سیستم آماده به کار</span>
@@ -923,9 +926,20 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def send_nocache(self, body_bytes, content_type='text/html; charset=utf-8'):
+        self.send_response(200)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
+        self.send_header('Content-Length', str(len(body_bytes)))
+        self.end_headers()
+        self.wfile.write(body_bytes)
+
     def do_HEAD(self):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
 
     def do_GET(self):
@@ -933,40 +947,21 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
             path = self.path.split('?')[0]
             if path in ['/', '/app', '/index.html']:
                 body = MINI_APP_HTML.encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.send_nocache(body, 'text/html; charset=utf-8')
             elif path == '/api/dashboard':
                 data = get_dashboard_dict()
                 body = json.dumps(data, ensure_ascii=False).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.send_nocache(body, 'application/json; charset=utf-8')
             elif path == '/api/accounts':
                 data = get_accounts_dict()
                 body = json.dumps(data, ensure_ascii=False).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.send_nocache(body, 'application/json; charset=utf-8')
             elif path == '/api/members/stats':
                 data = get_members_stats_dict()
                 body = json.dumps(data, ensure_ascii=False).encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json; charset=utf-8')
-                self.send_header('Content-Length', str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                self.send_nocache(body, 'application/json; charset=utf-8')
             else:
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/plain; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(b"OK")
+                self.send_nocache(b"OK", 'text/plain; charset=utf-8')
         except Exception as e:
             self.send_response(500)
             self.end_headers()
@@ -1034,18 +1029,19 @@ def create_web_app(app_bot=None, atk_state=None):
     set_app_refs(app_bot, atk_state)
     try:
         from aiohttp import web
+        NO_CACHE = {'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0', 'Pragma': 'no-cache'}
         
         async def aio_serve_mini_app(request):
-            return web.Response(text=MINI_APP_HTML, content_type='text/html', charset='utf-8')
+            return web.Response(text=MINI_APP_HTML, content_type='text/html', charset='utf-8', headers=NO_CACHE)
 
         async def aio_api_dashboard(request):
-            return web.json_response(get_dashboard_dict())
+            return web.json_response(get_dashboard_dict(), headers=NO_CACHE)
 
         async def aio_api_accounts(request):
-            return web.json_response(get_accounts_dict())
+            return web.json_response(get_accounts_dict(), headers=NO_CACHE)
 
         async def aio_api_members_stats(request):
-            return web.json_response(get_members_stats_dict())
+            return web.json_response(get_members_stats_dict(), headers=NO_CACHE)
 
         async def aio_api_add_single(request):
             try:
@@ -1053,9 +1049,9 @@ def create_web_app(app_bot=None, atk_state=None):
                 phone = data.get("phone", "")
                 add_type = data.get("add_type", "all")
                 ok, msg = trigger_single_add(phone, add_type)
-                return web.json_response({"ok": ok, "message": msg})
+                return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
             except Exception as e:
-                return web.json_response({"ok": False, "error": str(e)}, status=400)
+                return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
 
         async def aio_api_add_parallel(request):
             try:
@@ -1063,13 +1059,13 @@ def create_web_app(app_bot=None, atk_state=None):
                 add_mode = data.get("mode", "ultra")
                 add_type = data.get("add_type", "all")
                 ok, msg = trigger_parallel_add(add_mode, add_type)
-                return web.json_response({"ok": ok, "message": msg})
+                return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
             except Exception as e:
-                return web.json_response({"ok": False, "error": str(e)}, status=400)
+                return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
 
         async def aio_api_reset_limits(request):
             db.reset_adder_limits()
-            return web.json_response({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."})
+            return web.json_response({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."}, headers=NO_CACHE)
 
         async def aio_api_set_target(request):
             try:
@@ -1078,15 +1074,20 @@ def create_web_app(app_bot=None, atk_state=None):
                 if target:
                     cfg = db.get_config()
                     db.set_config(cfg.get("group_id", 0), target, cfg.get("defense_enabled", True))
-                return web.json_response({"ok": True, "target": target})
+                return web.json_response({"ok": True, "target": target}, headers=NO_CACHE)
             except Exception as e:
-                return web.json_response({"ok": False, "error": str(e)}, status=400)
+                return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
 
         async def aio_api_stop_add(request):
+            try:
+                from bot import request_stop_all
+                request_stop_all()
+            except: pass
             if atk_state_ref:
                 atk_state_ref["_stop_requested"] = True
                 atk_state_ref["stop_parallel_add"] = True
-            return web.json_response({"ok": True, "message": "درخواست توقف ارسال شد."})
+                atk_state_ref["add_in_progress"] = False
+            return web.json_response({"ok": True, "message": "عملیات با موفقیت متوقف شد."}, headers=NO_CACHE)
 
         app = web.Application()
         app.router.add_get('/', aio_serve_mini_app)
