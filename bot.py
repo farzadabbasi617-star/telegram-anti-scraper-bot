@@ -7896,19 +7896,11 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
                 except:
                     pass
             
-            # Method 4: Last resort - access_hash=0 (rarely works)
-            if user_peer is None:
-                try:
-                    user_peer = InputPeerUser(user_id=uid, access_hash=0)
-                except:
-                    skipped += 1
-                    errors_detail["peer"] += 1
-                    if not first_error: first_error = f"Can't resolve {uid} (no username)"
-                    continue
-            
+            # If user cannot be resolved, skip user (do not attempt invalid access_hash=0)
             if user_peer is None:
                 skipped += 1
                 errors_detail["peer"] += 1
+                if not first_error: first_error = f"Can't resolve {uid} (no username)"
                 continue
             
             # Add contact first (helps with adding) - only for first 3
@@ -8294,6 +8286,11 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
             skipped = 0
             
             for i, member in enumerate(member_list[:remaining]):
+                # Check stop request from UI / Mini App
+                if atk_state.get("_stop_requested") or atk_state.get("stop_parallel_add"):
+                    print(f"⏹️ [{phone}] Stop requested, halting add loop.", flush=True)
+                    break
+
                 uid = member.get("user_id", 0)
                 username = member.get("username", "")
                 
@@ -8407,31 +8404,33 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
                     save_adder_limits(limits)
                     
-                    # Delay (adjusted for 200 limit)
-                    total_acc = already_added + added
-                    if total_acc > 150:
-                        await asyncio.sleep(random.randint(20, 30))  # 20-30s for last 50
-                    elif total_acc > 100:
-                        await asyncio.sleep(random.randint(15, 25))  # 15-25s for 100-150
-                    elif total_acc > 50:
-                        await asyncio.sleep(random.randint(10, 20))  # 10-20s for 50-100
-                    else:
-                        await asyncio.sleep(random.randint(8, 15))   # 8-15s for first 50
+                    # Mode-based delays: Ultra Fast uses 1-3s, Fast uses 15-30s, Safe uses 30-60s
+                    if add_mode == "ultra":
+                        await asyncio.sleep(random.uniform(1.0, 3.0))
+                    elif add_mode == "fast":
+                        await asyncio.sleep(random.randint(15, 30))
+                    else:  # safe
+                        total_acc = already_added + added
+                        if total_acc > 100:
+                            await asyncio.sleep(random.randint(45, 90))
+                        else:
+                            await asyncio.sleep(random.randint(25, 50))
                     
                 except FloodWait as fw:
                     failed += 1
                     print(f"⏱️ [{phone}] FloodWait {fw.value}s for {uid}", flush=True)
+                    try:
+                        db.set_adder_limit(phone, already_added + added, limitation_type="FloodWait", limitation_until=int(time.time()) + fw.value)
+                    except: pass
                     
                     # Track if account is limited
                     with stats_lock:
                         stats[phone]["limited"] = True
                         stats[phone]["flood_wait"] = max(stats[phone]["flood_wait"], fw.value)
                     
-                    # If flood wait is very long (>1 hour), mark as limited
                     if fw.value > 3600:
                         print(f"🚫 [{phone}] Account limited for {fw.value // 3600} hours!", flush=True)
                     
-                    await asyncio.sleep(min(fw.value + 5, 300))  # Max 5 minutes wait
                     break  # Stop this account, move to next
                 except UserAlreadyParticipant:
                     skipped += 1

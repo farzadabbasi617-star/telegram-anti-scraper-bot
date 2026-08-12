@@ -681,9 +681,16 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
                     if (m.is_adding) {
                         document.getElementById('card-live-progress').classList.remove('hidden');
-                        document.getElementById('prog-added').innerText = m.add_progress.added || 0;
-                        document.getElementById('prog-failed').innerText = m.add_progress.failed || 0;
-                        document.getElementById('prog-skipped').innerText = m.add_progress.skipped || 0;
+                        document.getElementById('prog-added').innerText = (m.add_progress.added || 0).toLocaleString('fa-IR');
+                        document.getElementById('prog-failed').innerText = (m.add_progress.failed || 0).toLocaleString('fa-IR');
+                        document.getElementById('prog-skipped').innerText = (m.add_progress.skipped || 0).toLocaleString('fa-IR');
+                        const total = m.add_progress.total || 1;
+                        const current = (m.add_progress.added || 0) + (m.add_progress.failed || 0) + (m.add_progress.skipped || 0);
+                        const pct = Math.min(100, Math.round((current / total) * 100));
+                        document.getElementById('prog-bar').style.width = pct + '%';
+                        document.getElementById('status-text').innerText = 'در حال انجام عملیات ادد...';
+                    } else {
+                        document.getElementById('status-text').innerText = 'سیستم آماده به کار';
                     }
                 }
             } catch (e) { console.error(e); }
@@ -786,8 +793,9 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
         // Auto Refresh
         setInterval(() => {
-            if (activeTab === 'dashboard') loadDashboard();
-        }, 5000);
+            loadDashboard();
+            if (activeTab === 'accounts') loadAccounts();
+        }, 2000);
 
         // Initial Load
         loadDashboard();
