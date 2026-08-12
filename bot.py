@@ -8158,67 +8158,69 @@ async def _do_quick_add(q, gid, gname, uid_list, client, phone):
 
 
 async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode="safe"):
-    """Execute parallel add with multiple accounts using threading to avoid disk I/O conflicts"""
+    """Execute parallel add using Smart Round-Robin distribution across all active accounts."""
     from pyrogram.raw.functions.channels import InviteToChannel
     from pyrogram.raw.functions.contacts import AddContact
-    from pyrogram.raw.types import InputPeerUser
-    from pyrogram.errors import FloodWait, PeerIdInvalid, UserAlreadyParticipant
-    from pyrogram.errors import UserPrivacyRestricted, UserNotMutualContact
-    from pyrogram.errors import ChatAdminRequired, UsersTooMuch
-    import concurrent.futures
-    import threading
-    
+    from pyrogram.errors import FloodWait, UserAlreadyParticipant, UserPrivacyRestricted, UserNotMutualContact, ChatAdminRequired, UsersTooMuch
+    import tempfile, shutil
+
     start_t = time.time()
     total_members = len(members)
     num_accounts = len(accs)
-    
-    # Split members among accounts
-    members_per_account = total_members // num_accounts
-    account_members = {}
-    
-    for i, (phone, info) in enumerate(accs.items()):
-        start_idx = i * members_per_account
-        end_idx = start_idx + members_per_account if i < num_accounts - 1 else total_members
-        account_members[phone] = members[start_idx:end_idx]
-    
-    # Shared stats with thread lock
-    stats_lock = threading.Lock()
-    stats = {phone: {"added": 0, "failed": 0, "skipped": 0, "error": None, "banned": False, "limited": False, "flood_wait": 0} for phone in accs.keys()}
-    
-    async def add_with_account_async(phone, info, member_list):
-        """Add members with one account"""
+    if num_accounts == 0 or total_members == 0:
+        return
+
+    # Shared queue of members to add
+    member_queue = asyncio.Queue()
+    for m in members:
+        member_queue.put_nowait(m)
+
+    total_added = 0
+    total_failed = 0
+    total_skipped = 0
+
+    # Determine per-account delay based on add_mode & account count
+    if add_mode == "ultra":
+        per_account_delay = max(1.5, 10.0 / max(1, num_accounts))  # ~1.5-3s interval for target group
+    elif add_mode == "fast":
+        per_account_delay = 12.0
+    else:  # safe
+        per_account_delay = 25.0
+
+    target_name = "گروه مقصد"
+    try:
+        if isinstance(target_gid, str) and target_gid.startswith("@"):
+            target_name = target_gid
+    except: pass
+
+    async def worker_account(phone, info):
+        nonlocal total_added, total_failed, total_skipped
         from pyrogram import Client
         from attacker import safe_phone_filename as spfn
-        import shutil
-        import tempfile
-        
+
         fp = info.get("device_fp") or random.choice(DEVICE_FP)
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
-        
-        print(f"🔐 [{phone}] Starting connection...", flush=True)
-        
-        # Copy session file to temp location to avoid disk I/O conflicts
+
+        if not os.path.exists(sess_path + ".session"):
+            print(f"⚠️ [{phone}] Session file missing: {sess_path}.session", flush=True)
+            return
+
         temp_dir = tempfile.mkdtemp()
         temp_sess_name = f"temp_{spfn(phone)}_{int(time.time())}"
         temp_sess_path = os.path.join(temp_dir, temp_sess_name)
-        
+
+        client = None
+        acc_added = 0
+        acc_limits = load_adder_limits()
+        already_added = acc_limits.get(phone, {}).get("added", 0)
+        max_for_this_acc = max(0, MAX_ADD_PER_ACCOUNT - already_added)
+
+        if max_for_this_acc <= 0:
+            print(f"⚠️ [{phone}] Daily capacity full ({already_added}/100)", flush=True)
+            return
+
         try:
-            # Copy session file and remove WAL/journal files
-            if os.path.exists(sess_path + ".session"):
-                shutil.copy2(sess_path + ".session", temp_sess_path + ".session")
-                print(f"📋 [{phone}] Copied session to temp: {temp_sess_path}", flush=True)
-                
-                # Remove any WAL/journal files from temp
-                for ext in [".session-wal", ".session-journal", ".session-shm"]:
-                    temp_file = temp_sess_path + ext
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                        print(f"🗑️ [{phone}] Removed {ext} from temp", flush=True)
-            else:
-                print(f"⚠️ [{phone}] Session file not found: {sess_path}.session", flush=True)
-                raise Exception(f"Session file not found for {phone}")
-            
-            # Use Pyrogram Client with temp session
+            shutil.copy2(sess_path + ".session", temp_sess_path + ".session")
             client = Client(
                 temp_sess_path,
                 api_id=API_ID,
@@ -8227,503 +8229,112 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 device_model=fp.get("device_model", "Unknown"),
                 system_version=fp.get("system_version", "Unknown"),
                 app_version=fp.get("app_version", "1.0"),
-                lang_code=fp.get("lang_code", "en")
+                lang_code=fp.get("lang_code", "fa")
             )
-            
-            print(f"🔗 [{phone}] Connecting...", flush=True)
-            
-            # Start the client with timeout (60 seconds)
+            await asyncio.wait_for(client.start(), timeout=45)
+
+            # Resolve target once for this account
             try:
-                await asyncio.wait_for(client.start(), timeout=60)
-                print(f"✅ [{phone}] Connected successfully", flush=True)
-            except asyncio.TimeoutError:
-                print(f"⏰ [{phone}] Connection timeout after 60s", flush=True)
-                raise Exception(f"Connection timeout for {phone}")
-            
-            print(f"✅ [{phone}] Connected successfully", flush=True)
-            
-            # Resolve target using username (more reliable than ID)
-            print(f"🎯 [{phone}] Resolving target...", flush=True)
-            try:
-                # Try to get chat by username first
-                target_chat = await client.get_chat(f"@{DEFAULT_TARGET_USERNAME}")
+                target_chat = await client.get_chat(target_gid)
                 target_peer = await client.resolve_peer(target_chat.id)
-                print(f"✅ [{phone}] Target resolved via username: {target_chat.title}", flush=True)
-                print(f"📊 [{phone}] Target ID: {target_chat.id}, Type: {target_chat.type}", flush=True)
-                print(f"📊 [{phone}] Target members: {target_chat.members_count}", flush=True)
-                
-                # Verify we're admin
-                try:
-                    me = await client.get_chat_member(target_chat.id, "me")
-                    print(f"👑 [{phone}] My status in target: {me.status}", flush=True)
-                except Exception as admin_err:
-                    print(f"⚠️ [{phone}] Could not check admin status: {admin_err}", flush=True)
-            except Exception as e:
-                print(f"⚠️ [{phone}] Username resolve failed, trying ID: {e}", flush=True)
-                # Fallback to ID
+            except Exception:
                 target_peer = await client.resolve_peer(target_gid)
-                print(f"✅ [{phone}] Target resolved via ID", flush=True)
-            
-            # Check limits
-            limits = load_adder_limits()
-            already_added = limits.get(phone, {}).get("added", 0)
-            remaining = MAX_ADD_PER_ACCOUNT - already_added
-            
-            print(f"📊 [{phone}] Members to add: {len(member_list)}", flush=True)
-            print(f"📊 [{phone}] Already added today: {already_added}", flush=True)
-            print(f"📊 [{phone}] Remaining capacity: {remaining}", flush=True)
-            
-            if len(member_list) == 0:
-                print(f"⚠️ [{phone}] No members to add!", flush=True)
-                return phone, 0, 0, 0
-            
-            if remaining <= 0:
-                print(f"⚠️ [{phone}] No remaining capacity (already added {already_added} today)", flush=True)
-                return phone, 0, 0, 0
-            
-            added = 0
-            failed = 0
-            skipped = 0
-            
-            for i, member in enumerate(member_list[:remaining]):
-                # Check stop request from UI / Mini App
+
+            while not member_queue.empty() and acc_added < max_for_this_acc:
                 if atk_state.get("_stop_requested") or atk_state.get("stop_parallel_add"):
-                    print(f"⏹️ [{phone}] Stop requested, halting add loop.", flush=True)
+                    print(f"⏹️ [{phone}] Stop requested, halting worker.", flush=True)
+                    break
+
+                try:
+                    member = member_queue.get_nowait()
+                except asyncio.QueueEmpty:
                     break
 
                 uid = member.get("user_id", 0)
-                username = member.get("username", "")
-                
-                if i < 3 or i % 10 == 0:  # Log first 3 and every 10th
-                    print(f"👤 [{phone}] Processing member {i+1}/{len(member_list[:remaining])}: {uid} (@{username})", flush=True)
-                
-                if uid <= 10000 or uid >= 10**11:
-                    skipped += 1
-                    if i < 3:
-                        print(f"⏭️ [{phone}] Skipped {uid}: invalid UID range", flush=True)
+                username = member.get("username", "").strip()
+
+                if uid <= 10000 or uid >= 10**11 or is_user_already_added(target_gid, uid):
+                    total_skipped += 1
+                    member_queue.task_done()
                     continue
-                
-                if is_user_already_added(target_gid, uid):
-                    skipped += 1
-                    if i < 3:
-                        print(f"⏭️ [{phone}] Skipped {uid}: already added before", flush=True)
+
+                user_peer = None
+                if username:
+                    try:
+                        clean_un = username.lstrip("@")
+                        user_peer = await client.resolve_peer(clean_un)
+                    except Exception: pass
+
+                if user_peer is None:
+                    try:
+                        user_peer = await client.resolve_peer(uid)
+                    except Exception: pass
+
+                if user_peer is None:
+                    total_skipped += 1
+                    member_queue.task_done()
                     continue
-                
+
                 try:
-                    # Resolve user
-                    user_peer = None
-                    username = member.get("username", "").strip()
-                    
-                    if username:
+                    if acc_added < 3:
                         try:
-                            clean_username = username.lstrip("@")
-                            if i < 3:
-                                print(f"🔍 [{phone}] Resolving @{clean_username}...", flush=True)
-                            user_peer = await client.resolve_peer(clean_username)
-                            if i < 3:
-                                print(f"✅ [{phone}] Resolved @{clean_username}", flush=True)
-                        except Exception as e:
-                            if i < 3:
-                                print(f"❌ [{phone}] Failed to resolve @{clean_username}: {e}", flush=True)
-                            pass
-                    
-                    if user_peer is None:
-                        try:
-                            if i < 3:
-                                print(f"🔍 [{phone}] Resolving UID {uid}...", flush=True)
-                            user_peer = await client.resolve_peer(uid)
-                            if i < 3:
-                                print(f"✅ [{phone}] Resolved UID {uid}", flush=True)
-                        except Exception as e:
-                            if i < 3:
-                                print(f"❌ [{phone}] Failed to resolve UID {uid}: {e}", flush=True)
-                            pass
-                    
-                    if user_peer is None:
-                        skipped += 1
-                        if i < 3:
-                            print(f"⏭️ [{phone}] Skipped {uid}: could not resolve peer", flush=True)
-                        continue
-                    
-                    # Add to contacts first (required for successful invite)
-                    if i < 3:
-                        print(f"📇 [{phone}] Adding {uid} to contacts...", flush=True)
-                    try:
-                        await client.invoke(
-                            AddContact(
-                                id=user_peer,
-                                first_name=str(uid)[:30],
-                                last_name="",
-                                phone="",
-                                add_phone_privacy_exception=False
-                            )
-                        )
-                        if i < 3:
-                            print(f"✅ [{phone}] Added {uid} to contacts", flush=True)
-                    except Exception as contact_error:
-                        if i < 3:
-                            print(f"⚠️ [{phone}] Contact add failed (continuing): {type(contact_error).__name__}", flush=True)
-                        # Continue anyway - contact might already exist
-                    
-                    # Small delay after adding contact
-                    await asyncio.sleep(0.5)
-                    
-                    # Invite to channel
-                    print(f"📨 [{phone}] Inviting {uid} to channel...", flush=True)
-                    try:
-                        result = await client.invoke(
-                            InviteToChannel(channel=target_peer, users=[user_peer])
-                        )
-                        print(f"✅ [{phone}] Successfully invited {uid}! Result: {type(result).__name__}", flush=True)
-                        
-                        # Only count as added if we got a valid result
-                        added += 1
-                        mark_user_as_added(target_gid, "", uid)
-                        print(f"📊 [{phone}] Added count: {added}", flush=True)
-                        
-                        # Verification: check if user is actually in the group
-                        if i < 3:  # Only verify first 3 to avoid too many API calls
-                            try:
-                                await asyncio.sleep(1)  # Wait a bit for Telegram to update
-                                try:
-                                    member_check = await client.get_chat_member(target_chat.id, uid)
-                                except AttributeError:
-                                    member_check = await client.app.get_chat_member(target_chat.id, uid)
-                                if member_check and member_check.status in ["member", "administrator", "creator"]:
-                                    print(f"✅ [{phone}] Verified: {uid} is in the group!", flush=True)
-                                else:
-                                    print(f"⚠️ [{phone}] Warning: {uid} may not be in the group (status: {member_check.status if member_check else 'None'})", flush=True)
-                            except Exception as verify_err:
-                                print(f"⚠️ [{phone}] Could not verify {uid}: {type(verify_err).__name__}", flush=True)
-                    except Exception as invite_error:
-                        print(f"❌ [{phone}] Invite failed for {uid}: {type(invite_error).__name__}: {invite_error}", flush=True)
-                        raise  # Re-raise to be caught by outer exception handler
-                    
-                    # Update limits
-                    limits = load_adder_limits()
-                    limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
-                    save_adder_limits(limits)
-                    
-                    # Mode-based delays: Ultra Fast uses 1-3s, Fast uses 15-30s, Safe uses 30-60s
-                    if add_mode == "ultra":
-                        await asyncio.sleep(random.uniform(1.0, 3.0))
-                    elif add_mode == "fast":
-                        await asyncio.sleep(random.randint(15, 30))
-                    else:  # safe
-                        total_acc = already_added + added
-                        if total_acc > 100:
-                            await asyncio.sleep(random.randint(45, 90))
-                        else:
-                            await asyncio.sleep(random.randint(25, 50))
-                    
-                except FloodWait as fw:
-                    failed += 1
-                    print(f"⏱️ [{phone}] FloodWait {fw.value}s for {uid}", flush=True)
-                    try:
-                        db.set_adder_limit(phone, already_added + added, limitation_type="FloodWait", limitation_until=int(time.time()) + fw.value)
-                    except: pass
-                    
-                    # Track if account is limited
-                    with stats_lock:
-                        stats[phone]["limited"] = True
-                        stats[phone]["flood_wait"] = max(stats[phone]["flood_wait"], fw.value)
-                    
-                    if fw.value > 3600:
-                        print(f"🚫 [{phone}] Account limited for {fw.value // 3600} hours!", flush=True)
-                    
-                    break  # Stop this account, move to next
-                except UserAlreadyParticipant:
-                    skipped += 1
-                    if i < 3:
-                        print(f"⏭️ [{phone}] {uid} already in channel", flush=True)
+                            await client.invoke(AddContact(id=user_peer, first_name=str(uid)[:30], last_name="", phone="", add_phone_privacy_exception=False))
+                            await asyncio.sleep(0.3)
+                        except Exception: pass
+
+                    await client.invoke(InviteToChannel(channel=target_peer, users=[user_peer]))
+
+                    acc_added += 1
+                    total_added += 1
                     mark_user_as_added(target_gid, "", uid)
-                except (UserPrivacyRestricted, UserNotMutualContact) as e:
-                    failed += 1
-                    if i < 3:
-                        print(f"🔒 [{phone}] Privacy restricted for {uid}: {type(e).__name__}", flush=True)
-                except PeerIdInvalid as e:
-                    failed += 1
-                    if i < 3:
-                        print(f"❌ [{phone}] Invalid peer for {uid}: {e}", flush=True)
-                except ChatAdminRequired as e:
-                    failed += 1
-                    print(f"❌ [{phone}] Not admin in target channel: {e}", flush=True)
-                    
-                    # Mark account as having issues
-                    with stats_lock:
-                        stats[phone]["error"] = "Not admin"
-                    
+                    db.set_adder_limit(phone, already_added + acc_added)
+
+                    if atk_state_ref:
+                        atk_state_ref["live_added"] = total_added
+                        atk_state_ref["live_failed"] = total_failed
+                        atk_state_ref["live_skipped"] = total_skipped
+
+                    print(f"✅ [{phone}] Invited {uid}! (Acc Total: {already_added + acc_added}/100, Global Added: {total_added})", flush=True)
+
+                    await asyncio.sleep(per_account_delay + random.uniform(0.5, 2.0))
+
+                except FloodWait as fw:
+                    total_failed += 1
+                    print(f"⏱️ [{phone}] FloodWait {fw.value}s", flush=True)
+                    db.set_adder_limit(phone, already_added + acc_added, limitation_type="FloodWait", limitation_until=int(time.time()) + fw.value)
+                    member_queue.task_done()
                     break
-                except UsersTooMuch as e:
-                    failed += 1
-                    if i < 3:
-                        print(f"⚠️ [{phone}] Channel full or user in too many channels: {uid}", flush=True)
-                    await asyncio.sleep(15)
+                except UserAlreadyParticipant:
+                    total_skipped += 1
+                    mark_user_as_added(target_gid, "", uid)
                 except Exception as e:
-                    failed += 1
-                    if i < 3:
-                        print(f"❌ [{phone}] Unexpected error for {uid}: {type(e).__name__}: {e}", flush=True)
-                    await asyncio.sleep(random.randint(2, 5))
-            
-            try:
-                print(f"🔌 [{phone}] Disconnecting...", flush=True)
-                await client.stop()
-                print(f"✅ [{phone}] Disconnected", flush=True)
-            except:
-                pass
-            
-            # Clean up temp directory
-            try:
-                if os.path.exists(temp_dir):
-                    shutil.rmtree(temp_dir)
-                    print(f"🧹 [{phone}] Cleaned up temp directory", flush=True)
-            except Exception as e:
-                print(f"⚠️ [{phone}] Failed to clean temp: {e}", flush=True)
-            
-            return phone, added, failed, skipped
-        
+                    total_failed += 1
+                    print(f"❌ [{phone}] Add error for {uid}: {e}", flush=True)
+                    await asyncio.sleep(2.0)
+
+                member_queue.task_done()
+
         except Exception as e:
-            error_msg = str(e)
-            print(f"❌ Error with {phone}: {e}", flush=True)
-            
-            # Check if account is banned or has critical error
-            with stats_lock:
-                if "AUTH_KEY_UNREGISTERED" in error_msg or "SESSION_EXPIRED" in error_msg:
-                    stats[phone]["banned"] = True
-                    stats[phone]["error"] = "Banned/Session expired"
-                    print(f"🚫 [{phone}] Account BANNED or session expired!", flush=True)
-                elif "FLOOD_WAIT" in error_msg or "PEER_FLOOD" in error_msg:
-                    stats[phone]["limited"] = True
-                    stats[phone]["error"] = "Flood limited"
-                    print(f"🚫 [{phone}] Account LIMITED!", flush=True)
-                else:
-                    stats[phone]["error"] = f"Error: {type(e).__name__}"
-            
-            return phone, 0, 0, 0
-    
-    # Use sequential execution instead of threading (Pyrogram has issues with threads)
-    results = []
-    completed = 0
-    total_added = 0
-    total_failed = 0
-    total_skipped = 0
-    
-    # Global stop flag
-    stop_flag = {"stop": False}
-    
-    # Get target group name
-    target_name = str(target_gid)  # Fallback to ID
-    try:
-        # Try to get target name from first account
-        first_phone = list(accs.keys())[0]
-        first_info = accs[first_phone]
-        from attacker import safe_phone_filename as spfn
-        fp = first_info.get("device_fp") or random.choice(DEVICE_FP)
-        sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(first_phone)}")
-        
-        # Quick connect to get target name
-        import tempfile
-        import shutil
-        temp_dir = tempfile.mkdtemp()
-        temp_sess_path = os.path.join(temp_dir, f"temp_{spfn(first_phone)}_{int(time.time())}")
-        
-        if os.path.exists(sess_path + ".session"):
-            shutil.copy2(sess_path + ".session", temp_sess_path + ".session")
-            
-            from pyrogram import Client
-            temp_client = Client(
-                temp_sess_path,
-                api_id=API_ID,
-                api_hash=API_HASH,
-                phone_number=first_phone,
-                device_model=fp.get("device_model", "Unknown"),
-                system_version=fp.get("system_version", "Unknown"),
-                app_version=fp.get("app_version", "1.0"),
-                lang_code=fp.get("lang_code", "en")
-            )
-            
-            await temp_client.start()
-            target_chat = await temp_client.get_chat(f"@{DEFAULT_TARGET_USERNAME}")
-            target_name = target_chat.title
-            await temp_client.stop()
-            
-            print(f"📛 Target group name: {target_name}", flush=True)
-        
-        # Cleanup
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
-    except Exception as e:
-        print(f"⚠️ Could not get target name: {e}", flush=True)
-    
-    # Update progress message with stop button
-    try:
-        await q.message.edit_text(
-            f"🚀 <b>شروع اد موازی</b>\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"➕ {type_labels.get(add_type, 'همه')}\n"
-            f"🎯 مقصد: {target_name}\n"
-            f"👥 {len(members)} نفر\n"
-            f"📱 {num_accounts} اکانت\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"⏳ در حال پردازش اکانت‌ها...\n"
-            f"✅ تکمیل شده: 0/{num_accounts}",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏹️ توقف", callback_data="stop_parallel_add")]
-            ])
-        )
-    except:
-        pass
-    
-    # Store stop flag globally
-    atk_state["stop_parallel_add"] = stop_flag
-    
-    # Track remaining members for redistribution
-    remaining_members = list(members)
-    
-    # Execute accounts sequentially (more reliable than threading)
-    for i, (phone, info) in enumerate(accs.items()):
-        # Check stop flag
-        if stop_flag.get("stop"):
-            print(f"⏹️ Stop requested, stopping parallel add", flush=True)
-            break
-        
-        if phone in account_members:
-            # Get members for this account (use remaining capacity)
-            limits = load_adder_limits()
-            already_added = limits.get(phone, {}).get("added", 0)
-            capacity = MAX_ADD_PER_ACCOUNT - already_added
-            
-            if capacity <= 0:
-                print(f"⚠️ {phone} has no remaining capacity (already added {already_added})", flush=True)
-                results.append((phone, 0, 0, 0))
-                completed += 1
-                continue
-            
-            # Take members up to capacity
-            member_list = remaining_members[:capacity]
-            remaining_members = remaining_members[capacity:]
-            
-            print(f"📱 Processing {phone} ({i+1}/{num_accounts}) - capacity: {capacity}, members: {len(member_list)}", flush=True)
-            
-            # Update progress before starting
-            try:
-                # Count banned/limited accounts
-                banned_count = sum(1 for s in stats.values() if s.get("banned"))
-                limited_count = sum(1 for s in stats.values() if s.get("limited"))
-                
-                warning_text = ""
-                if banned_count > 0 or limited_count > 0:
-                    warning_text = f"\n━━━━━━━━━━━━━━━━━━\n"
-                    if banned_count > 0:
-                        warning_text += f"🚫 بن شده: {banned_count}\n"
-                    if limited_count > 0:
-                        warning_text += f"⏱️ محدود: {limited_count}\n"
-                
-                await q.message.edit_text(
-                    f"🚀 <b>اد موازی در حال اجرا</b>\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"🎯 مقصد: {target_name}\n"
-                    f"✅ تکمیل شده: {completed}/{num_accounts}\n"
-                    f"📱 در حال کار: {phone}\n"
-                    f"📊 ظرفیت: {capacity}\n"
-                    f"━━━━━━━━━━━━━━━━━━\n"
-                    f"✅ اضافه شده: {total_added}\n"
-                    f"❌ خطا: {total_failed}\n"
-                    f"⏭️ رد شده: {total_skipped}"
-                    f"{warning_text}",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("⏹️ توقف", callback_data="stop_parallel_add")]
-                    ])
-                )
-            except:
-                pass
-            
-            try:
-                # Run each account in current event loop
-                result = await add_with_account_async(phone, info, member_list)
-                results.append(result)
-                completed += 1
-                total_added += result[1]
-                total_failed += result[2]
-                total_skipped += result[3]
-                print(f"✅ {phone} completed: {result[1]} added, {result[2]} failed, {result[3]} skipped", flush=True)
-                
-                # Update progress after completion with error details
-                try:
-                    error_details = ""
-                    if result[2] > 0 or result[3] > 0:
-                        error_details = f"\n━━━━━━━━━━━━━━━━━━\n"
-                        if result[1] > 0:
-                            error_details += f"✅ {phone}: {result[1]} اد شد\n"
-                        if result[2] > 0:
-                            error_details += f"❌ {phone}: {result[2]} ناموفق\n"
-                        if result[3] > 0:
-                            error_details += f"⏭️ {phone}: {result[3]} رد شد\n"
-                    
-                    await q.message.edit_text(
-                        f"🚀 <b>اد موازی در حال اجرا</b>\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"🎯 مقصد: {target_name}\n"
-                        f"✅ تکمیل شده: {completed}/{num_accounts}\n"
-                        f"📱 آخرین اکانت: {phone}\n"
-                        f"━━━━━━━━━━━━━━━━━━\n"
-                        f"✅ کل اضافه شده: {total_added}\n"
-                        f"❌ کل خطا: {total_failed}\n"
-                        f"⏭️ کل رد شده: {total_skipped}"
-                        f"{error_details}",
-                        reply_markup=InlineKeyboardMarkup([
-                            [InlineKeyboardButton("⏹️ توقف", callback_data="stop_parallel_add")]
-                        ])
-                    )
-                except:
-                    pass
-                
-            except Exception as e:
-                print(f"❌ {phone} error: {e}", flush=True)
-                results.append((phone, 0, 0, 0))
-                completed += 1
-    
-    # Calculate totals
-    total_added = 0
-    total_failed = 0
-    total_skipped = 0
-    
-    for result in results:
-        if isinstance(result, tuple) and len(result) == 4:
-            phone, added, failed, skipped = result
-            total_added += added
-            total_failed += failed
-            total_skipped += skipped
-    
-    # Final report
+            print(f"❌ Worker error on {phone}: {e}", flush=True)
+        finally:
+            if client:
+                try: await client.stop()
+                except: pass
+            if os.path.exists(temp_dir):
+                try: shutil.rmtree(temp_dir)
+                except: pass
+
+    # Launch worker tasks for all healthy accounts concurrently
+    tasks = [asyncio.create_task(worker_account(phone, info)) for phone, info in accs.items()]
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    if atk_state_ref:
+        atk_state_ref["add_in_progress"] = False
+
     elapsed = int(time.time() - start_t)
     m, s = elapsed // 60, elapsed % 60
-    
     type_labels = {"phone": "📱 شماره‌دارها", "username": "🏷️ username دارها", "id": "🆔 فقط ID", "all": "🌐 همه"}
-    
-    # Build detailed error summary
-    error_summary = ""
-    if results:
-        error_summary = "\n━━━━━━━━━━━━━━━━━━\n<b>📊 جزئیات هر اکانت:</b>\n"
-        for phone, added, failed, skipped in results:
-            if added > 0 or failed > 0 or skipped > 0:
-                # Check account status
-                account_stats = stats.get(phone, {})
-                if account_stats.get("banned"):
-                    status = "🚫"
-                    error_summary += f"{status} {phone[-4:]}: بن شده/منقضی\n"
-                elif account_stats.get("limited"):
-                    flood_wait = account_stats.get("flood_wait", 0)
-                    hours = flood_wait // 3600
-                    status = "⏱️"
-                    error_summary += f"{status} {phone[-4:]}: محدود ({hours}h) | {added} اد\n"
-                elif account_stats.get("error"):
-                    status = "⚠️"
-                    error_summary += f"{status} {phone[-4:]}: {account_stats['error']}\n"
-                else:
-                    status = "✅" if added > 0 else "❌" if failed > 0 else "⏭️"
-                    error_summary += f"{status} {phone[-4:]}: {added} اد | {failed} خطا | {skipped} رد\n"
-    
+
     text = f"✅ <b>اد موازی تمام شد!</b>\n"
     text += f"━━━━━━━━━━━━━━━━━━\n"
     text += f"➕ {type_labels.get(add_type, 'همه')}\n"
@@ -8732,17 +8343,18 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     text += f"❌ ناموفق: {total_failed}\n"
     text += f"⏭ رد شده: {total_skipped}\n"
     text += f"⏱ زمان: {m:02d}:{s:02d}\n"
-    text += error_summary
-    
+
     buttons = [
         [InlineKeyboardButton("🔄 اد دوباره", callback_data="user_breakdown")],
         [InlineKeyboardButton("🏠 خانه", callback_data="home")]
     ]
-    
+
     try:
-        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        if q and hasattr(q, "message") and q.message:
+            await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     except:
         pass
+
 
 
 if __name__ == "__main__":

@@ -485,17 +485,17 @@ MINI_APP_HTML = """<!DOCTYPE html>
             </div>
 
             <!-- LIVE MONITORING BOX -->
-            <div id="card-live-progress" class="glass-card p-4 space-y-3 hidden">
+            <div id="card-live-progress" class="glass-card p-4 space-y-3">
                 <div class="flex items-center justify-between">
-                    <span class="text-xs font-bold text-blue-300 flex items-center gap-1.5">
-                        <span class="w-2 h-2 rounded-full bg-blue-400 pulse-live"></span>
-                        پایش عملیات ادد زنده
+                    <span class="text-xs font-bold flex items-center gap-1.5" id="live-card-badge">
+                        <span id="live-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
+                        <span id="live-card-title" class="text-slate-300">⚪ وضعیت: آماده به کار</span>
                     </span>
-                    <button onclick="stopAddOperation()" class="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/40 text-xs font-bold rounded-lg hover:bg-rose-500/30">
+                    <button id="btn-stop-add" onclick="stopAddOperation()" class="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/40 text-xs font-bold rounded-lg hover:bg-rose-500/30 hidden">
                         ⏹️ توقف عملیات
                     </button>
                 </div>
-                <div class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden">
+                <div id="live-bar-container" class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden hidden">
                     <div id="prog-bar" class="bg-blue-500 h-2.5 rounded-full transition-all duration-500" style="width: 0%"></div>
                 </div>
                 <div class="grid grid-cols-3 text-center text-xs pt-1">
@@ -680,16 +680,27 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     document.getElementById('target-label').innerText = m.target_group;
 
                     if (m.is_adding) {
-                        document.getElementById('card-live-progress').classList.remove('hidden');
+                        document.getElementById('live-dot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 pulse-live';
+                        document.getElementById('live-card-title').innerText = '🟢 در حال اجرا (' + (m.add_progress.mode || 'فعال') + ')';
+                        document.getElementById('live-card-title').className = 'text-emerald-300 font-bold';
+                        document.getElementById('btn-stop-add').classList.remove('hidden');
+                        document.getElementById('live-bar-container').classList.remove('hidden');
+
                         document.getElementById('prog-added').innerText = (m.add_progress.added || 0).toLocaleString('fa-IR');
                         document.getElementById('prog-failed').innerText = (m.add_progress.failed || 0).toLocaleString('fa-IR');
                         document.getElementById('prog-skipped').innerText = (m.add_progress.skipped || 0).toLocaleString('fa-IR');
+
                         const total = m.add_progress.total || 1;
                         const current = (m.add_progress.added || 0) + (m.add_progress.failed || 0) + (m.add_progress.skipped || 0);
                         const pct = Math.min(100, Math.round((current / total) * 100));
                         document.getElementById('prog-bar').style.width = pct + '%';
                         document.getElementById('status-text').innerText = 'در حال انجام عملیات ادد...';
                     } else {
+                        document.getElementById('live-dot').className = 'w-2 h-2 rounded-full bg-slate-500';
+                        document.getElementById('live-card-title').innerText = '⚪ آماده به کار (عملیات فعال نیست)';
+                        document.getElementById('live-card-title').className = 'text-slate-300 font-bold';
+                        document.getElementById('btn-stop-add').classList.add('hidden');
+                        document.getElementById('live-bar-container').classList.add('hidden');
                         document.getElementById('status-text').innerText = 'سیستم آماده به کار';
                     }
                 }
