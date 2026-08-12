@@ -7731,22 +7731,26 @@ class Health(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
 def run_health():
-    """Run Web App + REST API + Health check on PORT 10000"""
-    import asyncio
-    from aiohttp import web
-    from web_app import create_web_app
-
+    """Run Web App + REST API + Health check on PORT 10000 with 100% fail-safe fallback"""
     while True:
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            web_app = create_web_app(app_bot=app, atk_state=atk_state)
-            runner = web.AppRunner(web_app)
-            loop.run_until_complete(runner.setup())
-            site = web.TCPSite(runner, '0.0.0.0', PORT)
-            loop.run_until_complete(site.start())
-            print(f"🚀 Telegram Mini App & API server live on port {PORT}", flush=True)
-            loop.run_forever()
+            try:
+                from aiohttp import web
+                from web_app import create_web_app
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                web_app = create_web_app(app_bot=app, atk_state=atk_state)
+                runner = web.AppRunner(web_app)
+                loop.run_until_complete(runner.setup())
+                site = web.TCPSite(runner, '0.0.0.0', PORT)
+                loop.run_until_complete(site.start())
+                print(f"🚀 Telegram Mini App & API server live on port {PORT} (aiohttp)", flush=True)
+                loop.run_forever()
+            except ImportError:
+                print(f"ℹ️ aiohttp not found, starting standard HTTP server on port {PORT}...", flush=True)
+                from web_app import run_standard_server, set_app_refs
+                set_app_refs(app, atk_state)
+                run_standard_server(PORT)
         except Exception as e:
             print(f"⚠️ Web app server error: {e}, restarting in 5s...", flush=True)
             time.sleep(5)

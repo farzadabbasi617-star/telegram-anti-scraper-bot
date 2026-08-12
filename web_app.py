@@ -7,50 +7,51 @@
 - منبع ادد مستقیماً از دیتابیس (scraped_users) به گروه مقصد
 - پایش زنده وضعیت سلامت اکانت‌ها، میزان ادد روزانه (100) و تایمر محدودیت‌ها
 - ریست اتوماتیک ۲۴ ساعته آمار عملکرد اکانت‌ها
-- رابط کاربری مدرن فارسی (RTL) هماهنگ با Telegram WebApp SDK
+- پشتیبانی دوگانه از aiohttp و http.server استاندارد جهت تضمین ۱۰۰٪ پورت رندر
 """
 import os
 import json
 import time
 import asyncio
-from aiohttp import web
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import db
 
 # Reference to Pyrogram bot and attack state (set by bot.py)
 bot_app = None
 atk_state_ref = None
-_active_add_task = None
+
+def set_app_refs(app_bot, atk_state):
+    global bot_app, atk_state_ref
+    bot_app = app_bot
+    atk_state_ref = atk_state
 
 
 # -----------------------------------------------------------------
-# REST API HANDLERS
+# DATA HELPER FUNCTIONS
 # -----------------------------------------------------------------
 
-async def api_dashboard(request):
-    """Get dashboard summary metrics"""
+def get_dashboard_dict():
     try:
         total_members = db.count_users()
         accounts = db.load_accounts()
-        limits = db.get_adder_limits()
         
         healthy_count = 0
         limited_count = 0
         today_total_adds = 0
         
-        for phone, info in accounts.items():
-            status_info = db.get_account_status(phone)
-            st = status_info.get("status", "healthy")
-            today_total_adds += status_info.get("added", 0)
-            if st == "healthy":
+        for phone in accounts:
+            st = db.get_account_status(phone)
+            status_str = st.get("status", "healthy")
+            today_total_adds += st.get("added", 0)
+            if status_str == "healthy":
                 healthy_count += 1
-            elif st == "limited":
+            elif status_str == "limited":
                 limited_count += 1
                 
         cfg = db.get_config()
         target_group = cfg.get("group_name") or "@gament_super_gp"
         
-        # Check active add task status
         is_running = False
         add_progress = {}
         if atk_state_ref:
@@ -64,7 +65,7 @@ async def api_dashboard(request):
                 "status_text": atk_state_ref.get("live_status_text", "در حال اجرا...")
             }
             
-        return web.json_response({
+        return {
             "ok": True,
             "metrics": {
                 "total_members": total_members,
@@ -76,13 +77,12 @@ async def api_dashboard(request):
                 "is_adding": is_running,
                 "add_progress": add_progress
             }
-        })
+        }
     except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=500)
+        return {"ok": False, "error": str(e)}
 
 
-async def api_accounts(request):
-    """Get detailed health status for all accounts"""
+def get_accounts_dict():
     try:
         accs = db.load_accounts()
         out = []
@@ -99,13 +99,12 @@ async def api_accounts(request):
                 "remaining_seconds": st.get("remaining_seconds", 0),
                 "last_used": info.get("last_used", 0)
             })
-        return web.json_response({"ok": True, "accounts": out})
+        return {"ok": True, "accounts": out}
     except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=500)
+        return {"ok": False, "error": str(e)}
 
 
-async def api_members_stats(request):
-    """Get scraped members breakdown from database"""
+def get_members_stats_dict():
     try:
         users = db.load_users_dict()
         phone_count = 0
@@ -120,7 +119,7 @@ async def api_members_stats(request):
             else:
                 id_only_count += 1
                 
-        return web.json_response({
+        return {
             "ok": True,
             "stats": {
                 "total": len(users),
@@ -128,44 +127,9 @@ async def api_members_stats(request):
                 "with_username": username_count,
                 "id_only": id_only_count
             }
-        })
+        }
     except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=500)
-
-
-async def api_reset_limits(request):
-    """Reset daily add limit counter for all accounts (24h reset)"""
-    try:
-        db.reset_adder_limits()
-        return web.json_response({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."})
-    except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=500)
-
-
-async def api_set_target(request):
-    """Update default target group setting"""
-    try:
-        data = await request.json()
-        target = data.get("target", "").strip()
-        if not target:
-            return web.json_response({"ok": False, "error": "شناسه یا لینک گروه مقصد وارد نشده است."}, status=400)
-            
-        cfg = db.get_config()
-        db.set_config(cfg.get("group_id", 0), target, cfg.get("defense_enabled", True))
-        return web.json_response({"ok": True, "target": target})
-    except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=500)
-
-
-async def api_stop_add(request):
-    """Stop active add operation"""
-    try:
-        if atk_state_ref:
-            atk_state_ref["_stop_requested"] = True
-            atk_state_ref["stop_parallel_add"] = True
-        return web.json_response({"ok": True, "message": "درخواست توقف ارسال شد."})
-    except Exception as e:
-        return web.json_response({"ok": False, "error": str(e)}, status=500)
+        return {"ok": False, "error": str(e)}
 
 
 # -----------------------------------------------------------------
@@ -626,27 +590,160 @@ MINI_APP_HTML = """<!DOCTYPE html>
 </html>
 """
 
-async def serve_mini_app(request):
-    """Serve Telegram Mini App SPA HTML"""
-    return web.Response(text=MINI_APP_HTML, content_type='text/html', charset='utf-8')
+
+# -----------------------------------------------------------------
+# STANDARD LIBRARY HTTP SERVER FALLBACK (Zero Dependencies)
+# -----------------------------------------------------------------
+
+class StandardWebAppHandler(BaseHTTPRequestHandler):
+    """Fallback HTTP Handler using pure standard library (http.server)"""
+    def log_message(self, format, *args):
+        pass
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.end_headers()
+
+    def do_GET(self):
+        try:
+            path = self.path.split('?')[0]
+            if path in ['/', '/app', '/index.html']:
+                body = MINI_APP_HTML.encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == '/api/dashboard':
+                data = get_dashboard_dict()
+                body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == '/api/accounts':
+                data = get_accounts_dict()
+                body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif path == '/api/members/stats':
+                data = get_members_stats_dict()
+                body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json; charset=utf-8')
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            else:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/plain; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(b"OK")
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(str(e).encode('utf-8'))
+
+    def do_POST(self):
+        try:
+            path = self.path.split('?')[0]
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = {}
+            if content_length > 0:
+                body_bytes = self.rfile.read(content_length)
+                try: post_data = json.loads(body_bytes.decode('utf-8'))
+                except: pass
+
+            if path == '/api/accounts/reset':
+                db.reset_adder_limits()
+                body = json.dumps({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."}).encode('utf-8')
+            elif path == '/api/settings/target':
+                target = post_data.get("target", "").strip()
+                if target:
+                    cfg = db.get_config()
+                    db.set_config(cfg.get("group_id", 0), target, cfg.get("defense_enabled", True))
+                body = json.dumps({"ok": True, "target": target}).encode('utf-8')
+            elif path == '/api/add/stop':
+                if atk_state_ref:
+                    atk_state_ref["_stop_requested"] = True
+                    atk_state_ref["stop_parallel_add"] = True
+                body = json.dumps({"ok": True, "message": "درخواست توقف ارسال شد."}).encode('utf-8')
+            else:
+                body = json.dumps({"ok": True}).encode('utf-8')
+
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            self.send_response(500)
+            self.end_headers()
+            self.wfile.write(str(e).encode('utf-8'))
+
+
+def run_standard_server(port):
+    """Run pure standard library HTTP server (zero external dependencies)"""
+    server = HTTPServer(("0.0.0.0", port), StandardWebAppHandler)
+    server.serve_forever()
 
 
 # -----------------------------------------------------------------
-# APP ROUTER REGISTRATION
+# AIOHTTP ROUTER REGISTRATION
 # -----------------------------------------------------------------
 
 def create_web_app(app_bot=None, atk_state=None):
-    global bot_app, atk_state_ref
-    bot_app = app_bot
-    atk_state_ref = atk_state
-    
-    app = web.Application()
-    app.router.add_get('/', serve_mini_app)
-    app.router.add_get('/app', serve_mini_app)
-    app.router.add_get('/api/dashboard', api_dashboard)
-    app.router.add_get('/api/accounts', api_accounts)
-    app.router.add_get('/api/members/stats', api_members_stats)
-    app.router.add_post('/api/accounts/reset', api_reset_limits)
-    app.router.add_post('/api/settings/target', api_set_target)
-    app.router.add_post('/api/add/stop', api_stop_add)
-    return app
+    set_app_refs(app_bot, atk_state)
+    try:
+        from aiohttp import web
+        
+        async def aio_serve_mini_app(request):
+            return web.Response(text=MINI_APP_HTML, content_type='text/html', charset='utf-8')
+
+        async def aio_api_dashboard(request):
+            return web.json_response(get_dashboard_dict())
+
+        async def aio_api_accounts(request):
+            return web.json_response(get_accounts_dict())
+
+        async def aio_api_members_stats(request):
+            return web.json_response(get_members_stats_dict())
+
+        async def aio_api_reset_limits(request):
+            db.reset_adder_limits()
+            return web.json_response({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."})
+
+        async def aio_api_set_target(request):
+            try:
+                data = await request.json()
+                target = data.get("target", "").strip()
+                if target:
+                    cfg = db.get_config()
+                    db.set_config(cfg.get("group_id", 0), target, cfg.get("defense_enabled", True))
+                return web.json_response({"ok": True, "target": target})
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+        async def aio_api_stop_add(request):
+            if atk_state_ref:
+                atk_state_ref["_stop_requested"] = True
+                atk_state_ref["stop_parallel_add"] = True
+            return web.json_response({"ok": True, "message": "درخواست توقف ارسال شد."})
+
+        app = web.Application()
+        app.router.add_get('/', aio_serve_mini_app)
+        app.router.add_get('/app', aio_serve_mini_app)
+        app.router.add_get('/api/dashboard', aio_api_dashboard)
+        app.router.add_get('/api/accounts', aio_api_accounts)
+        app.router.add_get('/api/members/stats', aio_api_members_stats)
+        app.router.add_post('/api/accounts/reset', aio_api_reset_limits)
+        app.router.add_post('/api/settings/target', aio_api_set_target)
+        app.router.add_post('/api/add/stop', aio_api_stop_add)
+        return app
+    except ImportError:
+        return None
