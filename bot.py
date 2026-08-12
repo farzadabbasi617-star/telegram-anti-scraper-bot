@@ -7713,7 +7713,13 @@ class Health(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
 def run_health():
-    HTTPServer(("0.0.0.0", PORT), Health).serve_forever()
+    while True:
+        try:
+            server = HTTPServer(("0.0.0.0", PORT), Health)
+            server.serve_forever()
+        except Exception as e:
+            print(f"⚠️ Health server error: {e}, restarting in 5s...", flush=True)
+            time.sleep(5)
 
 # ضدخواب: هر ۵ دقیقه خودش به خودش درخواست میزنه که رندر متوجه فعال بودن سرویس بشه
 PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
@@ -8724,6 +8730,13 @@ if __name__ == "__main__":
             break
         except Exception as _e:
             print(f"webhook clear err: {_e}", flush=True)
+    # Clean up stale temporary session files
+    try:
+        from attacker import cleanup_temp_sessions
+        cleanup_temp_sessions()
+    except Exception as e:
+        print(f"⚠️ Temp session cleanup error: {e}", flush=True)
+
     Thread(target=run_health, daemon=True).start()
     Thread(target=keep_awake_loop, daemon=True).start()
     # Start auto-reset background thread

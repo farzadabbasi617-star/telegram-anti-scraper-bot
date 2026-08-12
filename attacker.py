@@ -59,6 +59,29 @@ os.makedirs(SESSIONS_DIR, exist_ok=True)
 def safe_phone_filename(phone):
     return ''.join(c for c in str(phone) if c.isdigit() or c == '+').strip('+')
 
+def cleanup_temp_sessions(max_age_seconds=86400):
+    """Clean up temporary login session files older than max_age_seconds."""
+    try:
+        if not os.path.exists(SESSIONS_DIR):
+            return 0
+        now = time.time()
+        removed = 0
+        for f in os.listdir(SESSIONS_DIR):
+            if f.startswith("_newtmp_"):
+                path = os.path.join(SESSIONS_DIR, f)
+                try:
+                    if now - os.path.getmtime(path) > max_age_seconds:
+                        os.remove(path)
+                        removed += 1
+                except Exception:
+                    pass
+        if removed > 0:
+            print(f"🧹 Cleaned up {removed} stale temporary session files", flush=True)
+        return removed
+    except Exception as e:
+        print(f"⚠️ Temp session cleanup error: {e}", flush=True)
+        return 0
+
 class AdvancedScraper:
     def __init__(self, session_name, api_id, api_hash, phone=None, in_memory=False, device_fp=None, force_fresh=False):
         if device_fp:

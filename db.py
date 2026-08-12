@@ -1,11 +1,20 @@
 """
-Database module - Neon PostgreSQL
+Database module - Neon PostgreSQL (Senior Architect Enhanced)
 تمام داده‌های مهم اینجا ذخیره میشن که حتی با ریست رندر چیزی از بین نره.
+
+ویژگی‌های نسخه ارشد:
+- سیستم Auto-Reconnect و Health Check خودکار برای اتصالات قطع شده Neon
+- دکوراتور @db_retry جهت بازیابی هوشمند خطاهای OperationalError/InterfaceError
+- ایجاد ایندکس‌های با کارایی بالا (High-Performance Indexes) روی جداول اصلی
+- پشتیبانی از رمزنگاری سشن‌ها (Session Encryption) در صورت تعریف SESSION_ENCRYPTION_KEY
+- تابع async_db_call جهت اجرای غیرهمزمان پرس‌وجوهای سنگین بدون بلاک کردن Event Loop
 """
 import os
 import json
 import time
 import threading
+import functools
+import asyncio
 import psycopg2
 from psycopg2.extras import Json, DictCursor
 
@@ -18,13 +27,92 @@ _conn = None
 _conn_lock = threading.Lock()
 
 def get_conn():
+    """دریافت اتصال سالم به دیتابیس با قابلیت چک کردن پایداری سوکت"""
     global _conn
     with _conn_lock:
-        if _conn is None or _conn.closed:
-            _conn = psycopg2.connect(DB_URL, connect_timeout=10)
+        if _conn is not None:
+            try:
+                if _conn.closed != 0:
+                    _conn = None
+                else:
+                    _conn.poll()
+            except Exception:
+                try:
+                    _conn.close()
+                except Exception:
+                    pass
+                _conn = None
+
+        if _conn is None or _conn.closed != 0:
+            _conn = psycopg2.connect(DB_URL, connect_timeout=15)
             _conn.autocommit = True
         return _conn
 
+def db_retry(max_retries=2, delay=0.5):
+    """دکوراتور اختصاصی جهت بازیابی خودکار خطاهای شبکه و قطعی اتصال دیتابیس"""
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            global _conn
+            last_err = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
+                    last_err = e
+                    print(f"⚠️ DB Reconnect [{func.__name__}] (attempt {attempt+1}/{max_retries}): {e}", flush=True)
+                    with _conn_lock:
+                        if _conn:
+                            try:
+                                _conn.close()
+                            except Exception:
+                                pass
+                            _conn = None
+                    if attempt < max_retries - 1:
+                        time.sleep(delay)
+                except Exception as e:
+                    print(f"❌ DB Error [{func.__name__}]: {e}", flush=True)
+                    raise
+            if last_err:
+                raise last_err
+        return wrapper
+    return decorator
+
+async def async_db_call(func, *args, **kwargs):
+    """اجرای توابع سنگین دیتابیس در ترید جداگانه جهت جلوگیری از بلاک شدن asyncio event loop"""
+    return await asyncio.to_thread(func, *args, **kwargs)
+
+# ---------------- Session Encryption Helpers ----------------
+def encrypt_session_blob(blob_bytes: bytes) -> bytes:
+    """رمزنگاری اختیاری سشن‌ها قبل از ذخیره در دیتابیس"""
+    key = os.environ.get("SESSION_ENCRYPTION_KEY")
+    if not key or not blob_bytes:
+        return blob_bytes
+    try:
+        import pyaes, hashlib
+        key_32 = hashlib.sha256(key.encode()).digest()
+        aes = pyaes.AESModeOfOperationCTR(key_32)
+        return aes.encrypt(blob_bytes)
+    except Exception as e:
+        print(f"Session encryption failed (storing raw): {e}", flush=True)
+        return blob_bytes
+
+def decrypt_session_blob(blob_bytes: bytes) -> bytes:
+    """رمزگشایی اختیاری سشن‌ها پس از خواندن از دیتابیس"""
+    key = os.environ.get("SESSION_ENCRYPTION_KEY")
+    if not key or not blob_bytes:
+        return blob_bytes
+    try:
+        import pyaes, hashlib
+        key_32 = hashlib.sha256(key.encode()).digest()
+        aes = pyaes.AESModeOfOperationCTR(key_32)
+        return aes.decrypt(blob_bytes)
+    except Exception as e:
+        print(f"Session decryption failed (returning raw): {e}", flush=True)
+        return blob_bytes
+
+
+@db_retry(max_retries=3)
 def init_tables():
     conn = get_conn()
     cur = conn.cursor()
@@ -73,7 +161,9 @@ def init_tables():
         CREATE TABLE IF NOT EXISTS adder_limits_tbl (
             phone TEXT PRIMARY KEY,
             added INTEGER DEFAULT 0,
-            last_used BIGINT
+            last_used BIGINT,
+            limitation_type TEXT DEFAULT NULL,
+            limitation_until BIGINT DEFAULT 0
         )
     """)
     cur.execute("""
@@ -111,7 +201,6 @@ def init_tables():
         VALUES (1, FALSE, 'idle')
         ON CONFLICT (id) DO NOTHING
     """)
-    # 🆕 جدول تاریخچه چت‌های اسکن شده (گروه/کانال) با دسته‌بندی و درصد پیشرفت
     cur.execute("""
         CREATE TABLE IF NOT EXISTS scanned_chats_tbl (
             chat_id BIGINT PRIMARY KEY,
@@ -128,10 +217,17 @@ def init_tables():
             notes TEXT DEFAULT ''
         )
     """)
-    conn.commit()
+    # High-Performance Indexes for maximum query speeds
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_scraped_users_source ON scraped_users(source_group_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_scraped_users_added ON scraped_users(added_at DESC);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_scraped_users_phone ON scraped_users(phone) WHERE phone IS NOT NULL AND phone != '';")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_scraped_users_username ON scraped_users(username) WHERE username IS NOT NULL AND username != '';")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_added_history_group ON added_history_tbl(group_id);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_scanned_chats_category ON scanned_chats_tbl(category);")
     cur.close()
 
 # ---------------- KV helpers ----------------
+@db_retry()
 def kv_get(key, default=None):
     try:
         cur = get_conn().cursor()
@@ -143,6 +239,7 @@ def kv_get(key, default=None):
         print(f"kv_get {key} err: {e}", flush=True)
         return default
 
+@db_retry()
 def kv_set(key, value):
     try:
         cur = get_conn().cursor()
@@ -156,6 +253,7 @@ def kv_set(key, value):
         print(f"kv_set {key} err: {e}", flush=True)
 
 # ---------------- Scraped users ----------------
+@db_retry()
 def save_user(user_id, username, first_name, last_name, phone, group_id, group_name):
     try:
         cur = get_conn().cursor()
@@ -171,6 +269,7 @@ def save_user(user_id, username, first_name, last_name, phone, group_id, group_n
     except Exception as e:
         print(f"save_user err: {e}", flush=True)
 
+@db_retry()
 def load_users_dict():
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
@@ -190,6 +289,7 @@ def load_users_dict():
         print(f"load_users err: {e}", flush=True)
         return {}
 
+@db_retry()
 def count_users():
     try:
         cur = get_conn().cursor()
@@ -200,6 +300,7 @@ def count_users():
     except:
         return 0
 
+@db_retry()
 def bulk_save_users(users_list, group_id, group_name):
     """Bulk insert from scrape (list of dicts)"""
     if not users_list: return
@@ -230,9 +331,11 @@ def bulk_save_users(users_list, group_id, group_name):
     cur.close()
 
 # ---------------- Saved accounts (with session backup) ----------------
+@db_retry()
 def save_account(phone, name, username, device_fp, session_blob=None):
     try:
         cur = get_conn().cursor()
+        encrypted_session = encrypt_session_blob(session_blob) if session_blob else None
         if session_blob:
             cur.execute("""
                 INSERT INTO saved_accounts_tbl (phone, name, username, device_fp, session_data, created_at, last_used)
@@ -241,7 +344,7 @@ def save_account(phone, name, username, device_fp, session_blob=None):
                     name=EXCLUDED.name, username=EXCLUDED.username, device_fp=EXCLUDED.device_fp,
                     session_data=COALESCE(EXCLUDED.session_data, saved_accounts_tbl.session_data),
                     last_used=EXCLUDED.last_used
-            """, (phone, name or "", username or "", Json(device_fp), psycopg2.Binary(session_blob) if session_blob else None, int(time.time()), int(time.time())))
+            """, (phone, name or "", username or "", Json(device_fp), psycopg2.Binary(encrypted_session) if encrypted_session else None, int(time.time()), int(time.time())))
         else:
             cur.execute("""
                 INSERT INTO saved_accounts_tbl (phone, name, username, device_fp, created_at, last_used)
@@ -254,6 +357,7 @@ def save_account(phone, name, username, device_fp, session_blob=None):
     except Exception as e:
         print(f"save_account err: {e}", flush=True)
 
+@db_retry()
 def load_accounts():
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
@@ -273,6 +377,7 @@ def load_accounts():
         print(f"load_accounts err: {e}", flush=True)
         return {}
 
+@db_retry()
 def delete_account(phone):
     try:
         cur = get_conn().cursor()
@@ -280,15 +385,18 @@ def delete_account(phone):
         cur.close()
     except: pass
 
+@db_retry()
 def save_session_blob(phone, blob_bytes):
     try:
         cur = get_conn().cursor()
+        encrypted_session = encrypt_session_blob(blob_bytes) if blob_bytes else None
         cur.execute("UPDATE saved_accounts_tbl SET session_data=%s, last_used=%s WHERE phone=%s",
-                    (psycopg2.Binary(blob_bytes), int(time.time()), phone))
+                    (psycopg2.Binary(encrypted_session) if encrypted_session else None, int(time.time()), phone))
         cur.close()
     except Exception as e:
         print(f"save_session_blob err: {e}", flush=True)
 
+@db_retry()
 def load_session_blob(phone):
     try:
         cur = get_conn().cursor()
@@ -296,163 +404,191 @@ def load_session_blob(phone):
         row = cur.fetchone()
         cur.close()
         if row and row[0]:
-            return bytes(row[0])
+            raw_bytes = bytes(row[0])
+            return decrypt_session_blob(raw_bytes)
         return None
-    except:
+    except Exception as e:
+        print(f"load_session_blob err: {e}", flush=True)
         return None
 
+# ---------------- Config ----------------
+@db_retry()
 def set_owner_phone(phone):
-    cur = get_conn().cursor()
-    cur.execute("""
-        INSERT INTO config_tbl (group_id, owner_phone)
-        VALUES (0, %s)
-        ON CONFLICT (group_id) DO UPDATE SET owner_phone=EXCLUDED.owner_phone
-    """, (phone,))
-    cur.close()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("""
+            INSERT INTO config_tbl (group_id, owner_phone) VALUES (0, %s)
+            ON CONFLICT (group_id) DO UPDATE SET owner_phone=EXCLUDED.owner_phone
+        """, (phone,))
+        cur.close()
+    except Exception as e:
+        print(f"set_owner_phone err: {e}", flush=True)
 
+@db_retry()
 def get_owner_phone():
     try:
         cur = get_conn().cursor()
         cur.execute("SELECT owner_phone FROM config_tbl WHERE group_id=0")
-        r = cur.fetchone()
+        row = cur.fetchone()
         cur.close()
-        return r[0] if r else ""
+        return row[0] if row else ""
     except:
         return ""
 
-# ---------------- Config (protected group) ----------------
+@db_retry()
 def set_config(group_id, group_name, defense_enabled=True, owner_phone=""):
-    cur = get_conn().cursor()
-    cur.execute("""
-        INSERT INTO config_tbl (group_id, group_name, defense_enabled, owner_phone)
-        VALUES (%s,%s,%s,%s)
-        ON CONFLICT (group_id) DO UPDATE SET
-            group_name=EXCLUDED.group_name,
-            defense_enabled=EXCLUDED.defense_enabled,
-            owner_phone=COALESCE(NULLIF(EXCLUDED.owner_phone,''), config_tbl.owner_phone)
-    """, (int(group_id), group_name, defense_enabled, owner_phone))
-    cur.close()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("""
+            INSERT INTO config_tbl (group_id, group_name, defense_enabled, owner_phone)
+            VALUES (%s,%s,%s,%s)
+            ON CONFLICT (group_id) DO UPDATE SET
+                group_name=EXCLUDED.group_name,
+                defense_enabled=EXCLUDED.defense_enabled,
+                owner_phone=COALESCE(NULLIF(EXCLUDED.owner_phone,''), config_tbl.owner_phone)
+        """, (int(group_id), group_name, defense_enabled, owner_phone))
+        cur.close()
+    except Exception as e:
+        print(f"set_config err: {e}", flush=True)
 
-def get_config():
+@db_retry()
+def get_config(key=None, default=None):
+    if key is not None:
+        return kv_get(key, default)
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT group_id, group_name, defense_enabled, owner_phone FROM config_tbl WHERE group_id != 0 ORDER BY group_id DESC LIMIT 1")
-        r = cur.fetchone()
+        cur.execute("SELECT group_id, group_name, defense_enabled, owner_phone FROM config_tbl LIMIT 1")
+        row = cur.fetchone()
         cur.close()
-        if r:
+        if row:
             return {
-                "group_id": int(r["group_id"]),
-                "group_name": r["group_name"] or "",
-                "defense_enabled": bool(r["defense_enabled"]),
-                "owner_phone": r["owner_phone"] or "",
+                "group_id": row["group_id"],
+                "group_name": row["group_name"],
+                "defense_enabled": row["defense_enabled"],
+                "owner_phone": row["owner_phone"] or "",
             }
-        return {"group_id": 0, "group_name": "", "defense_enabled": True, "owner_phone": ""}
+        return {"group_id": None, "group_name": "", "defense_enabled": True, "owner_phone": ""}
     except Exception as e:
         print(f"get_config err: {e}", flush=True)
-        return {"group_id": 0, "group_name": "", "defense_enabled": True, "owner_phone": ""}
+        return {"group_id": None, "group_name": "", "defense_enabled": True, "owner_phone": ""}
 
 # ---------------- Adder limits ----------------
+@db_retry()
 def get_adder_limits():
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
         cur.execute("SELECT phone, added, last_used, limitation_type, limitation_until FROM adder_limits_tbl")
         out = {}
-        for r in cur.fetchall():
-            out[r["phone"]] = {
-                "added": r["added"] or 0,
-                "last_used": r["last_used"],
-                "limitation_type": r.get("limitation_type"),
-                "limitation_until": r.get("limitation_until") or 0
+        for row in cur.fetchall():
+            out[row["phone"]] = {
+                "added": row["added"] or 0,
+                "last_used": row["last_used"] or 0,
+                "limitation_type": row["limitation_type"],
+                "limitation_until": row["limitation_until"] or 0,
             }
         cur.close()
         return out
-    except:
+    except Exception as e:
+        print(f"get_adder_limits err: {e}", flush=True)
         return {}
 
+@db_retry()
 def set_adder_limit(phone, added, limitation_type=None, limitation_until=0):
-    cur = get_conn().cursor()
-    cur.execute("""
-        INSERT INTO adder_limits_tbl (phone, added, last_used, limitation_type, limitation_until)
-        VALUES (%s,%s,%s,%s,%s)
-        ON CONFLICT (phone) DO UPDATE SET 
-            added=EXCLUDED.added, 
-            last_used=EXCLUDED.last_used,
-            limitation_type=EXCLUDED.limitation_type,
-            limitation_until=EXCLUDED.limitation_until
-    """, (phone, int(added), int(time.time()), limitation_type, int(limitation_until)))
-    cur.close()
-    # Also update account table count
     try:
-        cur2 = get_conn().cursor()
-        cur2.execute("UPDATE saved_accounts_tbl SET added_count=%s, last_used=%s WHERE phone=%s", (int(added), int(time.time()), phone))
-        cur2.close()
-    except: pass
+        cur = get_conn().cursor()
+        cur.execute("""
+            INSERT INTO adder_limits_tbl (phone, added, last_used, limitation_type, limitation_until)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (phone) DO UPDATE SET
+                added = EXCLUDED.added,
+                last_used = EXCLUDED.last_used,
+                limitation_type = COALESCE(EXCLUDED.limitation_type, adder_limits_tbl.limitation_type),
+                limitation_until = CASE WHEN EXCLUDED.limitation_until > 0 THEN EXCLUDED.limitation_until ELSE adder_limits_tbl.limitation_until END
+        """, (phone, int(added), int(time.time()), limitation_type, int(limitation_until)))
+        cur.close()
+    except Exception as e:
+        print(f"set_adder_limit err: {e}", flush=True)
 
+@db_retry()
 def reset_adder_limits():
-    cur = get_conn().cursor()
-    cur.execute("UPDATE adder_limits_tbl SET added=0")
-    cur.close()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("UPDATE adder_limits_tbl SET added=0, last_used=%s", (int(time.time()),))
+        cur.close()
+    except Exception as e:
+        print(f"reset_adder_limits err: {e}", flush=True)
 
-# ---------------- Added history ----------------
-
+@db_retry()
 def clear_account_limitation(phone):
-    """Clear limitation for an account"""
-    cur = get_conn().cursor()
-    cur.execute("""
-        UPDATE adder_limits_tbl 
-        SET limitation_type=NULL, limitation_until=0 
-        WHERE phone=%s
-    """, (phone,))
-    cur.close()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("UPDATE adder_limits_tbl SET limitation_type=NULL, limitation_until=0 WHERE phone=%s", (phone,))
+        cur.close()
+    except Exception as e:
+        print(f"clear_account_limitation err: {e}", flush=True)
 
+@db_retry()
 def get_account_status(phone):
-    """Get detailed status for an account"""
-    limits = get_adder_limits()
-    info = limits.get(phone, {})
-    
-    limitation_type = info.get("limitation_type")
-    limitation_until = info.get("limitation_until", 0)
-    
-    # Check if limitation has expired
-    if limitation_type and limitation_until > 0:
-        if time.time() >= limitation_until:
-            # Limitation expired, clear it
-            clear_account_limitation(phone)
-            limitation_type = None
-            limitation_until = 0
-    
-    return {
-        "phone": phone,
-        "added": info.get("added", 0),
-        "last_used": info.get("last_used", 0),
-        "limitation_type": limitation_type,
-        "limitation_until": limitation_until,
-        "is_limited": limitation_type is not None,
-        "remaining_seconds": max(0, limitation_until - time.time()) if limitation_until > 0 else 0
-    }
+    try:
+        cur = get_conn().cursor(cursor_factory=DictCursor)
+        cur.execute("SELECT added, last_used, limitation_type, limitation_until FROM adder_limits_tbl WHERE phone=%s", (phone,))
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return {"added": 0, "status": "healthy", "limitation_type": None, "limitation_until": 0}
 
+        lim_type = row["limitation_type"]
+        lim_until = row["limitation_until"] or 0
+        now = int(time.time())
+
+        if lim_until > 0 and now >= lim_until:
+            clear_account_limitation(phone)
+            lim_type = None
+            lim_until = 0
+
+        status = "healthy"
+        if lim_type:
+            status = "limited"
+        elif (row["added"] or 0) >= 200:
+            status = "full"
+
+        return {
+            "added": row["added"] or 0,
+            "status": status,
+            "limitation_type": lim_type,
+            "limitation_until": lim_until,
+            "remaining_seconds": max(0, lim_until - now) if lim_until > 0 else 0
+        }
+    except Exception as e:
+        print(f"get_account_status err: {e}", flush=True)
+        return {"added": 0, "status": "healthy", "limitation_type": None, "limitation_until": 0}
+
+# ---------------- Added members history ----------------
+@db_retry()
 def mark_added(group_id, user_id, phone):
     try:
         cur = get_conn().cursor()
         cur.execute("""
             INSERT INTO added_history_tbl (group_id, user_id, added_at, account_phone)
-            VALUES (%s,%s,%s,%s)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (group_id, user_id) DO NOTHING
-        """, (int(group_id), int(user_id), int(time.time()), phone))
+        """, (int(group_id), int(user_id), int(time.time()), phone or ""))
         cur.close()
     except Exception as e:
         print(f"mark_added err: {e}", flush=True)
 
+@db_retry()
 def is_added(group_id, user_id):
     try:
         cur = get_conn().cursor()
         cur.execute("SELECT 1 FROM added_history_tbl WHERE group_id=%s AND user_id=%s", (int(group_id), int(user_id)))
-        r = cur.fetchone()
+        row = cur.fetchone()
         cur.close()
-        return r is not None
+        return bool(row)
     except:
         return False
 
+@db_retry()
 def count_added(group_id=None):
     try:
         cur = get_conn().cursor()
@@ -466,73 +602,96 @@ def count_added(group_id=None):
     except:
         return 0
 
-# ---------------- BG scan state ----------------
+# ---------------- Background scanner state ----------------
+@db_retry()
 def set_bg_scan(enabled, target_group_id=None, account_phone=None, interval_minutes=60):
-    cur = get_conn().cursor()
-    cur.execute("""
-        UPDATE bg_scan_state SET
-            enabled=%s,
-            target_group_id=COALESCE(%s, target_group_id),
-            account_phone=COALESCE(%s, account_phone),
-            interval_minutes=COALESCE(%s, interval_minutes)
-        WHERE id=1
-    """, (bool(enabled), target_group_id, account_phone, interval_minutes))
-    cur.close()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("""
+            UPDATE bg_scan_state SET
+                enabled=%s,
+                target_group_id=COALESCE(%s, target_group_id),
+                account_phone=COALESCE(%s, account_phone),
+                interval_minutes=%s
+            WHERE id=1
+        """, (bool(enabled), int(target_group_id) if target_group_id else None, account_phone, int(interval_minutes)))
+        cur.close()
+    except Exception as e:
+        print(f"set_bg_scan err: {e}", flush=True)
 
+@db_retry()
 def get_bg_scan():
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
         cur.execute("SELECT enabled, target_group_id, account_phone, interval_minutes, last_run, total_found, status FROM bg_scan_state WHERE id=1")
-        r = cur.fetchone()
+        row = cur.fetchone()
         cur.close()
-        if not r:
-            return {"enabled":False,"target_group_id":0,"account_phone":"","interval_minutes":60,"last_run":0,"total_found":0,"status":"idle"}
-        return dict(r)
-    except:
-        return {"enabled":False,"target_group_id":0,"account_phone":"","interval_minutes":60,"last_run":0,"total_found":0,"status":"idle"}
+        if row:
+            return dict(row)
+        return {"enabled": False, "target_group_id": None, "account_phone": None, "interval_minutes": 60, "last_run": 0, "total_found": 0, "status": "idle"}
+    except Exception as e:
+        print(f"get_bg_scan err: {e}", flush=True)
+        return {"enabled": False, "target_group_id": None, "account_phone": None, "interval_minutes": 60, "last_run": 0, "total_found": 0, "status": "idle"}
 
+@db_retry()
 def mark_bg_run(total_new):
-    cur = get_conn().cursor()
-    cur.execute("UPDATE bg_scan_state SET last_run=%s, total_found = total_found + %s, status='idle' WHERE id=1",
-                (int(time.time()), int(total_new or 0)))
-    cur.close()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("UPDATE bg_scan_state SET last_run=%s, total_found=total_found+%s WHERE id=1", (int(time.time()), int(total_new)))
+        cur.close()
+    except Exception as e:
+        print(f"mark_bg_run err: {e}", flush=True)
 
+@db_retry()
 def set_bg_status(status):
     try:
         cur = get_conn().cursor()
-        cur.execute("UPDATE bg_scan_state SET status=%s WHERE id=1", (status,))
+        cur.execute("UPDATE bg_scan_state SET status=%s WHERE id=1", (str(status),))
         cur.close()
-    except: pass
+    except Exception as e:
+        print(f"set_bg_status err: {e}", flush=True)
 
-# ---------------- Projects (project finder) ----------------
+# ---------------- Projects storage (Hunter / Finder) ----------------
+@db_retry()
 def save_project(url, platform, full_name, category, data):
     try:
         cur = get_conn().cursor()
         cur.execute("""
             INSERT INTO projects_tbl (url, platform, full_name, category, data, found_at)
-            VALUES (%s,%s,%s,%s,%s,%s)
-            ON CONFLICT (url) DO NOTHING
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (url) DO UPDATE SET
+                full_name=EXCLUDED.full_name, category=EXCLUDED.category, data=EXCLUDED.data
         """, (url, platform, full_name, category, Json(data), int(time.time())))
         cur.close()
     except Exception as e:
         print(f"save_project err: {e}", flush=True)
 
+@db_retry()
 def load_projects(category=None):
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
         if category:
-            cur.execute("SELECT data FROM projects_tbl WHERE category=%s ORDER BY (data->>'stars')::int DESC", (category,))
+            cur.execute("SELECT url, platform, full_name, category, data, found_at FROM projects_tbl WHERE category=%s ORDER BY found_at DESC", (category,))
         else:
-            cur.execute("SELECT data FROM projects_tbl ORDER BY found_at DESC")
+            cur.execute("SELECT url, platform, full_name, category, data, found_at FROM projects_tbl ORDER BY found_at DESC")
         out = []
-        for r in cur.fetchall():
-            d = r["data"]
-            if d: out.append(d)
+        for row in cur.fetchall():
+            d = dict(row["data"]) if row["data"] else {}
+            d.update({
+                "url": row["url"],
+                "platform": row["platform"],
+                "full_name": row["full_name"],
+                "category": row["category"],
+                "found_at": row["found_at"]
+            })
+            out.append(d)
         cur.close()
         return out
-    except:
+    except Exception as e:
+        print(f"load_projects err: {e}", flush=True)
         return []
 
+@db_retry()
 def count_projects():
     try:
         cur = get_conn().cursor()
@@ -543,18 +702,20 @@ def count_projects():
     except:
         return 0
 
+@db_retry()
 def clear_projects():
-    cur = get_conn().cursor()
-    cur.execute("TRUNCATE projects_tbl")
-    cur.close()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("DELETE FROM projects_tbl")
+        cur.close()
+    except Exception as e:
+        print(f"clear_projects err: {e}", flush=True)
 
-# ---------------- Sync JSON->DB on first run ----------------
+# ----- Sync JSON->DB on first run ----------------
 def migrate_json_to_db():
     """Import existing JSON files into DB on first run (one-shot)."""
     import glob
     try:
-        # scraped users
-        import os.path
         if os.path.exists("scraped_users.json"):
             with open("scraped_users.json", "r", encoding="utf-8") as f:
                 d = json.load(f)
@@ -563,20 +724,20 @@ def migrate_json_to_db():
             gname = d.get("group_name", "")
             bulk_save_users(users, gid, gname)
             print(f"[migrate] imported {len(users)} users from JSON", flush=True)
-        # saved accounts
+
         if os.path.exists("saved_accounts.json"):
             with open("saved_accounts.json","r",encoding="utf-8") as f:
                 accs = json.load(f)
             for phone, info in accs.items():
                 save_account(phone, info.get("name",""), info.get("username",""), info.get("device_fp"))
             print(f"[migrate] imported {len(accs)} accounts", flush=True)
-        # adder limits
+
         if os.path.exists("adder_limits.json"):
             with open("adder_limits.json","r",encoding="utf-8") as f:
                 lim = json.load(f)
             for phone, info in lim.items():
                 set_adder_limit(phone, info.get("added",0))
-        # config
+
         if os.path.exists("config.json"):
             with open("config.json","r",encoding="utf-8") as f:
                 c = json.load(f)
@@ -586,12 +747,12 @@ def migrate_json_to_db():
         print(f"migrate err: {e}", flush=True)
 
 
-# Initialize at import
+# Initialize tables at import time
 init_tables()
 
 
-
 # ---------------- Scanned Chats History (group/channel tracker) ----------------
+@db_retry()
 def upsert_scanned_chat(chat_id, chat_name, chat_type="group", category="",
                          total_members=0, extracted_new=0, progress_pct=None):
     """Register or update a chat in scan history"""
@@ -625,7 +786,7 @@ def upsert_scanned_chat(chat_id, chat_name, chat_type="group", category="",
     except Exception as e:
         print(f"upsert_scanned_chat err: {e}", flush=True)
 
-
+@db_retry()
 def get_scanned_chats(category=None):
     """Get list of scanned chats, optionally filtered by category"""
     try:
@@ -641,7 +802,7 @@ def get_scanned_chats(category=None):
         print(f"get_scanned_chats err: {e}", flush=True)
         return []
 
-
+@db_retry()
 def get_scanned_chat(chat_id):
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
@@ -652,7 +813,7 @@ def get_scanned_chat(chat_id):
     except:
         return None
 
-
+@db_retry()
 def update_chat_category(chat_id, category):
     try:
         cur = get_conn().cursor()
@@ -660,19 +821,21 @@ def update_chat_category(chat_id, category):
         cur.close()
     except: pass
 
-
+@db_retry()
 def update_chat_progress(chat_id, extracted_new, progress_pct):
-    cur = get_conn().cursor()
-    cur.execute("""
-        UPDATE scanned_chats_tbl SET
-            extracted_count = COALESCE(extracted_count,0) + %s,
-            progress_pct = %s,
-            last_scan = %s
-        WHERE chat_id = %s
-    """, (int(extracted_new), int(progress_pct or 0), int(time.time()), int(chat_id)))
-    cur.close()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("""
+            UPDATE scanned_chats_tbl SET
+                extracted_count = COALESCE(extracted_count,0) + %s,
+                progress_pct = %s,
+                last_scan = %s
+            WHERE chat_id = %s
+        """, (int(extracted_new), int(progress_pct or 0), int(time.time()), int(chat_id)))
+        cur.close()
+    except: pass
 
-
+@db_retry()
 def get_users_by_source(source_chat_id=None, category=None, limit=2000, offset=0):
     """Get users filtered by source chat or category"""
     try:
@@ -703,7 +866,7 @@ def get_users_by_source(source_chat_id=None, category=None, limit=2000, offset=0
         print(f"get_users_by_source err: {e}", flush=True)
         return []
 
-
+@db_retry()
 def count_users_by_source(source_chat_id=None, category=None):
     try:
         cur = get_conn().cursor()
@@ -722,16 +885,18 @@ def count_users_by_source(source_chat_id=None, category=None):
     except:
         return 0
 
-
+@db_retry()
 def get_all_categories():
     try:
         cur = get_conn().cursor()
         cur.execute("SELECT DISTINCT category FROM scanned_chats_tbl WHERE category IS NOT NULL AND category != '' ORDER BY category")
-        return [r[0] for r in cur.fetchall()]
+        res = [r[0] for r in cur.fetchall()]
+        cur.close()
+        return res
     except:
         return []
 
-
+@db_retry()
 def get_category_stats():
     try:
         cur = get_conn().cursor(cursor_factory=DictCursor)
@@ -741,11 +906,13 @@ def get_category_stats():
             FROM scanned_chats_tbl WHERE category != ''
             GROUP BY category ORDER BY total_users DESC
         """)
-        return [dict(r) for r in cur.fetchall()]
+        rows = cur.fetchall()
+        cur.close()
+        return [dict(r) for r in rows]
     except:
         return []
 
-
+@db_retry()
 def delete_scanned_chat(chat_id):
     try:
         cur = get_conn().cursor()
@@ -753,7 +920,7 @@ def delete_scanned_chat(chat_id):
         cur.close()
     except: pass
 
-
+@db_retry()
 def toggle_chat_favorite(chat_id):
     try:
         cur = get_conn().cursor()
@@ -762,6 +929,7 @@ def toggle_chat_favorite(chat_id):
     except: pass
 
 # ---------------- Favorites / bookmarks ----------------
+@db_retry()
 def fav_add(url):
     try:
         cur = get_conn().cursor()
@@ -773,6 +941,7 @@ def fav_add(url):
     except Exception as e:
         print(f"fav_add err: {e}", flush=True)
 
+@db_retry()
 def fav_remove(url):
     try:
         cur = get_conn().cursor()
@@ -789,7 +958,7 @@ def fav_list():
 def is_fav(url):
     return url in fav_list()
 
-
+@db_retry()
 def delete_user(user_id: int) -> bool:
     try:
         cur = get_conn().cursor()
@@ -799,7 +968,7 @@ def delete_user(user_id: int) -> bool:
         return deleted
     except: return False
 
-
+@db_retry()
 def delete_users_bulk(user_ids: list) -> int:
     if not user_ids: return 0
     try:
