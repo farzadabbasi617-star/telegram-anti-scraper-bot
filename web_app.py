@@ -13,6 +13,8 @@ import os
 import json
 import time
 import asyncio
+import re
+import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import db
@@ -20,15 +22,49 @@ import db
 # Reference to Pyrogram bot and attack state (set by bot.py)
 bot_app = None
 atk_state_ref = None
+main_event_loop = None
 
 def set_app_refs(app_bot, atk_state):
     global bot_app, atk_state_ref
     bot_app = app_bot
     atk_state_ref = atk_state
 
+def set_main_event_loop(loop):
+    global main_event_loop
+    main_event_loop = loop
+
+def _schedule_coro(coro):
+    global main_event_loop
+    if main_event_loop and main_event_loop.is_running():
+        asyncio.run_coroutine_threadsafe(coro, main_event_loop)
+    else:
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(coro)
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.create_task(coro)
+
+
+class _MiniAppMsgWrapper:
+    """Mock Message wrapper for Mini App background add tasks"""
+    def __init__(self, message=None):
+        self.message = self
+
+    async def edit_text(self, text, reply_markup=None, disable_web_page_preview=None, **kw):
+        if atk_state_ref:
+            atk_state_ref["live_status_text"] = text
+            m_added = re.search(r"✅ (\d+)", text)
+            m_failed = re.search(r"❌ (\d+)", text)
+            m_skipped = re.search(r"⏭ (\d+)", text)
+            if m_added: atk_state_ref["live_added"] = int(m_added.group(1))
+            if m_failed: atk_state_ref["live_failed"] = int(m_failed.group(1))
+            if m_skipped: atk_state_ref["live_skipped"] = int(m_skipped.group(1))
+
 
 # -----------------------------------------------------------------
-# DATA HELPER FUNCTIONS
+# DATA & ATTACK TRIGGER HELPERS
 # -----------------------------------------------------------------
 
 def get_dashboard_dict():
@@ -130,6 +166,126 @@ def get_members_stats_dict():
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def trigger_single_add(phone, add_type):
+    """Trigger single account add from DB members to target group"""
+    try:
+        raw_users = db.get_users_by_source(limit=5000)
+        if not raw_users:
+            raw_users = list(db.load_users_dict().values())
+
+        filtered = []
+        for u in raw_users:
+            uid = u.get("user_id") or u.get("id")
+            if not uid: continue
+            if add_type == "phone" and not u.get("phone"): continue
+            if add_type == "username" and not u.get("username"): continue
+            if add_type == "id" and (u.get("phone") or u.get("username")): continue
+            filtered.append(u)
+
+        if not filtered:
+            return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
+
+        cfg = db.get_config()
+        target_gid = cfg.get("group_id") or "@gament_super_gp"
+
+        if atk_state_ref:
+            atk_state_ref["add_in_progress"] = True
+            atk_state_ref["live_added"] = 0
+            atk_state_ref["live_failed"] = 0
+            atk_state_ref["live_skipped"] = 0
+            atk_state_ref["live_total"] = len(filtered)
+            atk_state_ref["live_mode"] = "تک اکانت"
+            atk_state_ref["_stop_requested"] = False
+
+        wrapper = _MiniAppMsgWrapper()
+
+        async def run_single_job():
+            try:
+                from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename
+                from bot import API_ID, API_HASH, _execute_simple_add
+                accs = db.load_accounts()
+                acc_info = accs.get(phone, {})
+                client = AdvancedScraper(
+                    session_name=os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}"),
+                    api_id=API_ID,
+                    api_hash=API_HASH,
+                    phone=phone,
+                    device_fp=acc_info.get("device_fp")
+                )
+                await client.connect()
+                await _execute_simple_add(wrapper, target_gid, client, phone, filtered, "دیتابیس مینی‌اپ")
+            except Exception as e:
+                print(f"MiniApp single add error: {e}", flush=True)
+            finally:
+                if atk_state_ref:
+                    atk_state_ref["add_in_progress"] = False
+
+        _schedule_coro(run_single_job())
+        return True, f"عملیات ادد تک اکانت ({phone}) با موفقیت شروع شد."
+    except Exception as e:
+        return False, str(e)
+
+
+def trigger_parallel_add(add_mode, add_type):
+    """Trigger parallel multi-account add from DB members to target group"""
+    try:
+        raw_users = db.get_users_by_source(limit=10000)
+        if not raw_users:
+            raw_users = list(db.load_users_dict().values())
+
+        filtered = []
+        for u in raw_users:
+            uid = u.get("user_id") or u.get("id")
+            if not uid: continue
+            if add_type == "phone" and not u.get("phone"): continue
+            if add_type == "username" and not u.get("username"): continue
+            if add_type == "id" and (u.get("phone") or u.get("username")): continue
+            filtered.append(u)
+
+        if not filtered:
+            return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
+
+        accs = db.load_accounts()
+        healthy_accs = {}
+        for p, info in accs.items():
+            st = db.get_account_status(p)
+            if st.get("status") == "healthy" and st.get("added", 0) < 100:
+                healthy_accs[p] = info
+
+        if not healthy_accs:
+            return False, "هیچ اکانت سالمی برای ادد موازی یافت نشد!"
+
+        cfg = db.get_config()
+        target_gid = cfg.get("group_id") or "@gament_super_gp"
+
+        if atk_state_ref:
+            atk_state_ref["add_in_progress"] = True
+            atk_state_ref["live_added"] = 0
+            atk_state_ref["live_failed"] = 0
+            atk_state_ref["live_skipped"] = 0
+            atk_state_ref["live_total"] = len(filtered)
+            atk_state_ref["live_mode"] = f"موازی ({add_mode})"
+            atk_state_ref["_stop_requested"] = False
+            atk_state_ref["stop_parallel_add"] = False
+
+        wrapper = _MiniAppMsgWrapper()
+        from bot import _execute_parallel_add
+
+        async def run_parallel_job():
+            try:
+                await _execute_parallel_add(wrapper, target_gid, healthy_accs, filtered, add_type, add_mode)
+            except Exception as e:
+                print(f"MiniApp parallel add error: {e}", flush=True)
+            finally:
+                if atk_state_ref:
+                    atk_state_ref["add_in_progress"] = False
+
+        _schedule_coro(run_parallel_job())
+        return True, f"عملیات ادد موازی با {len(healthy_accs)} اکانت شروع شد."
+    except Exception as e:
+        return False, str(e)
 
 
 # -----------------------------------------------------------------
@@ -461,6 +617,56 @@ MINI_APP_HTML = """<!DOCTYPE html>
             });
         }
 
+        async function startSingleAdd() {
+            const account = document.getElementById('select-single-account').value;
+            const addType = document.getElementById('select-single-type').value;
+
+            if (!account) {
+                alert('لطفاً یک اکانت انتخاب کنید.');
+                return;
+            }
+
+            if (!confirm(`آیا از شروع ادد تک اکانت با اکانت ${account} مطمئن هستید؟`)) return;
+
+            try {
+                const res = await fetch('/api/add/single', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone: account, add_type: addType })
+                });
+                const data = await res.json();
+                alert(data.message || (data.ok ? 'عملیات شروع شد' : data.error));
+                if (data.ok) {
+                    document.getElementById('card-live-progress').classList.remove('hidden');
+                    loadDashboard();
+                }
+            } catch (e) {
+                alert('خطا در برقراری ارتباط با سرور: ' + e);
+            }
+        }
+
+        async function startParallelAdd() {
+            const addType = document.getElementById('select-parallel-type').value;
+
+            if (!confirm(`آیا از شروع ادد موازی با تمام اکانت‌ها در مود ${selectedParallelSpeed.toUpperCase()} مطمئن هستید؟`)) return;
+
+            try {
+                const res = await fetch('/api/add/parallel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: selectedParallelSpeed, add_type: addType })
+                });
+                const data = await res.json();
+                alert(data.message || (data.ok ? 'عملیات ادد موازی شروع شد' : data.error));
+                if (data.ok) {
+                    document.getElementById('card-live-progress').classList.remove('hidden');
+                    loadDashboard();
+                }
+            } catch (e) {
+                alert('خطا در برقراری ارتباط با سرور: ' + e);
+            }
+        }
+
         async function loadDashboard() {
             try {
                 const res = await fetch('/api/dashboard');
@@ -659,7 +865,17 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
                 try: post_data = json.loads(body_bytes.decode('utf-8'))
                 except: pass
 
-            if path == '/api/accounts/reset':
+            if path == '/api/add/single':
+                phone = post_data.get("phone", "")
+                add_type = post_data.get("add_type", "all")
+                ok, msg = trigger_single_add(phone, add_type)
+                body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
+            elif path == '/api/add/parallel':
+                add_mode = post_data.get("mode", "ultra")
+                add_type = post_data.get("add_type", "all")
+                ok, msg = trigger_parallel_add(add_mode, add_type)
+                body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
+            elif path == '/api/accounts/reset':
                 db.reset_adder_limits()
                 body = json.dumps({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."}).encode('utf-8')
             elif path == '/api/settings/target':
@@ -714,6 +930,26 @@ def create_web_app(app_bot=None, atk_state=None):
         async def aio_api_members_stats(request):
             return web.json_response(get_members_stats_dict())
 
+        async def aio_api_add_single(request):
+            try:
+                data = await request.json()
+                phone = data.get("phone", "")
+                add_type = data.get("add_type", "all")
+                ok, msg = trigger_single_add(phone, add_type)
+                return web.json_response({"ok": ok, "message": msg})
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+        async def aio_api_add_parallel(request):
+            try:
+                data = await request.json()
+                add_mode = data.get("mode", "ultra")
+                add_type = data.get("add_type", "all")
+                ok, msg = trigger_parallel_add(add_mode, add_type)
+                return web.json_response({"ok": ok, "message": msg})
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+
         async def aio_api_reset_limits(request):
             db.reset_adder_limits()
             return web.json_response({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."})
@@ -741,6 +977,8 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_get('/api/dashboard', aio_api_dashboard)
         app.router.add_get('/api/accounts', aio_api_accounts)
         app.router.add_get('/api/members/stats', aio_api_members_stats)
+        app.router.add_post('/api/add/single', aio_api_add_single)
+        app.router.add_post('/api/add/parallel', aio_api_add_parallel)
         app.router.add_post('/api/accounts/reset', aio_api_reset_limits)
         app.router.add_post('/api/settings/target', aio_api_set_target)
         app.router.add_post('/api/add/stop', aio_api_stop_add)

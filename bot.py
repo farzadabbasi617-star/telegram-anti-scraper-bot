@@ -8771,6 +8771,12 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"⚠️ Temp session cleanup error: {e}", flush=True)
 
+    try:
+        import web_app
+        web_app.set_main_event_loop(_loop)
+    except Exception as e:
+        print(f"⚠️ web_app event loop register error: {e}", flush=True)
+
     Thread(target=run_health, daemon=True).start()
     Thread(target=keep_awake_loop, daemon=True).start()
     # Start auto-reset background thread
