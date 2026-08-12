@@ -3,6 +3,7 @@
 📱 Telegram Mini App (TMA) & REST API Module - @HaghBaKieBot
 =================================================================
 داشبورد مدیریت حرفه‌ای و سوپر اپلیکیشن کشف لیدهای گیمینگ/کریپتو، ادد ممبر و CRM:
+- بنر چسبان بالای صفحه و تبدیل دکمه‌های استارت به دکمه توقف فوری (Instant Stop Buttons)
 - کنسول پیشرفت زنده به سبک ADM Download Manager با درصد، گیج سرعت و تایمر
 - نمایش زنده نام و آیدی آخرین کاربر اضافه شده (Last Added Member Info)
 - دکمه توقف فوری با هپتیک فیدبک
@@ -293,9 +294,6 @@ def trigger_single_add(phone, add_type):
         if not filtered:
             return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
 
-        cfg = db.get_config()
-        target_gid = cfg.get("group_id") or "@gament_super_gp"
-
         if atk_state_ref:
             atk_state_ref["add_in_progress"] = True
             atk_state_ref["live_start_time"] = time.time()
@@ -378,9 +376,6 @@ def trigger_parallel_add(add_mode, add_type):
 
         if not healthy_accs:
             return False, "هیچ اکانت سالمی برای ادد موازی یافت نشد!"
-
-        cfg = db.get_config()
-        target_gid = cfg.get("group_id") or "@gament_super_gp"
 
         if atk_state_ref:
             atk_state_ref["add_in_progress"] = True
@@ -476,6 +471,21 @@ MINI_APP_HTML = """<!DOCTYPE html>
             🔄 ریست ۲۴ساعته
         </button>
     </header>
+
+    <!-- STICKY ACTIVE ADD BANNER (ALWAYS VISIBLE WHEN ADDING IS RUNNING) -->
+    <div id="sticky-add-banner" class="glass-card bg-emerald-950/90 border border-emerald-500/50 p-3 mx-2 mt-2 flex items-center justify-between shadow-2xl rounded-2xl hidden">
+        <div class="flex items-center gap-2.5">
+            <span class="w-3 h-3 rounded-full bg-emerald-400 pulse-live"></span>
+            <div>
+                <div class="text-xs font-black text-emerald-200" id="banner-mode-title">🚀 عملیات ادد زنده در حال اجراست</div>
+                <div class="text-[10px] text-emerald-300 font-bold" id="banner-stats-text">✅ 0 موفق | ❌ 0 خطا | ⚡ 0/min</div>
+            </div>
+        </div>
+        <button onclick="stopAddOperation()" class="px-3.5 py-2 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs rounded-xl shadow-lg border border-rose-400/40 flex items-center gap-1 active:scale-95 transition">
+            <span class="pulse-live">⏹️</span>
+            <span>توقف فوری</span>
+        </button>
+    </div>
 
     <!-- CONTENT CONTAINERS -->
     <main class="p-3 max-w-lg mx-auto space-y-4">
@@ -634,7 +644,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 </div>
 
                 <div class="pt-2">
-                    <button onclick="startSingleAdd()" class="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
+                    <button id="btn-single-start" onclick="startSingleAdd()" class="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
                         ▶️ شروع ادد تک اکانت از دیتابیس
                     </button>
                 </div>
@@ -670,7 +680,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 </div>
 
                 <div class="pt-2">
-                    <button onclick="startParallelAdd()" class="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
+                    <button id="btn-parallel-start" onclick="startParallelAdd()" class="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
                         ⚡⚡⚡ شروع ادد موازی با تمام اکانت‌ها
                     </button>
                 </div>
@@ -1052,7 +1062,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 alert('خطا در توقف: ' + e);
             }
             setTimeout(() => {
-                document.getElementById('btn-stop-text').innerText = 'توقف فوری';
+                document.getElementById('btn-stop-text').innerText = 'توقیف فوری';
                 document.getElementById('btn-stop-add').disabled = false;
                 loadDashboard();
             }, 1500);
@@ -1074,6 +1084,29 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     document.getElementById('target-label').innerText = m.target_group;
 
                     if (m.is_adding) {
+                        // Sticky banner
+                        document.getElementById('sticky-add-banner').classList.remove('hidden');
+                        document.getElementById('banner-mode-title').innerText = '🚀 عملیات ادد زنده (' + (m.add_progress.mode || 'فعال') + ')';
+                        const added = (m.add_progress.added || 0).toLocaleString('fa-IR');
+                        const failed = (m.add_progress.failed || 0).toLocaleString('fa-IR');
+                        const speed = (m.add_progress.speed_per_min || 0).toLocaleString('fa-IR');
+                        document.getElementById('banner-stats-text').innerText = `✅ ${added} موفق | ❌ ${failed} خطا | ⚡ ${speed} member/min`;
+
+                        // Form Buttons transform into STOP buttons
+                        const btnSingle = document.getElementById('btn-single-start');
+                        if (btnSingle) {
+                            btnSingle.innerHTML = '⏹️ توقف فوری عملیات ادد (در حال اجرا...)';
+                            btnSingle.className = 'w-full py-3 bg-gradient-to-r from-rose-600 to-red-600 text-white text-xs font-black rounded-xl shadow-lg border border-rose-500/40 active:scale-95 transition pulse-live';
+                            btnSingle.onclick = stopAddOperation;
+                        }
+
+                        const btnParallel = document.getElementById('btn-parallel-start');
+                        if (btnParallel) {
+                            btnParallel.innerHTML = '⏹️ توقف فوری عملیات ادد (در حال اجرا...)';
+                            btnParallel.className = 'w-full py-3 bg-gradient-to-r from-rose-600 to-red-600 text-white text-xs font-black rounded-xl shadow-lg border border-rose-500/40 active:scale-95 transition pulse-live';
+                            btnParallel.onclick = stopAddOperation;
+                        }
+
                         document.getElementById('status-text').innerText = '🚀 در حال ادد زنده...';
                         document.getElementById('status-text').className = 'text-xs text-emerald-400 font-bold';
 
@@ -1088,18 +1121,16 @@ MINI_APP_HTML = """<!DOCTYPE html>
                         document.getElementById('live-meter-section').classList.remove('hidden');
                         document.getElementById('live-last-user-card').classList.remove('hidden');
 
-                        const added = m.add_progress.added || 0;
-                        const failed = m.add_progress.failed || 0;
-                        const skipped = m.add_progress.skipped || 0;
+                        const skipped = (m.add_progress.skipped || 0).toLocaleString('fa-IR');
                         const total = m.add_progress.total || 1;
-                        const current = added + failed + skipped;
+                        const current = (m.add_progress.added || 0) + (m.add_progress.failed || 0) + (m.add_progress.skipped || 0);
                         const pct = Math.min(100, Math.round((current / total) * 100));
 
                         document.getElementById('prog-pct').innerText = pct + '%';
                         document.getElementById('prog-bar').style.width = pct + '%';
-                        document.getElementById('prog-added').innerText = added.toLocaleString('fa-IR');
-                        document.getElementById('prog-failed').innerText = failed.toLocaleString('fa-IR');
-                        document.getElementById('prog-skipped').innerText = skipped.toLocaleString('fa-IR');
+                        document.getElementById('prog-added').innerText = added;
+                        document.getElementById('prog-failed').innerText = failed;
+                        document.getElementById('prog-skipped').innerText = skipped;
 
                         const lastUser = m.add_progress.last_user || 'در حال آماده‌سازی کاربر بعدی...';
                         document.getElementById('live-last-user-name').innerText = lastUser;
@@ -1111,6 +1142,24 @@ MINI_APP_HTML = """<!DOCTYPE html>
                             String(mins).padStart(2, '0') + ':' + String(remainderSec).padStart(2, '0');
 
                     } else {
+                        // Hide sticky banner
+                        document.getElementById('sticky-add-banner').classList.add('hidden');
+
+                        // Reset buttons to start state
+                        const btnSingle = document.getElementById('btn-single-start');
+                        if (btnSingle) {
+                            btnSingle.innerHTML = '▶️ شروع ادد تک اکانت از دیتابیس';
+                            btnSingle.className = 'w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition';
+                            btnSingle.onclick = startSingleAdd;
+                        }
+
+                        const btnParallel = document.getElementById('btn-parallel-start');
+                        if (btnParallel) {
+                            btnParallel.innerHTML = '⚡⚡⚡ شروع ادد موازی با تمام اکانت‌ها';
+                            btnParallel.className = 'w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition';
+                            btnParallel.onclick = startParallelAdd;
+                        }
+
                         document.getElementById('status-text').innerText = 'سیستم آماده به کار';
                         document.getElementById('status-text').className = 'text-xs text-slate-400 font-medium';
 
@@ -1180,18 +1229,6 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     data.accounts.forEach(acc => {
                         sel.innerHTML += `<option value="${acc.phone}">${acc.name} (${acc.phone}) — ${acc.added_today}/100 ادد</option>`;
                     });
-                }
-            } catch (e) { console.error(e); }
-        }
-
-        async function loadMembersStats() {
-            try {
-                const res = await fetch('/api/members/stats');
-                const data = await res.json();
-                if (data.ok) {
-                    document.getElementById('db-phone').innerText = data.stats.with_phone.toLocaleString('fa-IR');
-                    document.getElementById('db-username').innerText = data.stats.with_username.toLocaleString('fa-IR');
-                    document.getElementById('db-id').innerText = data.stats.id_only.toLocaleString('fa-IR');
                 }
             } catch (e) { console.error(e); }
         }
