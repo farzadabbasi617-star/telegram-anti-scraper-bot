@@ -6,7 +6,8 @@
 - کنسول پیشرفت زنده به سبک ADM Download Manager با درصد، گیج سرعت و تایمر
 - نمایش زنده نام و آیدی آخرین کاربر اضافه شده (Last Added Member Info)
 - دکمه توقف فوری با هپتیک فیدبک
-- زبانه شکار لیدهای گیمینگ (Google Maps, Neshan, Web, Telegram, Instagram)
+- زبانه شکار لیدها و گروه‌های تلگرامی مرتبط با هر موضوع (مثل کلش رویال، گیم‌نت و...)
+- دکمه ۱-کلیکی استخراج ممبر مستقیم از گروه کشف شده به دیتابیس
 - زبانه مدیریت قیف فروش CRM با کپی متن پیام دعوت اختصاصی
 - تفکیک دوگانه حملات: ادد تک اکانت & ادد موازی با تمام اکانت‌ها
 - پشتیبانی دوگانه از aiohttp و http.server استاندارد جهت تضمین ۱۰۰٪ پورت رندر
@@ -210,6 +211,53 @@ def get_leads_list_dict(category=None, status=None):
         return {"ok": True, "leads": leads}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def trigger_scrape_group(chat_target):
+    """Trigger live member scraping from discovered Telegram group into DB"""
+    try:
+        accs = db.load_accounts()
+        if not accs:
+            return False, "هیچ اکانت متصلی برای اسکرپ وجود ندارد."
+
+        phone = list(accs.keys())[0]
+        acc_info = accs[phone]
+
+        if atk_state_ref:
+            atk_state_ref["add_in_progress"] = True
+            atk_state_ref["live_start_time"] = time.time()
+            atk_state_ref["live_added"] = 0
+            atk_state_ref["live_failed"] = 0
+            atk_state_ref["live_skipped"] = 0
+            atk_state_ref["live_mode"] = "اسکرپ گروه"
+            atk_state_ref["live_last_user"] = f"در حال استخراج از {chat_target}..."
+
+        async def run_scrape_job():
+            try:
+                from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename
+                from bot import API_ID, API_HASH
+                client = AdvancedScraper(
+                    session_name=os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}"),
+                    api_id=API_ID,
+                    api_hash=API_HASH,
+                    phone=phone,
+                    device_fp=acc_info.get("device_fp")
+                )
+                await client.connect()
+                scraped = await client.run_full_scrape(chat_target)
+                if atk_state_ref:
+                    count_got = len(scraped.get("found_users", {})) if isinstance(scraped, dict) else len(scraped or [])
+                    atk_state_ref["live_last_user"] = f"✅ {count_got} ممبر جدید ذخیره شد!"
+            except Exception as e:
+                print(f"Scrape job error: {e}", flush=True)
+            finally:
+                if atk_state_ref:
+                    atk_state_ref["add_in_progress"] = False
+
+        _schedule_coro(run_scrape_job())
+        return True, f"عملیات استخراج ممبر از {chat_target} شروع شد."
+    except Exception as e:
+        return False, str(e)
 
 
 def trigger_single_add(phone, add_type):
@@ -423,7 +471,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 </div>
                 <div class="glass-card p-4 text-center">
                     <div class="text-3xl font-black text-cyan-400" id="m-leads">...</div>
-                    <div class="text-xs text-slate-400 mt-1">🎮 لیدهای گیمینگ</div>
+                    <div class="text-xs text-slate-400 mt-1">🎮 لیدها / گروه‌ها</div>
                 </div>
             </div>
 
@@ -451,7 +499,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     </button>
                     <button onclick="switchTab('leadfinder')" class="p-3 bg-gradient-to-br from-purple-600 to-cyan-600 text-white text-xs font-bold rounded-2xl shadow-xl hover:brightness-110 flex flex-col items-center gap-1 active:scale-95 transition">
                         <span class="text-xl">🎮</span>
-                        <span>شکارچی لید</span>
+                        <span>شکارچی گروه و لید</span>
                     </button>
                 </div>
             </div>
@@ -606,27 +654,28 @@ MINI_APP_HTML = """<!DOCTYPE html>
         <section id="tab-leadfinder" class="tab-content hidden space-y-4">
             <div class="glass-card p-4 space-y-3">
                 <h3 class="text-sm font-extrabold text-cyan-400 flex items-center gap-2">
-                    <span>🎮 جستجوی هوشمند لیدهای گیمینگ</span>
+                    <span>🎮 شکارچی گروه‌های تلگرامی و لیدها</span>
                 </h3>
-                <p class="text-[11px] text-slate-300">پیدا کردن فروشگاه‌های کنسول، گیم‌نت‌ها، فروشندگان CP/Gem و پیج‌های تلگرامی/اینستاگرامی</p>
+                <p class="text-[11px] text-slate-300">جستجوی موضوعی بین تمام گروه‌ها و کانال‌های تلگرام (مثل کلش رویال، گیم‌نت و...)</p>
 
                 <div class="flex gap-2">
-                    <input type="text" id="input-lead-query" placeholder="مثلاً: فروشگاه کنسول شیراز یا خرید CP..." class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl px-3 py-2.5 outline-none focus:border-cyan-500">
-                    <button onclick="runLeadSearch()" id="btn-lead-search" class="bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-lg shrink-0">🔍 جستجو</button>
+                    <input type="text" id="input-lead-query" placeholder="موضوع مورد نظر... (مثلاً: کلش رویال)" class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl px-3 py-2.5 outline-none focus:border-cyan-500">
+                    <button onclick="runLeadSearch()" id="btn-lead-search" class="bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-lg shrink-0">🔍 شکار گروه</button>
                 </div>
 
                 <!-- PRESET TAGS -->
                 <div class="flex flex-wrap gap-1.5 pt-1">
-                    <button onclick="setLeadPreset('گیم‌نت و گیم سنتر')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">🎮 گیم‌نت</button>
-                    <button onclick="setLeadPreset('فروشگاه کنسول و بازی')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">🛍️ کنسول</button>
-                    <button onclick="setLeadPreset('خرید جم و CP کالاف')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">💎 CP/Gem</button>
-                    <button onclick="setLeadPreset('کانال گیمینگ تلگرام')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">📢 کانال تلگرام</button>
+                    <button onclick="setLeadPreset('کلش رویال')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">🎮 کلش رویال</button>
+                    <button onclick="setLeadPreset('کالاف دیوتی')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">💣 کالاف / CP</button>
+                    <button onclick="setLeadPreset('پابجی موبایل')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">🔥 پابجی / یوسی</button>
+                    <button onclick="setLeadPreset('گیم‌نت')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">🎮 گیم‌نت</button>
+                    <button onclick="setLeadPreset('فروشگاه کنسول')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">🛍️ کنسول</button>
                 </div>
             </div>
 
             <!-- DISCOVERED LEADS LIST -->
             <div id="leads-search-results" class="space-y-2.5">
-                <div class="text-center text-slate-400 text-xs py-6">جستجو کنید تا لیدهای کشف‌شده اینجا ظاهر شوند.</div>
+                <div class="text-center text-slate-400 text-xs py-6">موضوعی مثل "کلش رویال" را وارد کنید تا گروه‌های مرتبط پیدا شوند.</div>
             </div>
         </section>
 
@@ -755,12 +804,12 @@ MINI_APP_HTML = """<!DOCTYPE html>
         async function runLeadSearch() {
             const query = document.getElementById('input-lead-query').value;
             if (!query) {
-                alert('لطفاً عبارت جستجو را وارد کنید.');
+                alert('لطفاً عبارت یا موضوع جستجو را وارد کنید.');
                 return;
             }
 
             const btn = document.getElementById('btn-lead-search');
-            btn.innerText = '⏳ در حال جستجو...';
+            btn.innerText = '⏳ در حال شکار...';
             btn.disabled = true;
 
             try {
@@ -770,36 +819,63 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     body: JSON.stringify({ query: query })
                 });
                 const data = await res.json();
-                btn.innerText = '🔍 جستجو';
+                btn.innerText = '🔍 شکار گروه';
                 btn.disabled = false;
 
                 if (data.ok && data.leads) {
                     const list = document.getElementById('leads-search-results');
                     list.innerHTML = '';
                     if (data.leads.length === 0) {
-                        list.innerHTML = '<div class="text-center text-slate-400 text-xs py-6">نتیجه‌ای یافت نشد.</div>';
+                        list.innerHTML = '<div class="text-center text-slate-400 text-xs py-6">هیچ گروه مرتبطی یافت نشد.</div>';
                         return;
                     }
                     data.leads.forEach(lead => {
+                        const tgTarget = lead.telegram_username ? lead.telegram_username : (lead.url || '');
                         list.innerHTML += `
-                            <div class="glass-card p-3.5 space-y-2">
+                            <div class="glass-card p-3.5 space-y-2.5">
                                 <div class="flex items-center justify-between">
-                                    <div class="font-extrabold text-xs text-white truncate max-w-[200px]">${lead.title}</div>
+                                    <div class="font-extrabold text-xs text-white truncate max-w-[210px]">${lead.title}</div>
                                     <span class="px-2 py-0.5 bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold rounded-lg">⭐ ${lead.score}/100</span>
                                 </div>
-                                <div class="text-[11px] text-slate-400">${lead.notes || lead.category}</div>
-                                <div class="flex items-center justify-between pt-1">
-                                    <span class="text-[10px] text-slate-500 font-mono">${lead.source}</span>
-                                    <button onclick="switchTab('crm')" class="px-3 py-1 bg-purple-600/30 border border-purple-500/40 text-purple-300 text-[10px] font-bold rounded-lg">📈 مشاهده در CRM</button>
+                                <div class="text-[11px] text-slate-300 font-medium">${lead.notes || lead.category}</div>
+                                <div class="flex items-center justify-between pt-1 border-t border-slate-700/40">
+                                    <span class="text-[10px] text-cyan-400 font-mono">${lead.telegram_username || lead.source}</span>
+                                    <div class="flex gap-1.5">
+                                        <button onclick="scrapeDiscoveredGroup('${tgTarget}')" class="px-2.5 py-1 bg-gradient-to-r from-blue-600 to-cyan-600 text-white text-[10px] font-bold rounded-lg shadow hover:brightness-110">
+                                            📥 اسکرپ ممبر
+                                        </button>
+                                        <button onclick="switchTab('crm')" class="px-2 py-1 bg-purple-600/30 border border-purple-500/40 text-purple-300 text-[10px] font-bold rounded-lg">
+                                            📈 CRM
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         `;
                     });
                 }
             } catch (e) {
-                btn.innerText = '🔍 جستجو';
+                btn.innerText = '🔍 شکار گروه';
                 btn.disabled = false;
-                alert('خطا در جستجو: ' + e);
+                alert('خطا در شکار گروه: ' + e);
+            }
+        }
+
+        async function scrapeDiscoveredGroup(target) {
+            if (!target) return;
+            if (!confirm(`آیا از شروع استخراج ممبر از ${target} به دیتابیس مطمئن هستید؟`)) return;
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+
+            try {
+                const res = await fetch('/api/scrape/group', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target: target })
+                });
+                const data = await res.json();
+                alert(data.message || (data.ok ? 'عملیات استخراج شروع شد' : data.error));
+                if (data.ok) switchTab('attack');
+            } catch (e) {
+                alert('خطا در شروع اسکرپ: ' + e);
             }
         }
 
@@ -1080,6 +1156,18 @@ MINI_APP_HTML = """<!DOCTYPE html>
             } catch (e) { console.error(e); }
         }
 
+        async function loadMembersStats() {
+            try {
+                const res = await fetch('/api/members/stats');
+                const data = await res.json();
+                if (data.ok) {
+                    document.getElementById('db-phone').innerText = data.stats.with_phone.toLocaleString('fa-IR');
+                    document.getElementById('db-username').innerText = data.stats.with_username.toLocaleString('fa-IR');
+                    document.getElementById('db-id').innerText = data.stats.id_only.toLocaleString('fa-IR');
+                }
+            } catch (e) { console.error(e); }
+        }
+
         async function reset24hLimits() {
             if (!confirm('آیا از ریست کردن شمارنده ادد تمام اکانت‌ها مطمئن هستید؟')) return;
             if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
@@ -1195,9 +1283,13 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
                 add_type = post_data.get("add_type", "all")
                 ok, msg = trigger_parallel_add(add_mode, add_type)
                 body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
+            elif path == '/api/scrape/group':
+                target = post_data.get("target", "")
+                ok, msg = trigger_scrape_group(target)
+                body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
             elif path == '/api/leads/search':
                 query = post_data.get("query", "")
-                leads = asyncio.run(lead_finder.search_leads_online(query))
+                leads = asyncio.run(lead_finder.search_telegram_groups_by_topic(query))
                 body = json.dumps({"ok": True, "leads": leads}).encode('utf-8')
             elif path == '/api/leads/update_status':
                 lead_id = post_data.get("id")
@@ -1269,8 +1361,17 @@ def create_web_app(app_bot=None, atk_state=None):
             try:
                 data = await request.json()
                 query = data.get("query", "")
-                leads = await lead_finder.search_leads_online(query)
+                leads = await lead_finder.search_telegram_groups_by_topic(query)
                 return web.json_response({"ok": True, "leads": leads}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
+
+        async def aio_api_scrape_group(request):
+            try:
+                data = await request.json()
+                target = data.get("target", "")
+                ok, msg = trigger_scrape_group(target)
+                return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
             except Exception as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
 
@@ -1339,6 +1440,7 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_get('/api/leads/stats', aio_api_leads_stats)
         app.router.add_get('/api/leads/list', aio_api_leads_list)
         app.router.add_post('/api/leads/search', aio_api_leads_search)
+        app.router.add_post('/api/scrape/group', aio_api_scrape_group)
         app.router.add_post('/api/leads/update_status', aio_api_leads_update_status)
         app.router.add_post('/api/add/single', aio_api_add_single)
         app.router.add_post('/api/add/parallel', aio_api_add_parallel)

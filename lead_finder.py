@@ -2,7 +2,7 @@
 =================================================================
 🎮 Game Lead Finder & Scoring Module - @HaghBaKieBot
 =================================================================
-ماژول هوشمند کشف لیدهای حوزه گیمینگ/کریپتو، امتیازدهی و مدیریت لیدها
+ماژول هوشمند کشف لیدهای حوزه گیمینگ/کریپتو، پیدا کردن گروه‌های تلگرامی، امتیازدهی و مدیریت لیدها
 """
 import re
 import json
@@ -11,13 +11,14 @@ import random
 import urllib.parse
 import urllib.request
 import asyncio
+import os
 
 import db
 
 PERSIAN_DIGITS = str.maketrans('۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩', '01234567890123456789')
 
 CATEGORY_RULES = {
-    'اکانت': ['اکانت', 'account', 'کلش', 'ولورانت', 'valorant', 'steam account', 'استیم اکانت'],
+    'کلش رویال': ['کلش رویال', 'clash royale', 'clash_royale', 'رویال'],
     'سی‌پی کالاف': ['سی پی', 'cp', 'کالاف', 'call of duty', 'cod', 'وارزون'],
     'یوسی پابجی': ['یوسی', 'uc', 'پابجی', 'pubg'],
     'جم/الماس': ['جم', 'الماس', 'free fire', 'فری فایر', 'gem', 'diamond'],
@@ -130,7 +131,6 @@ async def search_leads_online(query: str, category_override: str = None) -> list
     if not clean_q:
         return []
 
-    # Method 1: DuckDuckGo HTML search
     try:
         enc_q = urllib.parse.quote_plus(clean_q + " تلگرام یا اینستاگرام")
         req_url = f"https://html.duckduckgo.com/html/?q={enc_q}"
@@ -144,7 +144,6 @@ async def search_leads_online(query: str, category_override: str = None) -> list
 
         html = await fetch_ddg()
         
-        # Regex search for links in DDG results
         links = re.findall(r'<a class="result__url" href="([^"]+)".*?>(.*?)</a>', html, re.DOTALL)
         titles = re.findall(r'<a class="result__a"[^>]*>(.*?)</a>', html, re.DOTALL)
         snippets = re.findall(r'<a class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
@@ -163,7 +162,6 @@ async def search_leads_online(query: str, category_override: str = None) -> list
 
                 cat = category_override or detect_category(t, snip, clean_q)
                 
-                # Extract contacts
                 phone_match = re.search(r'09\d{9}', snip + " " + t)
                 phone = phone_match.group(0) if phone_match else ""
 
@@ -185,7 +183,6 @@ async def search_leads_online(query: str, category_override: str = None) -> list
                     "notes": snip[:200]
                 }
                 
-                # Save automatically to DB
                 db.save_lead(
                     title=lead_item["title"],
                     url=lead_item["url"],
@@ -204,5 +201,150 @@ async def search_leads_online(query: str, category_override: str = None) -> list
 
     except Exception as e:
         print(f"Online lead search error: {e}", flush=True)
+
+    return results
+
+
+async def search_telegram_groups_by_topic(query: str, app_bot=None) -> list:
+    """Find Telegram Groups and Channels matching topic (e.g. 'کلش رویال') via Telegram MTProto Search & Web Search"""
+    results = []
+    clean_q = query.strip()
+    if not clean_q:
+        return []
+
+    seen_usernames = set()
+
+    # Phase 1: Try Pyrogram MTProto contacts.Search iterating through accounts
+    try:
+        accs = db.load_accounts()
+        for phone, info in accs.items():
+            st = db.get_account_status(phone)
+            if st.get("status") == "banned":
+                continue
+
+            from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename
+            from bot import API_ID, API_HASH
+            from pyrogram.raw import functions, types
+
+            sess_path = os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}")
+            blob = db.load_session_blob(phone)
+            if blob and (not os.path.exists(sess_path + ".session") or os.path.getsize(sess_path + ".session") == 0):
+                try:
+                    with open(sess_path + ".session", "wb") as f:
+                        f.write(blob)
+                except: pass
+
+            client = AdvancedScraper(
+                session_name=sess_path,
+                api_id=API_ID,
+                api_hash=API_HASH,
+                phone=phone
+            )
+            try:
+                await client.connect()
+                mtproto_res = await client.app.invoke(functions.contacts.Search(q=clean_q, limit=50))
+                chats = getattr(mtproto_res, 'chats', []) or []
+
+                for chat in chats:
+                    un = getattr(chat, 'username', '') or ''
+                    un = un.strip().lower()
+                    if un and un not in seen_usernames:
+                        seen_usernames.add(un)
+                        title = getattr(chat, 'title', f"گروه @{un}") or f"گروه @{un}"
+                        members = getattr(chat, 'participants_count', 0) or 0
+                        is_megagroup = getattr(chat, 'megagroup', False)
+
+                        lead_item = {
+                            "title": title,
+                            "url": f"https://t.me/{un}",
+                            "source": "Telegram Search",
+                            "category": detect_category(title, clean_q),
+                            "phone": "",
+                            "telegram_username": f"@{un}",
+                            "instagram_username": "",
+                            "score": min(95, 55 + (members // 200)),
+                            "status": "new",
+                            "members": members,
+                            "chat_id": chat.id,
+                            "notes": f"👥 {members:,} عضو | {'گروه عمومی' if is_megagroup else 'کانال عمومی تلگرام'}"
+                        }
+
+                        db.save_lead(
+                            title=lead_item["title"],
+                            url=lead_item["url"],
+                            source=lead_item["source"],
+                            category=lead_item["category"],
+                            telegram=lead_item["telegram_username"],
+                            score=lead_item["score"],
+                            notes=lead_item["notes"]
+                        )
+                        db.upsert_scanned_chat(
+                            chat_id=chat.id,
+                            chat_name=title,
+                            chat_type='group' if is_megagroup else 'channel',
+                            category=lead_item["category"],
+                            total_members=members
+                        )
+                        results.append(lead_item)
+
+                if results:
+                    break  # Search succeeded with this account
+
+            except Exception as acc_err:
+                print(f"Account {phone} search error: {acc_err}", flush=True)
+                continue
+            finally:
+                try: await client.disconnect()
+                except: pass
+    except Exception as e:
+        print(f"MTProto group search error: {e}", flush=True)
+
+    # Phase 2: Web Search for Telegram Group links (site:t.me ...)
+    try:
+        from group_finder import search_via_web
+        web_res = await asyncio.to_thread(search_via_web, clean_q, 15)
+        for item in web_res:
+            un = (item.get("chat_username") or "").strip().lower()
+            if un and un not in seen_usernames:
+                seen_usernames.add(un)
+                title = f"گروه @{un}"
+                lead_item = {
+                    "title": title,
+                    "url": f"https://t.me/{un}",
+                    "source": "Telegram Web Search",
+                    "category": detect_category(title, clean_q),
+                    "phone": "",
+                    "telegram_username": f"@{un}",
+                    "instagram_username": "",
+                    "score": 65,
+                    "status": "new",
+                    "members": 0,
+                    "notes": f"📢 لینک تلگرام پیدا شده برای موضوع {clean_q}"
+                }
+                db.save_lead(
+                    title=lead_item["title"],
+                    url=lead_item["url"],
+                    source=lead_item["source"],
+                    category=lead_item["category"],
+                    telegram=lead_item["telegram_username"],
+                    score=65,
+                    notes=lead_item["notes"]
+                )
+                results.append(lead_item)
+    except Exception as e:
+        print(f"Web group search error: {e}", flush=True)
+
+    # Phase 3: General web search fallback
+    if len(results) < 5:
+        try:
+            web_leads = await search_leads_online(clean_q)
+            for w in web_leads:
+                un = (w.get("telegram_username") or "").strip().lower().replace("@", "")
+                if un and un not in seen_usernames:
+                    seen_usernames.add(un)
+                    results.append(w)
+                elif not un:
+                    results.append(w)
+        except Exception as e: pass
 
     return results
