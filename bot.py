@@ -8155,12 +8155,37 @@ async def _do_quick_add(q, gid, gname, uid_list, client, phone):
 
 
 
+stop_event = asyncio.Event()
+
+def request_stop_all():
+    global stop_event
+    try:
+        stop_event.set()
+    except: pass
+    if atk_state:
+        atk_state["_stop_requested"] = True
+        atk_state["stop_parallel_add"] = True
+        atk_state["add_in_progress"] = False
+    print("⏹️ Instant stop request triggered across all workers!", flush=True)
+
+def reset_stop_event():
+    global stop_event
+    try:
+        stop_event.clear()
+    except:
+        stop_event = asyncio.Event()
+    if atk_state:
+        atk_state["_stop_requested"] = False
+        atk_state["stop_parallel_add"] = False
+
 async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode="safe"):
     """Execute parallel add using Smart Round-Robin distribution across all active accounts."""
     from pyrogram.raw.functions.channels import InviteToChannel
     from pyrogram.raw.functions.contacts import AddContact
     from pyrogram.errors import FloodWait, UserAlreadyParticipant, UserPrivacyRestricted, UserNotMutualContact, ChatAdminRequired, UsersTooMuch
     import tempfile, shutil
+
+    reset_stop_event()
 
     start_t = time.time()
     total_members = len(members)
@@ -8239,8 +8264,8 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 target_peer = await client.resolve_peer(target_gid)
 
             while not member_queue.empty() and acc_added < max_for_this_acc:
-                if atk_state.get("_stop_requested") or atk_state.get("stop_parallel_add"):
-                    print(f"⏹️ [{phone}] Stop requested, halting worker.", flush=True)
+                if stop_event.is_set() or atk_state.get("_stop_requested") or atk_state.get("stop_parallel_add"):
+                    print(f"⏹️ [{phone}] Instant stop requested, halting worker.", flush=True)
                     break
 
                 try:
@@ -8299,9 +8324,15 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                         atk_state_ref["live_failed"] = total_failed
                         atk_state_ref["live_skipped"] = total_skipped
 
-                    print(f"✅ [{phone}] Invited {uid}! (Acc Total: {already_added + acc_added}/100, Global Added: {total_added})", flush=True)
+                    print(f"✅ [{phone}] Invited {display_user}! (Acc Total: {already_added + acc_added}/100, Global Added: {total_added})", flush=True)
 
-                    await asyncio.sleep(per_account_delay + random.uniform(0.5, 2.0))
+                    # Instant interruptible sleep
+                    try:
+                        await asyncio.wait_for(stop_event.wait(), timeout=per_account_delay + random.uniform(0.5, 1.5))
+                        print(f"⏹️ [{phone}] Interrupted during delay, stopping worker.", flush=True)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
 
                 except FloodWait as fw:
                     total_failed += 1
@@ -8315,7 +8346,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 except Exception as e:
                     total_failed += 1
                     print(f"❌ [{phone}] Add error for {uid}: {e}", flush=True)
-                    await asyncio.sleep(2.0)
+                    await asyncio.sleep(1.0)
 
                 member_queue.task_done()
 
