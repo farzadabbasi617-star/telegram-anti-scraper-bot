@@ -2,10 +2,12 @@
 =================================================================
 📱 Telegram Mini App (TMA) & REST API Module - @HaghBaKieBot
 =================================================================
-داشبورد مدیریت حرفه‌ای و مینی‌اپ تلگرام با ساختار زنده و پویای ADM:
+داشبورد مدیریت حرفه‌ای و سوپر اپلیکیشن کشف لیدهای گیمینگ/کریپتو، ادد ممبر و CRM:
 - کنسول پیشرفت زنده به سبک ADM Download Manager با درصد، گیج سرعت و تایمر
 - نمایش زنده نام و آیدی آخرین کاربر اضافه شده (Last Added Member Info)
 - دکمه توقف فوری با هپتیک فیدبک
+- زبانه شکار لیدهای گیمینگ (Google Maps, Neshan, Web, Telegram, Instagram)
+- زبانه مدیریت قیف فروش CRM با کپی متن پیام دعوت اختصاصی
 - تفکیک دوگانه حملات: ادد تک اکانت & ادد موازی با تمام اکانت‌ها
 - پشتیبانی دوگانه از aiohttp و http.server استاندارد جهت تضمین ۱۰۰٪ پورت رندر
 """
@@ -18,6 +20,7 @@ import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import db
+import lead_finder
 
 # Reference to Pyrogram bot and attack state (set by bot.py)
 bot_app = None
@@ -71,6 +74,7 @@ def get_dashboard_dict():
     try:
         total_members = db.count_users()
         accounts = db.load_accounts()
+        total_leads = db.count_leads()
         
         healthy_count = 0
         limited_count = 0
@@ -117,6 +121,7 @@ def get_dashboard_dict():
                 "healthy_accounts": healthy_count,
                 "limited_accounts": limited_count,
                 "today_adds": today_total_adds,
+                "total_leads": total_leads,
                 "target_group": target_group,
                 "is_adding": is_running,
                 "add_progress": add_progress
@@ -172,6 +177,37 @@ def get_members_stats_dict():
                 "id_only": id_only_count
             }
         }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def get_leads_stats_dict():
+    try:
+        total = db.count_leads()
+        new_cnt = db.count_leads('new')
+        checked_cnt = db.count_leads('checked')
+        messaged_cnt = db.count_leads('messaged')
+        replied_cnt = db.count_leads('replied')
+        registered_cnt = db.count_leads('registered')
+        return {
+            "ok": True,
+            "stats": {
+                "total": total,
+                "new": new_cnt,
+                "checked": checked_cnt,
+                "messaged": messaged_cnt,
+                "replied": replied_cnt,
+                "registered": registered_cnt
+            }
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def get_leads_list_dict(category=None, status=None):
+    try:
+        leads = db.load_leads(category=category, status=status, limit=150)
+        return {"ok": True, "leads": leads}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -352,7 +388,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
             <div>
                 <div class="flex items-center gap-2">
                     <h1 class="text-base font-extrabold text-white tracking-tight">سامانه آنتی‌اسکریپت</h1>
-                    <span class="text-[10px] bg-blue-500/30 text-blue-300 px-2 py-0.5 rounded-md font-mono border border-blue-500/40">v3.5 - ADM Live</span>
+                    <span class="text-[10px] bg-blue-500/30 text-blue-300 px-2 py-0.5 rounded-md font-mono border border-blue-500/40">v3.5 - Lead Engine</span>
                 </div>
                 <div class="flex items-center gap-1.5 text-xs text-emerald-400 font-medium mt-0.5">
                     <span id="header-dot" class="w-2 h-2 rounded-full bg-emerald-500 pulse-live"></span>
@@ -386,8 +422,8 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     <div class="text-xs text-slate-400 mt-1">➕ اددهای امروز</div>
                 </div>
                 <div class="glass-card p-4 text-center">
-                    <div class="text-3xl font-black text-amber-400" id="m-limited">...</div>
-                    <div class="text-xs text-slate-400 mt-1">🔴 اکانت‌های محدود</div>
+                    <div class="text-3xl font-black text-cyan-400" id="m-leads">...</div>
+                    <div class="text-xs text-slate-400 mt-1">🎮 لیدهای گیمینگ</div>
                 </div>
             </div>
 
@@ -403,19 +439,19 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 </div>
             </div>
 
-            <!-- QUICK ATTACK LAUNCHERS -->
+            <!-- QUICK LAUNCHERS -->
             <div class="glass-card p-4 space-y-3">
                 <h3 class="text-sm font-bold text-white flex items-center gap-2">
-                    <span>⚡ شتاب‌دهنده عملیات ادد</span>
+                    <span>⚡ میانبرهای ابزار</span>
                 </h3>
                 <div class="grid grid-cols-2 gap-2.5">
-                    <button onclick="switchTab('attack'); setAttackCategory('single');" class="p-3 bg-gradient-to-br from-blue-600 to-indigo-700 text-white text-xs font-bold rounded-2xl shadow-xl hover:brightness-110 flex flex-col items-center gap-1 active:scale-95 transition">
-                        <span class="text-xl">📱</span>
-                        <span>ادد تک اکانت</span>
+                    <button onclick="switchTab('attack')" class="p-3 bg-gradient-to-br from-blue-600 to-indigo-700 text-white text-xs font-bold rounded-2xl shadow-xl hover:brightness-110 flex flex-col items-center gap-1 active:scale-95 transition">
+                        <span class="text-xl">⚡</span>
+                        <span>اتاق ادد ممبر</span>
                     </button>
-                    <button onclick="switchTab('attack'); setAttackCategory('parallel');" class="p-3 bg-gradient-to-br from-emerald-600 to-teal-700 text-white text-xs font-bold rounded-2xl shadow-xl hover:brightness-110 flex flex-col items-center gap-1 active:scale-95 transition">
-                        <span class="text-xl">⚡⚡⚡</span>
-                        <span>ادد موازی</span>
+                    <button onclick="switchTab('leadfinder')" class="p-3 bg-gradient-to-br from-purple-600 to-cyan-600 text-white text-xs font-bold rounded-2xl shadow-xl hover:brightness-110 flex flex-col items-center gap-1 active:scale-95 transition">
+                        <span class="text-xl">🎮</span>
+                        <span>شکارچی لید</span>
                     </button>
                 </div>
             </div>
@@ -566,7 +602,57 @@ MINI_APP_HTML = """<!DOCTYPE html>
         </section>
 
 
-        <!-- TAB 3: ACCOUNTS HEALTH -->
+        <!-- TAB 3: GAME LEAD FINDER -->
+        <section id="tab-leadfinder" class="tab-content hidden space-y-4">
+            <div class="glass-card p-4 space-y-3">
+                <h3 class="text-sm font-extrabold text-cyan-400 flex items-center gap-2">
+                    <span>🎮 جستجوی هوشمند لیدهای گیمینگ</span>
+                </h3>
+                <p class="text-[11px] text-slate-300">پیدا کردن فروشگاه‌های کنسول، گیم‌نت‌ها، فروشندگان CP/Gem و پیج‌های تلگرامی/اینستاگرامی</p>
+
+                <div class="flex gap-2">
+                    <input type="text" id="input-lead-query" placeholder="مثلاً: فروشگاه کنسول شیراز یا خرید CP..." class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl px-3 py-2.5 outline-none focus:border-cyan-500">
+                    <button onclick="runLeadSearch()" id="btn-lead-search" class="bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-lg shrink-0">🔍 جستجو</button>
+                </div>
+
+                <!-- PRESET TAGS -->
+                <div class="flex flex-wrap gap-1.5 pt-1">
+                    <button onclick="setLeadPreset('گیم‌نت و گیم سنتر')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">🎮 گیم‌نت</button>
+                    <button onclick="setLeadPreset('فروشگاه کنسول و بازی')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">🛍️ کنسول</button>
+                    <button onclick="setLeadPreset('خرید جم و CP کالاف')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">💎 CP/Gem</button>
+                    <button onclick="setLeadPreset('کانال گیمینگ تلگرام')" class="text-[10px] bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 px-2.5 py-1 rounded-lg">📢 کانال تلگرام</button>
+                </div>
+            </div>
+
+            <!-- DISCOVERED LEADS LIST -->
+            <div id="leads-search-results" class="space-y-2.5">
+                <div class="text-center text-slate-400 text-xs py-6">جستجو کنید تا لیدهای کشف‌شده اینجا ظاهر شوند.</div>
+            </div>
+        </section>
+
+
+        <!-- TAB 4: CRM PIPELINE -->
+        <section id="tab-crm" class="tab-content hidden space-y-3">
+            <div class="flex items-center justify-between px-1">
+                <h3 class="text-sm font-bold text-white">📈 قیف فروش و CRM لیدها</h3>
+                <span id="crm-total-count" class="text-xs text-purple-300 font-bold">0 لید</span>
+            </div>
+
+            <!-- PIPELINE CHIPS -->
+            <div class="flex gap-1.5 overflow-x-auto pb-1 text-xs">
+                <button onclick="filterCrmStatus('all')" id="crm-chip-all" class="px-3 py-1.5 bg-blue-600 text-white font-bold rounded-xl shrink-0">همه</button>
+                <button onclick="filterCrmStatus('new')" id="crm-chip-new" class="px-3 py-1.5 bg-slate-800 text-slate-300 rounded-xl shrink-0">🆕 جدید</button>
+                <button onclick="filterCrmStatus('messaged')" id="crm-chip-messaged" class="px-3 py-1.5 bg-slate-800 text-slate-300 rounded-xl shrink-0">💬 پیام دادم</button>
+                <button onclick="filterCrmStatus('replied')" id="crm-chip-replied" class="px-3 py-1.5 bg-slate-800 text-slate-300 rounded-xl shrink-0">✅ پاسخ داد</button>
+            </div>
+
+            <div id="crm-leads-list" class="space-y-2.5">
+                <div class="text-center text-slate-400 text-xs py-8">در حال بارگذاری لیدها...</div>
+            </div>
+        </section>
+
+
+        <!-- TAB 5: ACCOUNTS HEALTH -->
         <section id="tab-accounts" class="tab-content hidden space-y-3">
             <div class="flex items-center justify-between px-1">
                 <h3 class="text-sm font-bold text-white">📊 وضعیت سلامت و ظرفیت اکانت‌ها</h3>
@@ -578,28 +664,6 @@ MINI_APP_HTML = """<!DOCTYPE html>
             </div>
         </section>
 
-
-        <!-- TAB 4: MEMBER DB -->
-        <section id="tab-members" class="tab-content hidden space-y-4">
-            <div class="glass-card p-4 space-y-3">
-                <h3 class="text-sm font-bold text-white">📂 آمار تفکیکی دیتابیس ممبرها</h3>
-                <div class="grid grid-cols-3 gap-2 text-center text-xs">
-                    <div class="p-2.5 bg-slate-900/80 rounded-xl">
-                        <div class="font-bold text-blue-400" id="db-phone">0</div>
-                        <div class="text-slate-400 text-[10px] mt-0.5">شماره‌دار</div>
-                    </div>
-                    <div class="p-2.5 bg-slate-900/80 rounded-xl">
-                        <div class="font-bold text-emerald-400" id="db-username">0</div>
-                        <div class="text-slate-400 text-[10px] mt-0.5">شناسه‌دار</div>
-                    </div>
-                    <div class="p-2.5 bg-slate-900/80 rounded-xl">
-                        <div class="font-bold text-amber-400" id="db-id">0</div>
-                        <div class="text-slate-400 text-[10px] mt-0.5">فقط ID</div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
     </main>
 
     <!-- BOTTOM NAVBAR -->
@@ -608,13 +672,16 @@ MINI_APP_HTML = """<!DOCTYPE html>
             📊 داشبورد
         </button>
         <button onclick="switchTab('attack')" id="nav-attack" class="flex-1 py-2 text-xs font-bold text-slate-400 text-center rounded-xl transition">
-            ⚡ ادد ممبر
+            ⚡ ادد
+        </button>
+        <button onclick="switchTab('leadfinder')" id="nav-leadfinder" class="flex-1 py-2 text-xs font-bold text-slate-400 text-center rounded-xl transition">
+            🎮 شکارچی
+        </button>
+        <button onclick="switchTab('crm')" id="nav-crm" class="flex-1 py-2 text-xs font-bold text-slate-400 text-center rounded-xl transition">
+            📈 CRM
         </button>
         <button onclick="switchTab('accounts')" id="nav-accounts" class="flex-1 py-2 text-xs font-bold text-slate-400 text-center rounded-xl transition">
             📱 اکانت‌ها
-        </button>
-        <button onclick="switchTab('members')" id="nav-members" class="flex-1 py-2 text-xs font-bold text-slate-400 text-center rounded-xl transition">
-            📂 دیتابیس
         </button>
     </nav>
 
@@ -628,6 +695,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
         let selectedParallelSpeed = 'ultra';
         let activeTab = 'dashboard';
+        let currentCrmStatus = 'all';
 
         function switchTab(tabId) {
             activeTab = tabId;
@@ -647,7 +715,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
             if (tabId === 'dashboard') loadDashboard();
             if (tabId === 'accounts') loadAccounts();
-            if (tabId === 'members') loadMembersStats();
+            if (tabId === 'crm') loadCrmLeads();
             if (tabId === 'attack') loadAttackAccounts();
         }
 
@@ -677,6 +745,147 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     btn.className = "p-2 bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold rounded-xl text-center hover:border-blue-500";
                 }
             });
+        }
+
+        function setLeadPreset(query) {
+            document.getElementById('input-lead-query').value = query;
+            runLeadSearch();
+        }
+
+        async function runLeadSearch() {
+            const query = document.getElementById('input-lead-query').value;
+            if (!query) {
+                alert('لطفاً عبارت جستجو را وارد کنید.');
+                return;
+            }
+
+            const btn = document.getElementById('btn-lead-search');
+            btn.innerText = '⏳ در حال جستجو...';
+            btn.disabled = true;
+
+            try {
+                const res = await fetch('/api/leads/search', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: query })
+                });
+                const data = await res.json();
+                btn.innerText = '🔍 جستجو';
+                btn.disabled = false;
+
+                if (data.ok && data.leads) {
+                    const list = document.getElementById('leads-search-results');
+                    list.innerHTML = '';
+                    if (data.leads.length === 0) {
+                        list.innerHTML = '<div class="text-center text-slate-400 text-xs py-6">نتیجه‌ای یافت نشد.</div>';
+                        return;
+                    }
+                    data.leads.forEach(lead => {
+                        list.innerHTML += `
+                            <div class="glass-card p-3.5 space-y-2">
+                                <div class="flex items-center justify-between">
+                                    <div class="font-extrabold text-xs text-white truncate max-w-[200px]">${lead.title}</div>
+                                    <span class="px-2 py-0.5 bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-[10px] font-bold rounded-lg">⭐ ${lead.score}/100</span>
+                                </div>
+                                <div class="text-[11px] text-slate-400">${lead.notes || lead.category}</div>
+                                <div class="flex items-center justify-between pt-1">
+                                    <span class="text-[10px] text-slate-500 font-mono">${lead.source}</span>
+                                    <button onclick="switchTab('crm')" class="px-3 py-1 bg-purple-600/30 border border-purple-500/40 text-purple-300 text-[10px] font-bold rounded-lg">📈 مشاهده در CRM</button>
+                                </div>
+                            </div>
+                        `;
+                    });
+                }
+            } catch (e) {
+                btn.innerText = '🔍 جستجو';
+                btn.disabled = false;
+                alert('خطا در جستجو: ' + e);
+            }
+        }
+
+        async function loadCrmLeads() {
+            try {
+                const res = await fetch(`/api/leads/list?status=${currentCrmStatus}`);
+                const data = await res.json();
+                if (data.ok) {
+                    const list = document.getElementById('crm-leads-list');
+                    list.innerHTML = '';
+                    document.getElementById('crm-total-count').innerText = `${data.leads.length} لید`;
+
+                    if (data.leads.length === 0) {
+                        list.innerHTML = '<div class="text-center text-slate-400 text-xs py-8">هیچ لیدی در این وضعیت ثبت نشده است.</div>';
+                        return;
+                    }
+
+                    data.leads.forEach(lead => {
+                        const tgLink = lead.telegram_username ? `https://t.me/${lead.telegram_username.replace('@','')}` : '';
+                        const igLink = lead.instagram_username ? `https://instagram.com/${lead.instagram_username.replace('@','')}` : '';
+
+                        list.innerHTML += `
+                            <div class="glass-card p-3.5 space-y-2.5">
+                                <div class="flex items-center justify-between">
+                                    <div>
+                                        <div class="font-extrabold text-xs text-white">${lead.title}</div>
+                                        <div class="text-[10px] text-purple-300 font-medium">${lead.category}</div>
+                                    </div>
+                                    <span class="px-2 py-0.5 bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold rounded-lg">⭐ ${lead.score}</span>
+                                </div>
+                                
+                                <div class="flex flex-wrap gap-2 text-[10px]">
+                                    ${lead.phone ? `<a href="tel:${lead.phone}" class="px-2 py-1 bg-slate-800 text-emerald-300 rounded-md font-mono">📱 ${lead.phone}</a>` : ''}
+                                    ${tgLink ? `<a href="${tgLink}" target="_blank" class="px-2 py-1 bg-slate-800 text-blue-300 rounded-md">📢 ${lead.telegram_username}</a>` : ''}
+                                    ${igLink ? `<a href="${igLink}" target="_blank" class="px-2 py-1 bg-slate-800 text-pink-300 rounded-md">📸 ${lead.instagram_username}</a>` : ''}
+                                </div>
+
+                                <div class="flex items-center justify-between pt-1 border-t border-slate-700/40">
+                                    <button onclick="copyInviteMsg('${lead.title.replace(/'/g, "")}', '${lead.category}')" class="px-2.5 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-[10px] font-bold rounded-lg shadow">
+                                        📋 کپی پیام دعوت
+                                    </button>
+                                    <select onchange="updateLeadStatus(${lead.id}, this.value)" class="bg-slate-900 border border-slate-700 text-[10px] text-slate-200 rounded-lg px-2 py-1 outline-none">
+                                        <option value="new" ${lead.status==='new'?'selected':''}>🆕 جدید</option>
+                                        <option value="checked" ${lead.status==='checked'?'selected':''}>👀 بررسی‌شده</option>
+                                        <option value="messaged" ${lead.status==='messaged'?'selected':''}>💬 پیام دادم</option>
+                                        <option value="replied" ${lead.status==='replied'?'selected':''}>✅ پاسخ داد</option>
+                                        <option value="registered" ${lead.status==='registered'?'selected':''}>🎉 ثبت‌نام شد</option>
+                                        <option value="irrelevant" ${lead.status==='irrelevant'?'selected':''}>❌ نامرتبط</option>
+                                    </select>
+                                </div>
+                            </div>
+                        `;
+                    });
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function filterCrmStatus(st) {
+            currentCrmStatus = st;
+            ['all', 'new', 'messaged', 'replied'].forEach(s => {
+                const btn = document.getElementById('crm-chip-' + s);
+                if (btn) {
+                    if (s === st) {
+                        btn.className = "px-3 py-1.5 bg-blue-600 text-white font-bold rounded-xl shrink-0";
+                    } else {
+                        btn.className = "px-3 py-1.5 bg-slate-800 text-slate-300 rounded-xl shrink-0";
+                    }
+                }
+            });
+            loadCrmLeads();
+        }
+
+        function copyInviteMsg(title, cat) {
+            const msg = `سلام وقتتون بخیر 🌹\\nدیدم در زمینه ${cat} فعالیت دارید.\\nما یک انجمن و گروه تخصصی فروشندگان و فعالان گیمینگ راه‌اندازی کردیم که خریداران هدفمند زیادی اونجا عضو هستن.\\nخوشحال می‌شیم شما هم به جمع ما بپیوندید و خدمات/محصولاتتون رو معرفی کنید:\\n🔗 لینک عضویت: https://t.me/+gLScToU4DZdjZmM0\\nموفق باشید 🙏`;
+            navigator.clipboard.writeText(msg);
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+            alert('متن پیام دعوت اختصاصی کپی شد!');
+        }
+
+        async function updateLeadStatus(id, st) {
+            await fetch('/api/leads/update_status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id: id, status: st })
+            });
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
         }
 
         async function startSingleAdd() {
@@ -755,6 +964,9 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     document.getElementById('m-accounts').innerText = m.healthy_accounts;
                     document.getElementById('m-adds').innerText = m.today_adds;
                     document.getElementById('m-limited').innerText = m.limited_accounts;
+                    if (document.getElementById('m-leads')) {
+                        document.getElementById('m-leads').innerText = (m.total_leads || 0).toLocaleString('fa-IR');
+                    }
                     document.getElementById('target-label').innerText = m.target_group;
 
                     if (m.is_adding) {
@@ -868,18 +1080,6 @@ MINI_APP_HTML = """<!DOCTYPE html>
             } catch (e) { console.error(e); }
         }
 
-        async function loadMembersStats() {
-            try {
-                const res = await fetch('/api/members/stats');
-                const data = await res.json();
-                if (data.ok) {
-                    document.getElementById('db-phone').innerText = data.stats.with_phone.toLocaleString('fa-IR');
-                    document.getElementById('db-username').innerText = data.stats.with_username.toLocaleString('fa-IR');
-                    document.getElementById('db-id').innerText = data.stats.id_only.toLocaleString('fa-IR');
-                }
-            } catch (e) { console.error(e); }
-        }
-
         async function reset24hLimits() {
             if (!confirm('آیا از ریست کردن شمارنده ادد تمام اکانت‌ها مطمئن هستید؟')) return;
             if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
@@ -960,6 +1160,14 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
                 data = get_members_stats_dict()
                 body = json.dumps(data, ensure_ascii=False).encode('utf-8')
                 self.send_nocache(body, 'application/json; charset=utf-8')
+            elif path == '/api/leads/stats':
+                data = get_leads_stats_dict()
+                body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+                self.send_nocache(body, 'application/json; charset=utf-8')
+            elif path == '/api/leads/list':
+                data = get_leads_list_dict()
+                body = json.dumps(data, ensure_ascii=False).encode('utf-8')
+                self.send_nocache(body, 'application/json; charset=utf-8')
             else:
                 self.send_nocache(b"OK", 'text/plain; charset=utf-8')
         except Exception as e:
@@ -987,6 +1195,15 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
                 add_type = post_data.get("add_type", "all")
                 ok, msg = trigger_parallel_add(add_mode, add_type)
                 body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
+            elif path == '/api/leads/search':
+                query = post_data.get("query", "")
+                leads = asyncio.run(lead_finder.search_leads_online(query))
+                body = json.dumps({"ok": True, "leads": leads}).encode('utf-8')
+            elif path == '/api/leads/update_status':
+                lead_id = post_data.get("id")
+                st = post_data.get("status")
+                db.update_lead_status(lead_id, st)
+                body = json.dumps({"ok": True}).encode('utf-8')
             elif path == '/api/accounts/reset':
                 db.reset_adder_limits()
                 body = json.dumps({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."}).encode('utf-8')
@@ -997,18 +1214,15 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
                     db.set_config(cfg.get("group_id", 0), target, cfg.get("defense_enabled", True))
                 body = json.dumps({"ok": True, "target": target}).encode('utf-8')
             elif path == '/api/add/stop':
-                if atk_state_ref:
-                    atk_state_ref["_stop_requested"] = True
-                    atk_state_ref["stop_parallel_add"] = True
-                body = json.dumps({"ok": True, "message": "درخواست توقف ارسال شد."}).encode('utf-8')
+                try:
+                    from bot import request_stop_all
+                    request_stop_all()
+                except: pass
+                body = json.dumps({"ok": True, "message": "عملیات با موفقیت متوقف شد."}).encode('utf-8')
             else:
                 body = json.dumps({"ok": True}).encode('utf-8')
 
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            self.send_nocache(body, 'application/json; charset=utf-8')
         except Exception as e:
             self.send_response(500)
             self.end_headers()
@@ -1042,6 +1256,33 @@ def create_web_app(app_bot=None, atk_state=None):
 
         async def aio_api_members_stats(request):
             return web.json_response(get_members_stats_dict(), headers=NO_CACHE)
+
+        async def aio_api_leads_stats(request):
+            return web.json_response(get_leads_stats_dict(), headers=NO_CACHE)
+
+        async def aio_api_leads_list(request):
+            cat = request.query.get("category")
+            st = request.query.get("status")
+            return web.json_response(get_leads_list_dict(category=cat, status=st), headers=NO_CACHE)
+
+        async def aio_api_leads_search(request):
+            try:
+                data = await request.json()
+                query = data.get("query", "")
+                leads = await lead_finder.search_leads_online(query)
+                return web.json_response({"ok": True, "leads": leads}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
+
+        async def aio_api_leads_update_status(request):
+            try:
+                data = await request.json()
+                lead_id = data.get("id")
+                st = data.get("status")
+                db.update_lead_status(lead_id, st)
+                return web.json_response({"ok": True}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
 
         async def aio_api_add_single(request):
             try:
@@ -1095,6 +1336,10 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_get('/api/dashboard', aio_api_dashboard)
         app.router.add_get('/api/accounts', aio_api_accounts)
         app.router.add_get('/api/members/stats', aio_api_members_stats)
+        app.router.add_get('/api/leads/stats', aio_api_leads_stats)
+        app.router.add_get('/api/leads/list', aio_api_leads_list)
+        app.router.add_post('/api/leads/search', aio_api_leads_search)
+        app.router.add_post('/api/leads/update_status', aio_api_leads_update_status)
         app.router.add_post('/api/add/single', aio_api_add_single)
         app.router.add_post('/api/add/parallel', aio_api_add_parallel)
         app.router.add_post('/api/accounts/reset', aio_api_reset_limits)

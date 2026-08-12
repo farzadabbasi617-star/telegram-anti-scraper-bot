@@ -219,6 +219,26 @@ def init_tables():
             notes TEXT DEFAULT ''
         )
     """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS leads_tbl (
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            url TEXT UNIQUE,
+            source TEXT,
+            category TEXT,
+            phone TEXT,
+            telegram_username TEXT,
+            instagram_username TEXT,
+            score INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'new',
+            notes TEXT DEFAULT '',
+            created_at BIGINT,
+            extra JSONB DEFAULT '{}'::jsonb
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_leads_status ON leads_tbl(status);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_leads_category ON leads_tbl(category);")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_leads_score ON leads_tbl(score DESC);")
     # High-Performance Indexes for maximum query speeds
     cur.execute("CREATE INDEX IF NOT EXISTS idx_scraped_users_source ON scraped_users(source_group_id);")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_scraped_users_added ON scraped_users(added_at DESC);")
@@ -980,3 +1000,89 @@ def delete_users_bulk(user_ids: list) -> int:
         cur.close()
         return deleted
     except: return 0
+
+
+# ---------------- Leads CRM Storage (Game Lead Finder) ----------------
+@db_retry()
+def save_lead(title, url, source="web", category="گیمینگ", phone="", telegram="", instagram="", score=50, status="new", notes="", extra=None):
+    try:
+        cur = get_conn().cursor()
+        now = int(time.time())
+        import random
+        clean_url = url or f"custom_{now}_{random.randint(1000,9999)}"
+        cur.execute("""
+            INSERT INTO leads_tbl (title, url, source, category, phone, telegram_username, instagram_username, score, status, notes, created_at, extra)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (url) DO UPDATE SET
+                title = EXCLUDED.title,
+                category = COALESCE(NULLIF(EXCLUDED.category, ''), leads_tbl.category),
+                phone = COALESCE(NULLIF(EXCLUDED.phone, ''), leads_tbl.phone),
+                telegram_username = COALESCE(NULLIF(EXCLUDED.telegram_username, ''), leads_tbl.telegram_username),
+                instagram_username = COALESCE(NULLIF(EXCLUDED.instagram_username, ''), leads_tbl.instagram_username),
+                score = GREATEST(EXCLUDED.score, leads_tbl.score),
+                extra = EXCLUDED.extra
+        """, (title, clean_url, source, category or "گیمینگ", phone or "", telegram or "", instagram or "", int(score), status or "new", notes or "", now, Json(extra or {})))
+        cur.close()
+        return True
+    except Exception as e:
+        print(f"save_lead err: {e}", flush=True)
+        return False
+
+@db_retry()
+def load_leads(category=None, status=None, limit=200, offset=0):
+    try:
+        cur = get_conn().cursor(cursor_factory=DictCursor)
+        query = "SELECT * FROM leads_tbl WHERE 1=1"
+        params = []
+        if category and category != 'all':
+            query += " AND category=%s"
+            params.append(category)
+        if status and status != 'all':
+            query += " AND status=%s"
+            params.append(status)
+        query += " ORDER BY score DESC, created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
+        cur.close()
+        return [dict(r) for r in rows]
+    except Exception as e:
+        print(f"load_leads err: {e}", flush=True)
+        return []
+
+@db_retry()
+def count_leads(status=None):
+    try:
+        cur = get_conn().cursor()
+        if status and status != 'all':
+            cur.execute("SELECT COUNT(*) FROM leads_tbl WHERE status=%s", (status,))
+        else:
+            cur.execute("SELECT COUNT(*) FROM leads_tbl")
+        r = cur.fetchone()[0]
+        cur.close()
+        return r
+    except:
+        return 0
+
+@db_retry()
+def update_lead_status(lead_id, status):
+    try:
+        cur = get_conn().cursor()
+        cur.execute("UPDATE leads_tbl SET status=%s WHERE id=%s", (status, int(lead_id)))
+        cur.close()
+        return True
+    except Exception as e:
+        print(f"update_lead_status err: {e}", flush=True)
+        return False
+
+@db_retry()
+def delete_lead(lead_id):
+    try:
+        cur = get_conn().cursor()
+        cur.execute("DELETE FROM leads_tbl WHERE id=%s", (int(lead_id),))
+        cur.close()
+        return True
+    except Exception as e:
+        print(f"delete_lead err: {e}", flush=True)
+        return False
+
