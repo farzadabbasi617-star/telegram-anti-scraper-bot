@@ -2,11 +2,11 @@
 =================================================================
 📱 Telegram Mini App (TMA) & REST API Module - @HaghBaKieBot
 =================================================================
-داشبورد مدیریت حرفه‌ای و مینی‌اپ تلگرام با ساختار شسته و رفته:
+داشبورد مدیریت حرفه‌ای و مینی‌اپ تلگرام با ساختار زنده و پویای ADM:
+- کنسول پیشرفت زنده به سبک ADM Download Manager با درصد، گیج سرعت و تایمر
+- نمایش زنده نام و آیدی آخرین کاربر اضافه شده (Last Added Member Info)
+- دکمه توقف فوری با هپتیک فیدبک
 - تفکیک دوگانه حملات: ادد تک اکانت & ادد موازی با تمام اکانت‌ها
-- منبع ادد مستقیماً از دیتابیس (scraped_users) به گروه مقصد
-- پایش زنده وضعیت سلامت اکانت‌ها، میزان ادد روزانه (100) و تایمر محدودیت‌ها
-- ریست اتوماتیک ۲۴ ساعته آمار عملکرد اکانت‌ها
 - پشتیبانی دوگانه از aiohttp و http.server استاندارد جهت تضمین ۱۰۰٪ پورت رندر
 """
 import os
@@ -92,13 +92,21 @@ def get_dashboard_dict():
         add_progress = {}
         if atk_state_ref:
             is_running = atk_state_ref.get("add_in_progress", False)
+            start_t = atk_state_ref.get("live_start_time", time.time())
+            elapsed = int(time.time() - start_t) if is_running else 0
+            added = atk_state_ref.get("live_added", 0)
+            speed = int(added / (elapsed / 60)) if elapsed > 10 else (added * 2 if elapsed > 0 else 0)
+
             add_progress = {
-                "added": atk_state_ref.get("live_added", 0),
+                "added": added,
                 "failed": atk_state_ref.get("live_failed", 0),
                 "skipped": atk_state_ref.get("live_skipped", 0),
                 "total": atk_state_ref.get("live_total", 0),
                 "mode": atk_state_ref.get("live_mode", "-"),
-                "status_text": atk_state_ref.get("live_status_text", "در حال اجرا...")
+                "last_user": atk_state_ref.get("live_last_user", "در حال آماده‌سازی کاربر..."),
+                "speed_per_min": speed,
+                "elapsed_sec": elapsed,
+                "status_text": atk_state_ref.get("live_status_text", "در حال ادد زنده...")
             }
             
         return {
@@ -192,11 +200,13 @@ def trigger_single_add(phone, add_type):
 
         if atk_state_ref:
             atk_state_ref["add_in_progress"] = True
+            atk_state_ref["live_start_time"] = time.time()
             atk_state_ref["live_added"] = 0
             atk_state_ref["live_failed"] = 0
             atk_state_ref["live_skipped"] = 0
             atk_state_ref["live_total"] = len(filtered)
             atk_state_ref["live_mode"] = "تک اکانت"
+            atk_state_ref["live_last_user"] = "در حال اتصال به اکانت..."
             atk_state_ref["_stop_requested"] = False
 
         wrapper = _MiniAppMsgWrapper()
@@ -262,11 +272,13 @@ def trigger_parallel_add(add_mode, add_type):
 
         if atk_state_ref:
             atk_state_ref["add_in_progress"] = True
+            atk_state_ref["live_start_time"] = time.time()
             atk_state_ref["live_added"] = 0
             atk_state_ref["live_failed"] = 0
             atk_state_ref["live_skipped"] = 0
             atk_state_ref["live_total"] = len(filtered)
-            atk_state_ref["live_mode"] = f"موازی ({add_mode})"
+            atk_state_ref["live_mode"] = f"موازی ({add_mode.upper()})"
+            atk_state_ref["live_last_user"] = "در حال توزیع بین اکانت‌ها..."
             atk_state_ref["_stop_requested"] = False
             atk_state_ref["stop_parallel_add"] = False
 
@@ -310,10 +322,10 @@ MINI_APP_HTML = """<!DOCTYPE html>
             -webkit-user-select: none;
         }
         .glass-card {
-            background: rgba(30, 41, 59, 0.7);
-            backdrop-filter: blur(12px);
+            background: rgba(30, 41, 59, 0.75);
+            backdrop-filter: blur(16px);
             border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 16px;
+            border-radius: 20px;
         }
         .active-tab {
             background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
@@ -321,31 +333,31 @@ MINI_APP_HTML = """<!DOCTYPE html>
             box-shadow: 0 4px 14px rgba(59, 130, 246, 0.4);
         }
         .pulse-live {
-            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+            animation: pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
         }
         @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: .5; }
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.6; transform: scale(1.1); }
         }
     </style>
 </head>
-<body class="pb-20">
+<body class="pb-24">
 
     <!-- HEADER -->
-    <header class="sticky top-0 z-50 glass-card mx-2 mt-2 p-4 flex items-center justify-between shadow-lg">
+    <header class="sticky top-0 z-50 glass-card mx-2 mt-2 p-4 flex items-center justify-between shadow-2xl">
         <div class="flex items-center gap-3">
-            <div class="w-10 h-10 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-2xl">
+            <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-blue-500/20 to-indigo-500/20 border border-blue-500/30 flex items-center justify-center text-2xl shadow-inner">
                 🛡️
             </div>
             <div>
-                <h1 class="text-base font-bold text-white">سامانه آنتی‌اسکریپت</h1>
-                <div class="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
-                    <span class="w-2 h-2 rounded-full bg-emerald-500 pulse-live"></span>
+                <h1 class="text-base font-extrabold text-white tracking-tight">سامانه آنتی‌اسکریپت</h1>
+                <div class="flex items-center gap-1.5 text-xs text-emerald-400 font-medium mt-0.5">
+                    <span id="header-dot" class="w-2 h-2 rounded-full bg-emerald-500 pulse-live"></span>
                     <span id="status-text">سیستم آماده به کار</span>
                 </div>
             </div>
         </div>
-        <button onclick="reset24hLimits()" class="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs rounded-xl flex items-center gap-1 transition">
+        <button onclick="reset24hLimits()" class="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs rounded-xl flex items-center gap-1 transition font-bold shadow-md active:scale-95">
             🔄 ریست ۲۴ساعته
         </button>
     </header>
@@ -359,19 +371,19 @@ MINI_APP_HTML = """<!DOCTYPE html>
             <!-- METRICS GRID -->
             <div class="grid grid-cols-2 gap-3">
                 <div class="glass-card p-4 text-center">
-                    <div class="text-3xl font-extrabold text-blue-400" id="m-members">...</div>
+                    <div class="text-3xl font-black text-blue-400" id="m-members">...</div>
                     <div class="text-xs text-slate-400 mt-1">👥 ممبرهای دیتابیس</div>
                 </div>
                 <div class="glass-card p-4 text-center">
-                    <div class="text-3xl font-extrabold text-emerald-400" id="m-accounts">...</div>
+                    <div class="text-3xl font-black text-emerald-400" id="m-accounts">...</div>
                     <div class="text-xs text-slate-400 mt-1">📱 اکانت‌های سالم</div>
                 </div>
                 <div class="glass-card p-4 text-center">
-                    <div class="text-3xl font-extrabold text-purple-400" id="m-adds">...</div>
+                    <div class="text-3xl font-black text-purple-400" id="m-adds">...</div>
                     <div class="text-xs text-slate-400 mt-1">➕ اددهای امروز</div>
                 </div>
                 <div class="glass-card p-4 text-center">
-                    <div class="text-3xl font-extrabold text-amber-400" id="m-limited">...</div>
+                    <div class="text-3xl font-black text-amber-400" id="m-limited">...</div>
                     <div class="text-xs text-slate-400 mt-1">🔴 اکانت‌های محدود</div>
                 </div>
             </div>
@@ -384,7 +396,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 </div>
                 <div class="flex gap-2">
                     <input type="text" id="input-target" placeholder="لینک یا یوزرنیم گروه..." class="w-full bg-slate-900/80 border border-slate-700 text-xs text-white rounded-xl px-3 py-2.5 outline-none focus:border-blue-500">
-                    <button onclick="saveTargetGroup()" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition">ذخیره</button>
+                    <button onclick="saveTargetGroup()" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl transition shadow-md active:scale-95">ذخیره</button>
                 </div>
             </div>
 
@@ -394,11 +406,11 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     <span>⚡ شتاب‌دهنده عملیات ادد</span>
                 </h3>
                 <div class="grid grid-cols-2 gap-2.5">
-                    <button onclick="switchTab('attack')" class="p-3 bg-gradient-to-br from-blue-600 to-indigo-700 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 flex flex-col items-center gap-1">
+                    <button onclick="switchTab('attack'); setAttackCategory('single');" class="p-3 bg-gradient-to-br from-blue-600 to-indigo-700 text-white text-xs font-bold rounded-2xl shadow-xl hover:brightness-110 flex flex-col items-center gap-1 active:scale-95 transition">
                         <span class="text-xl">📱</span>
                         <span>ادد تک اکانت</span>
                     </button>
-                    <button onclick="switchTab('attack')" class="p-3 bg-gradient-to-br from-emerald-600 to-teal-700 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 flex flex-col items-center gap-1">
+                    <button onclick="switchTab('attack'); setAttackCategory('parallel');" class="p-3 bg-gradient-to-br from-emerald-600 to-teal-700 text-white text-xs font-bold rounded-2xl shadow-xl hover:brightness-110 flex flex-col items-center gap-1 active:scale-95 transition">
                         <span class="text-xl">⚡⚡⚡</span>
                         <span>ادد موازی</span>
                     </button>
@@ -410,6 +422,71 @@ MINI_APP_HTML = """<!DOCTYPE html>
         <!-- TAB 2: ATTACK CENTER -->
         <section id="tab-attack" class="tab-content hidden space-y-4">
             
+            <!-- ADM-STYLE LIVE DOWNLOAD / ADD CONSOLE -->
+            <div id="card-live-progress" class="glass-card p-4 space-y-4 border-2 border-blue-500/30 shadow-2xl relative overflow-hidden">
+                <div class="absolute -top-10 -right-10 w-32 h-32 bg-blue-500/10 rounded-full blur-2xl pointer-events-none"></div>
+
+                <!-- Top Row: Status, Speed, and Stop Button -->
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <span id="live-dot" class="w-3 h-3 rounded-full bg-slate-500"></span>
+                        <div>
+                            <span id="live-card-title" class="text-xs font-extrabold text-slate-200">⚪ وضعیت: آماده برای ادد</span>
+                            <div id="live-speed-tag" class="text-[10px] text-blue-400 font-bold hidden">⚡ سرعت: 0 member/min</div>
+                        </div>
+                    </div>
+                    <button id="btn-stop-add" onclick="stopAddOperation()" class="px-3 py-1.5 bg-gradient-to-r from-rose-600 to-red-600 text-white font-bold text-xs rounded-xl shadow-lg hover:brightness-120 flex items-center gap-1 transition transform active:scale-95 hidden">
+                        <span class="pulse-live">⏹️</span>
+                        <span id="btn-stop-text">توقف فوری</span>
+                    </button>
+                </div>
+
+                <!-- ADM Progress Meter -->
+                <div id="live-meter-section" class="space-y-2 hidden">
+                    <div class="flex justify-between items-baseline">
+                        <span class="text-xs text-slate-300 font-medium">پیشرفت عملیات (ADM Progress)</span>
+                        <span id="prog-pct" class="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-900 border border-slate-700/60 rounded-full h-4 p-0.5 overflow-hidden shadow-inner">
+                        <div id="prog-bar" class="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-full rounded-full transition-all duration-300 shadow-md" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- LAST ADDED USER TICKER -->
+                <div id="live-last-user-card" class="p-3 bg-slate-900/90 border border-slate-700/50 rounded-xl flex items-center gap-3 hidden">
+                    <div class="w-9 h-9 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 flex items-center justify-center font-bold text-sm shrink-0">
+                        👤
+                    </div>
+                    <div class="overflow-hidden flex-1">
+                        <div class="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                            آخرین ممبر اضافه شده:
+                        </div>
+                        <div id="live-last-user-name" class="text-xs font-extrabold text-white truncate">در حال اضافه کردن...</div>
+                    </div>
+                </div>
+
+                <!-- DETAILED STATS GRID -->
+                <div class="grid grid-cols-4 gap-1.5 text-center text-xs pt-1 border-t border-slate-700/40">
+                    <div class="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
+                        <div class="text-[10px] text-slate-400">✅ موفق</div>
+                        <div id="prog-added" class="font-extrabold text-emerald-400 text-sm mt-0.5">0</div>
+                    </div>
+                    <div class="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
+                        <div class="text-[10px] text-slate-400">❌ خطا</div>
+                        <div id="prog-failed" class="font-extrabold text-rose-400 text-sm mt-0.5">0</div>
+                    </div>
+                    <div class="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
+                        <div class="text-[10px] text-slate-400">⏭️ رد شده</div>
+                        <div id="prog-skipped" class="font-extrabold text-amber-400 text-sm mt-0.5">0</div>
+                    </div>
+                    <div class="bg-slate-900/60 p-2 rounded-xl border border-slate-800">
+                        <div class="text-[10px] text-slate-400">⏱️ زمان</div>
+                        <div id="prog-time" class="font-mono font-bold text-blue-300 text-[11px] mt-0.5">00:00</div>
+                    </div>
+                </div>
+            </div>
+
             <!-- ATTACK MODE SELECTOR -->
             <div class="glass-card p-1.5 flex gap-1">
                 <button id="btn-mode-single" onclick="setAttackCategory('single')" class="flex-1 py-2.5 text-xs font-bold rounded-xl transition active-tab">
@@ -442,7 +519,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 </div>
 
                 <div class="pt-2">
-                    <button onclick="startSingleAdd()" class="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110">
+                    <button onclick="startSingleAdd()" class="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
                         ▶️ شروع ادد تک اکانت از دیتابیس
                     </button>
                 </div>
@@ -478,30 +555,9 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 </div>
 
                 <div class="pt-2">
-                    <button onclick="startParallelAdd()" class="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110">
+                    <button onclick="startParallelAdd()" class="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
                         ⚡⚡⚡ شروع ادد موازی با تمام اکانت‌ها
                     </button>
-                </div>
-            </div>
-
-            <!-- LIVE MONITORING BOX -->
-            <div id="card-live-progress" class="glass-card p-4 space-y-3">
-                <div class="flex items-center justify-between">
-                    <span class="text-xs font-bold flex items-center gap-1.5" id="live-card-badge">
-                        <span id="live-dot" class="w-2 h-2 rounded-full bg-slate-500"></span>
-                        <span id="live-card-title" class="text-slate-300">⚪ وضعیت: آماده به کار</span>
-                    </span>
-                    <button id="btn-stop-add" onclick="stopAddOperation()" class="px-2.5 py-1 bg-rose-500/20 text-rose-300 border border-rose-500/40 text-xs font-bold rounded-lg hover:bg-rose-500/30 hidden">
-                        ⏹️ توقف عملیات
-                    </button>
-                </div>
-                <div id="live-bar-container" class="w-full bg-slate-800 rounded-full h-2.5 overflow-hidden hidden">
-                    <div id="prog-bar" class="bg-blue-500 h-2.5 rounded-full transition-all duration-500" style="width: 0%"></div>
-                </div>
-                <div class="grid grid-cols-3 text-center text-xs pt-1">
-                    <div>✅ موفق: <span id="prog-added" class="font-bold text-emerald-400">0</span></div>
-                    <div>❌ خطا: <span id="prog-failed" class="font-bold text-rose-400">0</span></div>
-                    <div>⏭️ رد شده: <span id="prog-skipped" class="font-bold text-amber-400">0</span></div>
                 </div>
             </div>
         </section>
@@ -544,7 +600,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
     </main>
 
     <!-- BOTTOM NAVBAR -->
-    <nav class="fixed bottom-0 left-0 right-0 glass-card mx-2 mb-2 p-1.5 flex justify-around items-center z-50">
+    <nav class="fixed bottom-0 left-0 right-0 glass-card mx-2 mb-2 p-1.5 flex justify-around items-center z-50 shadow-2xl">
         <button onclick="switchTab('dashboard')" id="nav-dashboard" class="flex-1 py-2 text-xs font-bold text-center rounded-xl transition active-tab">
             📊 داشبورد
         </button>
@@ -572,6 +628,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
         function switchTab(tabId) {
             activeTab = tabId;
+            if (tg?.HapticFeedback) tg.HapticFeedback.selectionChanged();
             document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
             document.getElementById('tab-' + tabId).classList.remove('hidden');
 
@@ -592,6 +649,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
         }
 
         function setAttackCategory(cat) {
+            if (tg?.HapticFeedback) tg.HapticFeedback.selectionChanged();
             if (cat === 'single') {
                 document.getElementById('form-single').classList.remove('hidden');
                 document.getElementById('form-parallel').classList.add('hidden');
@@ -606,6 +664,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
         }
 
         function setParallelSpeed(speed) {
+            if (tg?.HapticFeedback) tg.HapticFeedback.selectionChanged();
             selectedParallelSpeed = speed;
             ['safe', 'fast', 'ultra'].forEach(s => {
                 const btn = document.getElementById('speed-' + s);
@@ -627,6 +686,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
             }
 
             if (!confirm(`آیا از شروع ادد تک اکانت با اکانت ${account} مطمئن هستید؟`)) return;
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
 
             try {
                 const res = await fetch('/api/add/single', {
@@ -637,7 +697,6 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 const data = await res.json();
                 alert(data.message || (data.ok ? 'عملیات شروع شد' : data.error));
                 if (data.ok) {
-                    document.getElementById('card-live-progress').classList.remove('hidden');
                     loadDashboard();
                 }
             } catch (e) {
@@ -649,6 +708,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
             const addType = document.getElementById('select-parallel-type').value;
 
             if (!confirm(`آیا از شروع ادد موازی با تمام اکانت‌ها در مود ${selectedParallelSpeed.toUpperCase()} مطمئن هستید؟`)) return;
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
 
             try {
                 const res = await fetch('/api/add/parallel', {
@@ -659,12 +719,27 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 const data = await res.json();
                 alert(data.message || (data.ok ? 'عملیات ادد موازی شروع شد' : data.error));
                 if (data.ok) {
-                    document.getElementById('card-live-progress').classList.remove('hidden');
                     loadDashboard();
                 }
             } catch (e) {
                 alert('خطا در برقراری ارتباط با سرور: ' + e);
             }
+        }
+
+        async function stopAddOperation() {
+            document.getElementById('btn-stop-text').innerText = 'در حال توقف...';
+            document.getElementById('btn-stop-add').disabled = true;
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('warning');
+            try {
+                await fetch('/api/add/stop', { method: 'POST' });
+            } catch (e) {
+                alert('خطا در توقف: ' + e);
+            }
+            setTimeout(() => {
+                document.getElementById('btn-stop-text').innerText = 'توقف فوری';
+                document.getElementById('btn-stop-add').disabled = false;
+                loadDashboard();
+            }, 1500);
         }
 
         async function loadDashboard() {
@@ -680,28 +755,54 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     document.getElementById('target-label').innerText = m.target_group;
 
                     if (m.is_adding) {
-                        document.getElementById('live-dot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-400 pulse-live';
-                        document.getElementById('live-card-title').innerText = '🟢 در حال اجرا (' + (m.add_progress.mode || 'فعال') + ')';
-                        document.getElementById('live-card-title').className = 'text-emerald-300 font-bold';
+                        document.getElementById('status-text').innerText = '🚀 در حال ادد زنده...';
+                        document.getElementById('status-text').className = 'text-xs text-emerald-400 font-bold';
+
+                        document.getElementById('live-dot').className = 'w-3 h-3 rounded-full bg-emerald-400 pulse-live';
+                        document.getElementById('live-card-title').innerText = '🟢 عملیات ادد زنده فعال است (' + (m.add_progress.mode || 'Ultra Fast') + ')';
+                        document.getElementById('live-card-title').className = 'text-xs font-black text-emerald-300';
+
+                        document.getElementById('live-speed-tag').classList.remove('hidden');
+                        document.getElementById('live-speed-tag').innerText = '⚡ سرعت: ' + (m.add_progress.speed_per_min || 0) + ' member/min';
+
                         document.getElementById('btn-stop-add').classList.remove('hidden');
-                        document.getElementById('live-bar-container').classList.remove('hidden');
+                        document.getElementById('live-meter-section').classList.remove('hidden');
+                        document.getElementById('live-last-user-card').classList.remove('hidden');
 
-                        document.getElementById('prog-added').innerText = (m.add_progress.added || 0).toLocaleString('fa-IR');
-                        document.getElementById('prog-failed').innerText = (m.add_progress.failed || 0).toLocaleString('fa-IR');
-                        document.getElementById('prog-skipped').innerText = (m.add_progress.skipped || 0).toLocaleString('fa-IR');
-
+                        const added = m.add_progress.added || 0;
+                        const failed = m.add_progress.failed || 0;
+                        const skipped = m.add_progress.skipped || 0;
                         const total = m.add_progress.total || 1;
-                        const current = (m.add_progress.added || 0) + (m.add_progress.failed || 0) + (m.add_progress.skipped || 0);
+                        const current = added + failed + skipped;
                         const pct = Math.min(100, Math.round((current / total) * 100));
+
+                        document.getElementById('prog-pct').innerText = pct + '%';
                         document.getElementById('prog-bar').style.width = pct + '%';
-                        document.getElementById('status-text').innerText = 'در حال انجام عملیات ادد...';
+                        document.getElementById('prog-added').innerText = added.toLocaleString('fa-IR');
+                        document.getElementById('prog-failed').innerText = failed.toLocaleString('fa-IR');
+                        document.getElementById('prog-skipped').innerText = skipped.toLocaleString('fa-IR');
+
+                        const lastUser = m.add_progress.last_user || 'در حال آماده‌سازی کاربر بعدی...';
+                        document.getElementById('live-last-user-name').innerText = lastUser;
+
+                        const sec = m.add_progress.elapsed_sec || 0;
+                        const mins = Math.floor(sec / 60);
+                        const remainderSec = sec % 60;
+                        document.getElementById('prog-time').innerText = 
+                            String(mins).padStart(2, '0') + ':' + String(remainderSec).padStart(2, '0');
+
                     } else {
-                        document.getElementById('live-dot').className = 'w-2 h-2 rounded-full bg-slate-500';
-                        document.getElementById('live-card-title').innerText = '⚪ آماده به کار (عملیات فعال نیست)';
-                        document.getElementById('live-card-title').className = 'text-slate-300 font-bold';
-                        document.getElementById('btn-stop-add').classList.add('hidden');
-                        document.getElementById('live-bar-container').classList.add('hidden');
                         document.getElementById('status-text').innerText = 'سیستم آماده به کار';
+                        document.getElementById('status-text').className = 'text-xs text-slate-400 font-medium';
+
+                        document.getElementById('live-dot').className = 'w-2.5 h-2.5 rounded-full bg-slate-500';
+                        document.getElementById('live-card-title').innerText = '⚪ وضعیت: آماده به کار (عملیات اددی در حال اجرا نیست)';
+                        document.getElementById('live-card-title').className = 'text-xs font-bold text-slate-300';
+
+                        document.getElementById('live-speed-tag').classList.add('hidden');
+                        document.getElementById('btn-stop-add').classList.add('hidden');
+                        document.getElementById('live-meter-section').classList.add('hidden');
+                        document.getElementById('live-last-user-card').classList.add('hidden');
                     }
                 }
             } catch (e) { console.error(e); }
@@ -715,32 +816,32 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     const list = document.getElementById('accounts-list');
                     list.innerHTML = '';
                     data.accounts.forEach(acc => {
-                        let statusBadge = '<span class="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] rounded-lg">✅ سالم</span>';
+                        let statusBadge = '<span class="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 text-[10px] font-bold rounded-lg border border-emerald-500/30">✅ سالم</span>';
                         if (acc.status === 'limited') {
                             const min = Math.ceil(acc.remaining_seconds / 60);
-                            statusBadge = `<span class="px-2 py-0.5 bg-rose-500/20 text-rose-300 text-[10px] rounded-lg">🔴 محدود (${min}m)</span>`;
+                            statusBadge = `<span class="px-2.5 py-1 bg-rose-500/20 text-rose-300 text-[10px] font-bold rounded-lg border border-rose-500/30">🔴 محدود (${min}m)</span>`;
                         } else if (acc.added_today >= 100) {
-                            statusBadge = '<span class="px-2 py-0.5 bg-amber-500/20 text-amber-300 text-[10px] rounded-lg">⚠️ ظرفیت پر</span>';
+                            statusBadge = '<span class="px-2.5 py-1 bg-amber-500/20 text-amber-300 text-[10px] font-bold rounded-lg border border-amber-500/30">⚠️ ظرفیت پر</span>';
                         }
 
                         const pct = Math.min(100, Math.round((acc.added_today / 100) * 100));
 
                         list.innerHTML += `
-                            <div class="glass-card p-3 space-y-2">
+                            <div class="glass-card p-3.5 space-y-2.5">
                                 <div class="flex items-center justify-between">
                                     <div>
-                                        <div class="text-xs font-bold text-white">${acc.name}</div>
-                                        <div class="text-[10px] font-mono text-slate-400">${acc.phone}</div>
+                                        <div class="text-xs font-extrabold text-white">${acc.name}</div>
+                                        <div class="text-[10px] font-mono text-slate-400 mt-0.5">${acc.phone}</div>
                                     </div>
                                     ${statusBadge}
                                 </div>
                                 <div class="space-y-1">
-                                    <div class="flex justify-between text-[10px] text-slate-400">
+                                    <div class="flex justify-between text-[10px] text-slate-400 font-medium">
                                         <span>ادد امروز</span>
                                         <span class="font-bold text-blue-300">${acc.added_today} / 100</span>
                                     </div>
-                                    <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                                        <div class="bg-blue-500 h-1.5 rounded-full" style="width: ${pct}%"></div>
+                                    <div class="w-full bg-slate-900 h-2 rounded-full overflow-hidden p-0.5 border border-slate-800">
+                                        <div class="bg-gradient-to-r from-blue-500 to-emerald-400 h-full rounded-full transition-all duration-300" style="width: ${pct}%"></div>
                                     </div>
                                 </div>
                             </div>
@@ -778,6 +879,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
         async function reset24hLimits() {
             if (!confirm('آیا از ریست کردن شمارنده ادد تمام اکانت‌ها مطمئن هستید؟')) return;
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
             const res = await fetch('/api/accounts/reset', { method: 'POST' });
             const data = await res.json();
             alert(data.message || 'انجام شد.');
@@ -787,6 +889,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
         async function saveTargetGroup() {
             const val = document.getElementById('input-target').value;
             if (!val) return;
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
             const res = await fetch('/api/settings/target', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -797,16 +900,11 @@ MINI_APP_HTML = """<!DOCTYPE html>
             loadDashboard();
         }
 
-        async function stopAddOperation() {
-            await fetch('/api/add/stop', { method: 'POST' });
-            alert('دستور توقف ارسال شد.');
-        }
-
-        // Auto Refresh
+        // Live refresh every 1 second
         setInterval(() => {
             loadDashboard();
             if (activeTab === 'accounts') loadAccounts();
-        }, 2000);
+        }, 1000);
 
         // Initial Load
         loadDashboard();

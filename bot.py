@@ -7961,24 +7961,22 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             limits = load_adder_limits()
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
+
+            first_n = member.get("first_name", "") or ""
+            last_n = member.get("last_name", "") or ""
+            full_n = (first_n + " " + last_n).strip() or f"کاربر {uid}"
+            un = member.get("username", "").strip()
+            display_user = f"{full_n} (@{un.lstrip('@')})" if un else full_n
+
+            if atk_state_ref:
+                atk_state_ref["live_last_user"] = display_user
+                atk_state_ref["live_added"] = added
+                atk_state_ref["live_failed"] = failed
+                atk_state_ref["live_skipped"] = skipped
             
-            # ═══ Safer delay strategy ═══
-            total_done = already_added + added
-            
-            # Every 10 successful adds, take a 5-10 min break
-            if total_done > 0 and total_done % 10 == 0:
-                break_time = random.randint(300, 600)
-                await prog.edit_text(
-                    f"☕ استراحت {break_time // 60} دقیقه‌ای...\n"
-                    f"✅ {added} نفر تا الان اد شدن\n"
-                    f"📊 {total_done}/{MAX_ADD_PER_ACCOUNT}\n"
-                    f"⏳ صبر کن..."
-                )
-                await asyncio.sleep(break_time)
-            else:
-                # Safer delay: 90-180 seconds (1.5-3 minutes)
-                delay = random.randint(90, 180)
-                await asyncio.sleep(delay)
+            # Smooth delay between adds
+            delay = random.randint(8, 15)
+            await asyncio.sleep(delay)
             
         except FloodWait as fw:
             failed += 1
@@ -8284,12 +8282,19 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
 
                     await client.invoke(InviteToChannel(channel=target_peer, users=[user_peer]))
 
+                    first_n = member.get("first_name", "") or ""
+                    last_n = member.get("last_name", "") or ""
+                    full_n = (first_n + " " + last_n).strip() or f"کاربر {uid}"
+                    un = member.get("username", "").strip()
+                    display_user = f"{full_n} (@{un.lstrip('@')})" if un else full_n
+
                     acc_added += 1
                     total_added += 1
                     mark_user_as_added(target_gid, "", uid)
                     db.set_adder_limit(phone, already_added + acc_added)
 
                     if atk_state_ref:
+                        atk_state_ref["live_last_user"] = display_user
                         atk_state_ref["live_added"] = total_added
                         atk_state_ref["live_failed"] = total_failed
                         atk_state_ref["live_skipped"] = total_skipped
