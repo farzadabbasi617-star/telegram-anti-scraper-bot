@@ -8001,6 +8001,7 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
         except (UserPrivacyRestricted, UserNotMutualContact):
             failed += 1
             errors_detail["privacy"] += 1
+            mark_user_as_added(target_gid, target_name, uid)
         except PeerIdInvalid:
             failed += 1
             errors_detail["peer"] += 1
@@ -8345,6 +8346,10 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 except UserAlreadyParticipant:
                     total_skipped += 1
                     mark_user_as_added(target_gid, "", uid)
+                except (UserPrivacyRestricted, UserNotMutualContact) as e:
+                    total_failed += 1
+                    mark_user_as_added(target_gid, "", uid)
+                    print(f"🔒 [{phone}] Privacy restricted for {uid}, marked processed: {type(e).__name__}", flush=True)
                 except Exception as e:
                     total_failed += 1
                     print(f"❌ [{phone}] Add error for {uid}: {e}", flush=True)

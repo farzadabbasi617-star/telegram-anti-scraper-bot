@@ -267,10 +267,24 @@ def trigger_single_add(phone, add_type):
         if not raw_users:
             raw_users = list(db.load_users_dict().values())
 
+        cfg = db.get_config()
+        target_gid = cfg.get("group_id") or "@gament_super_gp"
+
         filtered = []
         for u in raw_users:
             uid = u.get("user_id") or u.get("id")
-            if not uid: continue
+            if not uid or uid <= 10000 or uid >= 10**11: continue
+
+            # PERMANENT HISTORICAL DE-DUPLICATION: Never re-add users in added_history_tbl
+            if db.is_added(target_gid, uid):
+                continue
+
+            # Filter out deleted accounts
+            fn = (u.get("first_name") or "").lower()
+            ln = (u.get("last_name") or "").lower()
+            if "deleted account" in fn or "حساب حذف" in fn or "deleted account" in ln:
+                continue
+
             if add_type == "phone" and not u.get("phone"): continue
             if add_type == "username" and not u.get("username"): continue
             if add_type == "id" and (u.get("phone") or u.get("username")): continue
@@ -329,10 +343,24 @@ def trigger_parallel_add(add_mode, add_type):
         if not raw_users:
             raw_users = list(db.load_users_dict().values())
 
+        cfg = db.get_config()
+        target_gid = cfg.get("group_id") or "@gament_super_gp"
+
         filtered = []
         for u in raw_users:
             uid = u.get("user_id") or u.get("id")
-            if not uid: continue
+            if not uid or uid <= 10000 or uid >= 10**11: continue
+
+            # PERMANENT HISTORICAL DE-DUPLICATION: Never re-add users in added_history_tbl
+            if db.is_added(target_gid, uid):
+                continue
+
+            # Filter out deleted accounts
+            fn = (u.get("first_name") or "").lower()
+            ln = (u.get("last_name") or "").lower()
+            if "deleted account" in fn or "حساب حذف" in fn or "deleted account" in ln:
+                continue
+
             if add_type == "phone" and not u.get("phone"): continue
             if add_type == "username" and not u.get("username"): continue
             if add_type == "id" and (u.get("phone") or u.get("username")): continue
