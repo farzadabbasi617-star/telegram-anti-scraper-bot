@@ -9,6 +9,7 @@
 import time
 import random
 import logging
+import re
 
 import config
 import db as _db
@@ -84,6 +85,135 @@ def never_add_again(uid, reason=""):
     except Exception as e:
         logger.warning("del err: %s", e)
     invalidate_blocked_cache()
+
+
+def prefer_addable_members(members):
+    """اول یوزرنیم‌دارها (نرخ عضویت واقعی خیلی بالاتر است)، بعد شماره‌دار، بعد فقط ID."""
+    def _key(u):
+        un = (u.get("username") or "").strip()
+        ph = (u.get("phone") or "").strip()
+        if un:
+            return (0, un)
+        if ph:
+            return (1, ph)
+        return (2, str(u.get("user_id") or 0))
+    return sorted(members or [], key=_key)
+
+
+def _looks_like_chat_ref(raw):
+    s = (raw or "").strip()
+    if not s:
+        return False
+    if s.lstrip("-").isdigit():
+        return True
+    if s.startswith("@") or "t.me/" in s or s.startswith("http"):
+        return True
+    # یوزرنیم عمومی تلگرام بدون @
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", s):
+        return True
+    return False
+
+
+def normalize_chat_ref(raw):
+    """لینک / یوزرنیم / آیدی را به چیزی که get_chat می‌فهمد تبدیل می‌کند."""
+    s = (raw or "").strip()
+    if not s:
+        return s
+    if s.lstrip("-").isdigit():
+        return int(s)
+    if "t.me/" in s:
+        tail = s.split("t.me/", 1)[1].split("?")[0].strip("/")
+        if not tail:
+            return s
+        if tail.startswith("+") or tail.startswith("joinchat/"):
+            return s
+        if tail.lstrip("-").isdigit():
+            return int(tail)
+        return "@" + tail.lstrip("@")
+    if s.startswith("@"):
+        return s
+    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", s):
+        return "@" + s
+    return s
+
+
+def resolve_add_target(cfg=None):
+    """مقصد ادد را از config واقعی می‌گیرد — group_id=0 را «خالی» حساب نمی‌کند اگر نام معتبر باشد.
+    دیگر بی‌صدا به @gament_super_gp سوییچ نمی‌کند مگر اینکه هیچ مقصدی نباشد."""
+    if cfg is None:
+        cfg = _db.get_config() or {}
+    try:
+        gid = int(cfg.get("group_id") or 0)
+    except Exception:
+        gid = 0
+    name = (cfg.get("group_name") or "").strip()
+    if gid:
+        return gid
+    # لینک / @یوزرنیم / آیدی عددی در نام → همان مقصد
+    explicit = bool(name) and (
+        name.startswith("@") or "t.me/" in name or name.startswith("http") or name.lstrip("-").isdigit()
+    )
+    if explicit:
+        return normalize_chat_ref(name)
+    try:
+        dest = _db.most_used_add_dest()
+        if dest:
+            return dest
+    except Exception:
+        pass
+    if _looks_like_chat_ref(name):
+        return normalize_chat_ref(name)
+    try:
+        import config as _cfg
+        fallback = getattr(_cfg, "DEFAULT_TARGET_USERNAME", "gament_super_gp")
+    except Exception:
+        fallback = "gament_super_gp"
+    return "@" + str(fallback).lstrip("@")
+
+
+def persist_target_setting(raw):
+    """ذخیره مقصد از مینی‌اپ: آیدی عددی را جدا از نام نگه می‌دارد."""
+    ref = normalize_chat_ref(raw)
+    if isinstance(ref, int):
+        _db.set_config(ref, str(raw).strip() or str(ref), True)
+        return ref
+    name = str(ref or raw or "").strip()
+    _db.set_config(0, name, True)
+    return name
+
+
+def invite_did_not_join(updates, uid):
+    """اگر InviteToChannel کاربر را در missing_invitees برگرداند، ادد واقعی نبوده."""
+    if updates is None:
+        return False
+    missing = getattr(updates, "missing_invitees", None) or []
+    for item in missing:
+        mid = getattr(item, "user_id", None)
+        if mid is None:
+            mid = getattr(getattr(item, "user", None), "id", None)
+        try:
+            if int(mid) == int(uid):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+async def confirm_joined(client, chat_id, uid, retries=2, pause=1.1):
+    """فقط وقتی True که کاربر واقعاً عضو گروه/کانال باشد — نه اینکه API ادد «موفق» برگرداند."""
+    import asyncio
+    app = getattr(client, "app", client)
+    for i in range(max(1, retries)):
+        try:
+            mem = await app.get_chat_member(chat_id, int(uid))
+            st = str(getattr(mem, "status", "")).lower()
+            if any(tok in st for tok in ("member", "administrator", "creator", "admin", "owner", "restricted")):
+                return True
+        except Exception:
+            pass
+        if i + 1 < retries:
+            await asyncio.sleep(pause)
+    return False
 
 
 def reset_cache_for_tests():

@@ -536,9 +536,9 @@ def load_added_history():
 def save_added_history(hist):
     pass  # no-op, db is source of truth
 
-def mark_user_as_added(chat_id, chat_title, user_id):
-    """ثبت کردن این کاربر که به این گروه اضافه شد (در DB)"""
-    _db_mark_added(chat_id, user_id, "")
+def mark_user_as_added(chat_id, chat_title, user_id, phone=""):
+    """ثبت کردن این کاربر که به این گروه اضافه شد (در DB) — با شماره اکانت اددکننده"""
+    _db_mark_added(chat_id, user_id, phone or "")
     # ⚡ همگام‌سازی کش در حافظه — برای چک‌های بعدی (ضد تکرار/لفت) کوئری لازم نیست
     mark_added_local(user_id)
 
@@ -554,6 +554,7 @@ from add_engine import (
     human_delay, human_break_seconds,
     get_blocked_ids_cached, invalidate_blocked_cache,
     never_add_again, mark_added_local,
+    confirm_joined, prefer_addable_members, invite_did_not_join,
 )
 
 def load_accounts():
@@ -8028,7 +8029,8 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
     added = 0
     failed = 0
     skipped = 0
-    errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "channels": 0, "other": 0}
+    errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "channels": 0, "not_joined": 0, "other": 0}
+    members = prefer_addable_members(members)
     first_error = ""
     account_limited = False
     account_banned = False
@@ -8046,6 +8048,12 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
         except AttributeError:
             tgt = await client.app.get_chat(target_gid)
         target_name = tgt.title
+        if getattr(tgt, "id", None):
+            target_gid = tgt.id
+            try:
+                db.set_config(int(tgt.id), target_name or str(tgt.id), True)
+            except Exception:
+                pass
     except:
         target_name = "گروه مقصد"
     
@@ -8184,31 +8192,29 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
             
             # InviteToChannel
             try:
-                await client.invoke(
+                invite_res = await client.invoke(
                     InviteToChannel(channel=target_peer, users=[user_peer])
                 )
             except AttributeError:
-                await client.app.invoke(
+                invite_res = await client.app.invoke(
                     InviteToChannel(channel=target_peer, users=[user_peer])
                 )
-            
-            # Verification: check if user is actually in the group (first 3 only)
-            if added < 3:
-                try:
-                    await asyncio.sleep(1)
-                    try:
-                        member_check = await client.get_chat_member(target_gid, uid)
-                    except AttributeError:
-                        member_check = await client.app.get_chat_member(target_gid, uid)
-                    if member_check and member_check.status in ["member", "administrator", "creator"]:
-                        print(f"✅ Verified: {uid} is in the group!", flush=True)
-                    else:
-                        print(f"⚠️ Warning: {uid} may not be in the group (status: {member_check.status if member_check else 'None'})", flush=True)
-                except Exception as verify_err:
-                    print(f"⚠️ Could not verify {uid}: {type(verify_err).__name__}", flush=True)
+
+            if invite_did_not_join(invite_res, uid):
+                skipped += 1
+                errors_detail["not_joined"] += 1
+                print(f"⚠️ Invite missing_invitees: {uid} — counted as skipped", flush=True)
+                continue
+
+            actually_in = await confirm_joined(client, target_gid, uid)
+            if not actually_in:
+                skipped += 1
+                errors_detail["not_joined"] += 1
+                print(f"⚠️ Invite returned OK but {uid} is not a member — not counted as added", flush=True)
+                continue
             
             added += 1
-            mark_user_as_added(target_gid, target_name, uid)
+            mark_user_as_added(target_gid, target_name, uid, phone)
             limits = load_adder_limits()
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
@@ -8257,13 +8263,11 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
         except UserAlreadyParticipant:
             skipped += 1
             errors_detail["already"] += 1
-            mark_user_as_added(target_gid, target_name, uid)
+            mark_user_as_added(target_gid, target_name, uid, phone)
         except (UserPrivacyRestricted, UserNotMutualContact):
-            # 🔒 پروفایل قفل است (از تنظیمات تلگرام ادد را بسته) → جزو آمار ادد حساب نمی‌شود!
-            # اسکیپ + حذف از دیتابیس + ثبت در لیست «هرگز دوباره ادد نشود»
+            # 🔒 پروفایل قفل است — جزو آمار ادد حساب نمی‌شود
             skipped += 1
             errors_detail["privacy"] += 1
-            mark_user_as_added(target_gid, target_name, uid)
             never_add_again(uid, "privacy")
         except PeerIdInvalid:
             # آیدی نامعتبر → اسکیپ + حذف از DB + بلاک‌لیست
@@ -8339,6 +8343,7 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
         text += f"\n\n<b>جزئیات خطا:</b>\n"
         if errors_detail["peer"]: text += f"🔍 Peer Invalid: {errors_detail['peer']}\n"
         if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
+        if errors_detail.get("not_joined"): text += f"👻 دعوت شد ولی عضو نشد: {errors_detail['not_joined']}\n"
         if errors_detail["already"]: text += f"👥 قبلاً عضو: {errors_detail['already']}\n"
         if errors_detail["flood"]: text += f"⏱ Flood: {errors_detail['flood']}\n"
         if errors_detail["other"]: text += f"❓ سایر: {errors_detail['other']}\n"
@@ -8479,9 +8484,9 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     invalidate_blocked_cache()
     blocked_ids = get_blocked_ids_cached()
 
-    # Shared queue of members to add
+    # Shared queue of members to add — یوزرنیم‌دارها اول
     member_queue = asyncio.Queue()
-    for m in members:
+    for m in prefer_addable_members(members):
         member_queue.put_nowait(m)
 
     total_added = 0
@@ -8566,9 +8571,15 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
             await asyncio.wait_for(client.start(), timeout=45)
 
             # Resolve target once for this account
+            dest_gid = target_gid
             try:
                 target_chat = await client.get_chat(target_gid)
-                target_peer = await client.resolve_peer(target_chat.id)
+                dest_gid = target_chat.id
+                target_peer = await client.resolve_peer(dest_gid)
+                try:
+                    db.set_config(int(dest_gid), getattr(target_chat, "title", "") or str(dest_gid), True)
+                except Exception:
+                    pass
             except Exception:
                 target_peer = await client.resolve_peer(target_gid)
 
@@ -8615,7 +8626,13 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                             await asyncio.sleep(0.3)
                         except Exception: pass
 
-                    await client.invoke(InviteToChannel(channel=target_peer, users=[user_peer]))
+                    invite_res = await client.invoke(InviteToChannel(channel=target_peer, users=[user_peer]))
+
+                    if invite_did_not_join(invite_res, uid) or not await confirm_joined(client, dest_gid, uid):
+                        total_skipped += 1
+                        print(f"⚠️ [{phone}] {uid} invited but not a member — skipped", flush=True)
+                        member_queue.task_done()
+                        continue
 
                     first_n = member.get("first_name", "") or ""
                     last_n = member.get("last_name", "") or ""
@@ -8625,7 +8642,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
 
                     acc_added += 1
                     total_added += 1
-                    mark_user_as_added(target_gid, "", uid)
+                    mark_user_as_added(dest_gid, "", uid, phone)
                     db.set_adder_limit(phone, already_added + acc_added)
 
                     if atk_state_ref:
@@ -8663,12 +8680,10 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     break
                 except UserAlreadyParticipant:
                     total_skipped += 1
-                    mark_user_as_added(target_gid, "", uid)
+                    mark_user_as_added(dest_gid, "", uid, phone)
                 except (UserPrivacyRestricted, UserNotMutualContact) as e:
-                    # 🔒 پروفایل قفل است → جزو آمار ادد حساب نمی‌شود (اسکیپ)
-                    # + حذف از دیتابیس + ثبت در لیست «هرگز دوباره ادد نشود»
+                    # 🔒 پروفایل قفل است → جزو آمار ادد حساب نمی‌شود
                     total_skipped += 1
-                    mark_user_as_added(target_gid, "", uid)
                     never_add_again(uid, "privacy")
                     print(f"🔒 [{phone}] پروفایل قفل {uid} → اسکیپ + حذف از دیتابیس", flush=True)
                 except PeerIdInvalid:

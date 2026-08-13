@@ -601,6 +601,13 @@ def set_config(group_id, group_name, defense_enabled=True, owner_phone=""):
                 owner_phone=COALESCE(NULLIF(EXCLUDED.owner_phone,''), config_tbl.owner_phone)
         """, (int(group_id), group_name, defense_enabled, owner_phone))
         cur.close()
+        try:
+            kv_set("active_add_target", {
+                "group_id": int(group_id or 0),
+                "group_name": group_name or "",
+            })
+        except Exception:
+            pass
     except Exception as e:
         logger.error(f"set_config err: {e}")
 @db_retry()
@@ -608,8 +615,20 @@ def get_config(key=None, default=None):
     if key is not None:
         return kv_get(key, default)
     try:
+        active = kv_get("active_add_target")
+        if isinstance(active, dict) and (active.get("group_id") or active.get("group_name")):
+            owner = get_owner_phone() or ""
+            return {
+                "group_id": active.get("group_id") or 0,
+                "group_name": active.get("group_name") or "",
+                "defense_enabled": True,
+                "owner_phone": owner,
+            }
         cur = get_conn().cursor(cursor_factory=DictCursor)
-        cur.execute("SELECT group_id, group_name, defense_enabled, owner_phone FROM config_tbl LIMIT 1")
+        cur.execute(
+            "SELECT group_id, group_name, defense_enabled, owner_phone FROM config_tbl "
+            "ORDER BY CASE WHEN COALESCE(group_id,0)=0 THEN 1 ELSE 0 END, group_id DESC"
+        )
         row = cur.fetchone()
         cur.close()
         if row:
@@ -749,6 +768,23 @@ def count_added(group_id=None):
         return r
     except:
         return 0
+
+
+@db_retry()
+def most_used_add_dest():
+    """آیدی گروهی که بیشترین ادد ثبت‌شده را دارد (برای وقتی config.group_id=0 است)."""
+    try:
+        cur = get_conn().cursor()
+        cur.execute(
+            "SELECT group_id FROM added_history_tbl "
+            "WHERE group_id IS NOT NULL AND group_id <> 0 "
+            "GROUP BY group_id ORDER BY COUNT(*) DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        cur.close()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
 
 # ---------------- Background scanner state ----------------
 @db_retry()

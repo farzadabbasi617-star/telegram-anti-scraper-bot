@@ -107,7 +107,10 @@ def get_dashboard_dict():
                 healthy_count += 1
                 
         cfg = db.get_config()
-        target_group = cfg.get("group_name") or "@gament_super_gp"
+        from add_engine import resolve_add_target
+        resolved = resolve_add_target(cfg)
+        name = (cfg.get("group_name") or "").strip()
+        target_group = name or str(resolved)
         
         is_running = False
         add_progress = {}
@@ -348,8 +351,9 @@ def trigger_single_add(phone, add_type):
         if not raw_users:
             raw_users = list(db.load_users_dict().values())
 
+        from add_engine import resolve_add_target, prefer_addable_members
         cfg = db.get_config()
-        target_gid = cfg.get("group_id") or "@gament_super_gp"
+        target_gid = resolve_add_target(cfg)
 
         filtered = []
         for u in raw_users:
@@ -371,6 +375,7 @@ def trigger_single_add(phone, add_type):
             if add_type == "id" and (u.get("phone") or u.get("username")): continue
             filtered.append(u)
 
+        filtered = prefer_addable_members(filtered)
         if not filtered:
             return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
 
@@ -427,8 +432,9 @@ def trigger_parallel_add(add_mode, add_type):
         if not raw_users:
             raw_users = list(db.load_users_dict().values())
 
+        from add_engine import resolve_add_target, prefer_addable_members
         cfg = db.get_config()
-        target_gid = cfg.get("group_id") or "@gament_super_gp"
+        target_gid = resolve_add_target(cfg)
 
         filtered = []
         for u in raw_users:
@@ -450,6 +456,7 @@ def trigger_parallel_add(add_mode, add_type):
             if add_type == "id" and (u.get("phone") or u.get("username")): continue
             filtered.append(u)
 
+        filtered = prefer_addable_members(filtered)
         if not filtered:
             return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
 
@@ -1788,8 +1795,8 @@ def create_web_app(app_bot=None, atk_state=None):
                 data = await request.json()
                 target = data.get("target", "").strip()
                 if target:
-                    cfg = db.get_config()
-                    db.set_config(cfg.get("group_id", 0), target, cfg.get("defense_enabled", True))
+                    from add_engine import persist_target_setting
+                    persist_target_setting(target)
                 return web.json_response({"ok": True, "target": target}, headers=NO_CACHE)
             except Exception as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)

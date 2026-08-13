@@ -63,6 +63,48 @@ def test_mark_added_local(monkeypatch):
     add_engine.reset_cache_for_tests()
 
 
+def test_prefer_addable_members_username_first():
+    members = [
+        {"user_id": 1, "username": "", "phone": ""},
+        {"user_id": 2, "username": "ali", "phone": ""},
+        {"user_id": 3, "username": "", "phone": "+98912"},
+    ]
+    ordered = add_engine.prefer_addable_members(members)
+    assert [u["user_id"] for u in ordered] == [2, 3, 1]
+
+
+def test_resolve_add_target_nonzero_gid_wins(monkeypatch):
+    monkeypatch.setattr(add_engine._db, "get_config", lambda: {"group_id": -1004316603248, "group_name": "selethon"})
+    assert add_engine.resolve_add_target() == -1004316603248
+
+
+def test_resolve_add_target_name_when_gid_zero(monkeypatch):
+    monkeypatch.setattr(add_engine._db, "get_config", lambda: {"group_id": 0, "group_name": "@gament_super_gp"})
+    assert add_engine.resolve_add_target() == "@gament_super_gp"
+
+
+def test_resolve_add_target_title_falls_back_to_history(monkeypatch):
+    monkeypatch.setattr(add_engine._db, "get_config", lambda: {"group_id": 0, "group_name": "selethon"})
+    monkeypatch.setattr(add_engine._db, "most_used_add_dest", lambda: -1004316603248)
+    assert add_engine.resolve_add_target() == -1004316603248
+
+
+def test_normalize_chat_ref():
+    assert add_engine.normalize_chat_ref("-1004316603248") == -1004316603248
+    assert add_engine.normalize_chat_ref("https://t.me/gament_super_gp") == "@gament_super_gp"
+    assert add_engine.normalize_chat_ref("gament_super_gp") == "@gament_super_gp"
+
+
+def test_invite_did_not_join():
+    class M:
+        user_id = 99
+    class U:
+        missing_invitees = [M()]
+    assert add_engine.invite_did_not_join(U(), 99) is True
+    assert add_engine.invite_did_not_join(U(), 1) is False
+    assert add_engine.invite_did_not_join(None, 99) is False
+
+
 def test_never_add_again(monkeypatch):
     dna = []
     deleted = []
