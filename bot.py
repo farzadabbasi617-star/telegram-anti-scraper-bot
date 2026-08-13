@@ -59,6 +59,7 @@ from db import (
     delete_scanned_chat, toggle_chat_favorite, upsert_scanned_chat,
 )
 from bg_scraper import start_in_background as bg_scraper_start, _backup_session
+import account_state
 try:
     import instagram_scraper as ig_scraper
 except Exception as e:
@@ -664,6 +665,15 @@ atk_state_ref = None
 def set_atk_state_ref(ref):
     global atk_state_ref
     atk_state_ref = ref
+
+def _release_busy_account():
+    """🔓 آزادسازی اکانت مشغول بعد از پایان هر عملیات (گارد ضد استفاده همزمان)"""
+    try:
+        phone = atk_state.get("phone")
+        if phone:
+            account_state.release(phone)
+    except Exception:
+        pass
 bg_started = False
 
 def build_welcome_text():
@@ -3521,6 +3531,7 @@ async def cb(c, q):
         try:
             await q.answer(f"خطا: {type(e).__name__}", show_alert=True)
         except: pass
+        _release_busy_account()
         atk_state.clear()
 
 async def _cb_impl(c, q):
@@ -3853,6 +3864,7 @@ async def _cb_impl(c, q):
             try:
                 await simp_client.disconnect()
             except: pass
+        _release_busy_account()
         atk_state.clear()
         # Cleanup session locks
         import glob as _g
@@ -4138,7 +4150,16 @@ async def _cb_impl(c, q):
         return
 
     if d == "home":
-        atk_state.clear()
+        if not atk_state.get("add_in_progress"):
+            for _ck in ("atk", "add_client", "_simp_client"):
+                _cl = atk_state.get(_ck)
+                if _cl:
+                    try:
+                        await _cl.disconnect()
+                    except Exception:
+                        pass
+            _release_busy_account()
+            atk_state.clear()
         await q.message.edit_text(build_welcome_text(), reply_markup=main_menu(), disable_web_page_preview=True)
         return
 
@@ -4501,6 +4522,7 @@ async def _cb_impl(c, q):
 
     # ═══ 🔍 Group Finder Callbacks ═══
     if d == "group_finder_menu":
+        _release_busy_account()
         atk_state.clear()
         atk_state["step"] = "gf_query"
         await q.message.edit_text(
@@ -5212,6 +5234,7 @@ async def _cb_impl(c, q):
         
         buttons = [
             [InlineKeyboardButton("🔄 بروزرسانی", callback_data="account_status")],
+            [InlineKeyboardButton("🔍 تشخیص دقیق (چرا استخراج نمی‌کند؟)", callback_data="acc_doctor_menu")],
             [InlineKeyboardButton("🔙 بازگشت", callback_data="home")]
         ]
         
@@ -5628,6 +5651,7 @@ async def _cb_impl(c, q):
         text += f"🕐 آخرین اجرا: {'ندارد' if not st.get('last_run') else time.strftime('%Y-%m-%d %H:%M', time.localtime(st['last_run']))}\n"
         text += f"👥 مجموع پیدا شده تا کنون: {st.get('total_found',0)}\n"
         text += f"📊 وضعیت فعلی: {st.get('status','idle')}\n\n"
+        text += "♻️ اسکن خودکار بین همه اکانت‌های آزاد می‌چرخد (اکانت انتخابی فقط اولویت اول است).\n\n"
         if not st.get("account_phone"):
             text += "⚠️ هنوز اکانت برای اسکن خودکار انتخاب نکردی.\n"
         if not cfg.get("group_id"):
@@ -5694,6 +5718,7 @@ async def _cb_impl(c, q):
         gid = int(d.split("_")[2])
         atk = atk_state.get("atk")
         if not atk:
+            _release_busy_account()
             atk_state.clear()
             await q.answer("خطا در وضعیت، لطفا دوباره شروع کنید.", show_alert=True)
             await q.message.edit_text("منوی اصلی:", reply_markup=main_menu())
@@ -5744,6 +5769,7 @@ async def _cb_impl(c, q):
                 else:
                     await app.send_message(ADMIN_ID, fail_msg)
             try:
+                _release_busy_account()
                 atk_state.clear()
             except:
                 pass
@@ -5809,6 +5835,7 @@ async def _cb_impl(c, q):
                         [InlineKeyboardButton("🔙 منوی اصلی", callback_data="home")]
                     ]))
             try:
+                _release_busy_account()
                 atk_state.clear()
             except:
                 pass
@@ -5831,6 +5858,7 @@ async def _cb_impl(c, q):
         gid = int(d.split("_")[2])
         add_client = atk_state.get("add_client")
         if not add_client:
+            _release_busy_account()
             atk_state.clear()
             await q.answer("خطا!", show_alert=True)
             await q.message.edit_text("منوی اصلی:", reply_markup=main_menu())
@@ -5972,6 +6000,7 @@ async def _cb_impl(c, q):
                 text += f"   └ اضافه شده: {date_str}\n"
                 text += f"   └ ادد: {bar} {added_count}/{MAX_ADD_PER_ACCOUNT}\n\n"
         buttons = []
+        buttons.append([InlineKeyboardButton("🔍 تشخیص سلامت اکانت‌ها", callback_data="acc_doctor_menu")])
         buttons.append([InlineKeyboardButton("➕ افزودن اکانت جدید", callback_data="add_new_account"),
                         InlineKeyboardButton("📤 بک‌آپ سشن", callback_data="acc_backup_pick")])
         buttons.append([InlineKeyboardButton("📥 آپلود فایل سشن (برای 2FA)", callback_data="acc_upload_session")])
@@ -5979,6 +6008,70 @@ async def _cb_impl(c, q):
             buttons.append([InlineKeyboardButton("🗑️ حذف یک اکانت", callback_data="acc_delete_pick")])
         buttons.append(_sub_back_btn(target="menu_settings"))
         await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "acc_doctor_menu":
+        accounts = list_saved_accounts()
+        if not accounts:
+            await q.answer("هیچ اکانتی ذخیره نشده!", show_alert=True)
+            return
+        text = (
+            "🔍 <b>تشخیص سلامت اکانت‌ها</b>\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "اکانت‌هایی که «سالم» دیده می‌شوند ولی استخراج نمی‌کنند معمولاً یکی از این‌ها هستند:\n"
+            "• سشن روی دیسک/بکاپ نیست\n"
+            "• اسکن خودکار فقط از یک اکانت استفاده می‌کرد\n"
+            "• سشن سوخته (استفاده همزمان)\n"
+            "• اکانت عضو گروه هدف نیست\n\n"
+            "گزارش سریع همه را ببین یا یک اکانت را برای تست زنده انتخاب کن:"
+        )
+        buttons = [[InlineKeyboardButton("📋 گزارش سریع همه (بدون اتصال)", callback_data="acc_doc_all")]]
+        for phone, info in accounts.items():
+            name = (info.get("name") or phone) if isinstance(info, dict) else phone
+            buttons.append([InlineKeyboardButton(
+                f"🔬 {str(name)[:18]} | {phone}",
+                callback_data=f"acc_doc_{phone}"
+            )])
+        buttons.append([InlineKeyboardButton("🔙 بازگشت", callback_data="manage_accounts")])
+        await q.message.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+        return
+
+    if d == "acc_doc_all":
+        try:
+            from account_doctor import diagnose_offline_all, render_offline_report
+            report = render_offline_report(diagnose_offline_all())
+        except Exception as e:
+            report = f"❌ خطا در گزارش سریع: {e}"
+        await q.message.edit_text(
+            report,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔬 تست زنده تک‌اکانت", callback_data="acc_doctor_menu")],
+                [InlineKeyboardButton("🔙 بازگشت", callback_data="manage_accounts")],
+            ]),
+        )
+        return
+
+    if d.startswith("acc_doc_"):
+        phone = d[len("acc_doc_"):]
+        await q.answer("در حال تست زنده...", show_alert=False)
+        await q.message.edit_text(
+            f"🔍 در حال تست زنده اکانت <code>{phone}</code>...\n"
+            f"اتصال + هویت + لیست چت + تست استخراج از گروه هدف."
+        )
+        try:
+            from account_doctor import probe_account, render_report
+            cfg = _db_get_config()
+            res = await probe_account(phone, target_group_id=cfg.get("group_id") or None, quick=False)
+            report = render_report(res)
+        except Exception as e:
+            report = f"❌ خطا در تست زنده <code>{phone}</code>:\n{type(e).__name__}: {e}"
+        await q.message.edit_text(
+            report,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 تست دوباره", callback_data=f"acc_doc_{phone}")],
+                [InlineKeyboardButton("🔙 لیست اکانت‌ها", callback_data="acc_doctor_menu")],
+            ]),
+        )
         return
 
     if d == "acc_delete_pick":
@@ -6027,6 +6120,7 @@ async def _cb_impl(c, q):
         return
 
     if d == "add_new_account":
+        _release_busy_account()
         atk_state.clear()
         atk_state["step"] = "add_new_acc_phone"
         await q.message.edit_text("➕ افزودن اکانت جدید دائمی\n\n📱 شماره تلفن با <b>فرمت بین‌المللی</b> بفرستید:\n\n✅ <b>فرمت‌های قابل قبول:</b>\n• <code>+989123456789</code>\n• <code>09123456789</code>\n• <code>9123456789</code>\n\n⚠️ نکته: درخواست کد زیاد پشت سر هم باعث فلود ۱۸ ساعته تلگرام میشود!\nاگر اکانت از قبل در لیست هست از آن استفاده کنید.",
@@ -6034,6 +6128,7 @@ async def _cb_impl(c, q):
         return
 
     if d == "acc_upload_session":
+        _release_busy_account()
         atk_state.clear()
         atk_state["step"] = "upload_session"
         await q.message.edit_text(
@@ -6562,8 +6657,21 @@ async def _cb_impl(c, q):
             return
         # سشن سالم است، شروع عملیات - مهم: همان working_client را دوباره استفاده کن، دوباره نساز!
         if mode == "attack":
+            _release_busy_account()
             atk_state.clear()
             atk_state["phone"] = phone
+            ok_b, owner = account_state.mark_busy(phone, "استخراج دستی")
+            if not ok_b:
+                try:
+                    await working_client.disconnect()
+                except Exception:
+                    pass
+                await prog.edit_text(
+                    f"⚠️ اکانت <code>{phone}</code> الان مشغول است ({owner}).\n"
+                    f"صبر کن عملیات قبلی تمام شود، وگرنه سشن می‌سوزد.",
+                    reply_markup=main_menu(),
+                )
+                return
             atk_state["reuse_account"] = True
             atk = working_client  # از همین اتصال استفاده کن، دوباره وصل نشو!
             atk_state["atk"] = atk
@@ -6589,8 +6697,21 @@ async def _cb_impl(c, q):
             return
 
         if mode == "add":
+            _release_busy_account()
             atk_state.clear()
             atk_state["phone"] = phone
+            ok_b, owner = account_state.mark_busy(phone, "ادد دستی")
+            if not ok_b:
+                try:
+                    await working_client.disconnect()
+                except Exception:
+                    pass
+                await prog.edit_text(
+                    f"⚠️ اکانت <code>{phone}</code> الان مشغول است ({owner}).\n"
+                    f"صبر کن عملیات قبلی تمام شود، وگرنه سشن می‌سوزد.",
+                    reply_markup=main_menu(),
+                )
+                return
             atk_state["reuse_account"] = True
             limits = load_adder_limits()
             already = limits.get(phone, {}).get("added", 0)
@@ -6624,6 +6745,7 @@ async def _cb_impl(c, q):
 
     if d.startswith("newacc_"):
         mode = d.split("_")[1]
+        _release_busy_account()
         atk_state.clear()
         atk_state["after_auth_mode"] = mode
         atk_state["step"] = "phone_new"
@@ -6633,11 +6755,13 @@ async def _cb_impl(c, q):
 
     # ==================== مسیر قدیمی که دیگر استفاده نمی‌شود (فقط برای سازگاری) ====================
     if d == "attack":
+        _release_busy_account()
         atk_state.clear()
         await show_account_picker("attack", "home", "🚀 شروع تست حمله پیشرفته")
         return
 
     if d == "add_members":
+        _release_busy_account()
         atk_state.clear()
         await show_account_picker("add", "home", f"➕ شروع اضافه کردن اعضا")
         return
@@ -6662,6 +6786,7 @@ async def steps(c, m):
         try:
             await m.reply_text(f"❌ خطای داخلی:\n{type(e).__name__}: {str(e)[:300]}\n\nلطفا /start را بزنید.", reply_markup=main_menu())
         except: pass
+        _release_busy_account()
         atk_state.clear()
 
 
@@ -6760,6 +6885,7 @@ async def _steps_impl(c, m):
         query = m.text.strip()
         if not query or len(query) < 2:
             await m.reply_text("❌ عبارت جستجو خیلی کوتاهه.", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
             return
         status = await m.reply_text(f"🔍 در حال جستجوی گروه‌های <b>{query}</b>...\n⏳ صبر کن...")
@@ -6776,6 +6902,7 @@ async def _steps_impl(c, m):
             except: pass
         if not found_groups:
             await status.edit_text(f"❌ هیچ گروهی برای «{query}» پیدا نشد.", reply_markup=InlineKeyboardMarkup([[_sub_back_btn()]]))
+            _release_busy_account()
             atk_state.clear()
             return
         text = f"🔍 <b>نتایج: {query}</b>\n━━━━━━━━━━━━━━━━━━\n📦 پیدا شد: <b>{len(found_groups)}</b> گروه/کانال\n\n"
@@ -6794,6 +6921,7 @@ async def _steps_impl(c, m):
             text += f"... و {len(found_groups) - 20} گروه دیگه"
         buttons.append([InlineKeyboardButton("🔍 جستجوی جدید", callback_data="group_finder_menu")])
         buttons.append([InlineKeyboardButton("🏠 منوی اصلی", callback_data="home")])
+        _release_busy_account()
         atk_state.clear()
         await status.edit_text(text, reply_markup=InlineKeyboardMarkup(buttons), disable_web_page_preview=True)
         return
@@ -6805,6 +6933,7 @@ async def _steps_impl(c, m):
         if not target or len(target) < 2:
             await m.reply_text("❌ نتونستم نام کاربری رو تشخیص بدم!\nلینک اینستاگرام یا username رو بفرست.", reply_markup=main_menu())
             return
+        _release_busy_account()
         atk_state.clear()
         from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton as IB
         await m.reply_text(
@@ -6834,6 +6963,7 @@ async def _steps_impl(c, m):
         username = atk_state.get("ig_username", "")
         if not username:
             await m.reply_text("❌ اول نام کاربری رو بفرست!", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
             return
         st = await m.reply_text("🔐 در حال لاگین به اینستاگرام...")
@@ -6845,6 +6975,7 @@ async def _steps_impl(c, m):
             # Save session
             os.makedirs(ig_scraper.SESSION_DIR, exist_ok=True)
             L.save_session_to_file(ig_scraper.IG_SESSION_FILE)
+            _release_busy_account()
             atk_state.clear()
             await st.edit_text(
                 f"✅ <b>لاگین موفق!</b>\n"
@@ -6863,6 +6994,7 @@ async def _steps_impl(c, m):
             else:
                 msg = f"❌ خطا در لاگین:\n{str(e)[:300]}"
             await st.edit_text(msg, reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+            _release_busy_account()
             atk_state.clear()
         # Delete the message with password for security
         try: await m.delete()
@@ -6892,6 +7024,7 @@ async def _steps_impl(c, m):
                 f"❌ سشن معتبر نیست یا منقضی شده:\n{str(e)[:200]}\n\n"
                 "دوباره با Instaloader لاگین کن و فایل جدید آپلود کن.",
                 reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="ig_menu")[0]]]))
+        _release_busy_account()
         atk_state.clear()
         return
 
@@ -6901,6 +7034,7 @@ async def _steps_impl(c, m):
         fname = getattr(doc, 'file_name', '') or 'unknown.session'
         if not fname.endswith('.session'):
             await m.reply_text("❌ فقط فایل با پسوند <code>.session</code> قابل قبوله!\nفایل رو دوباره بفرست.", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
             return
         st = await m.reply_text("📥 فایل سشن دریافت شد، در حال بررسی...")
@@ -6924,6 +7058,7 @@ async def _steps_impl(c, m):
         result = await _save_uploaded_session(st, phone, file_data.getvalue(), fname)
         if result:
             await st.edit_text(result, reply_markup=main_menu())
+        _release_busy_account()
         atk_state.clear()
         return
 
@@ -6935,6 +7070,7 @@ async def _steps_impl(c, m):
         blob = atk_state.get("pending_session_bytes")
         if not blob:
             await m.reply_text("❌ خطا - فایل سشن پیدا نشد. دوباره آپلود کن.", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
             return
         st = atk_state.get("st")
@@ -6942,6 +7078,7 @@ async def _steps_impl(c, m):
         if result:
             try: await st.edit_text(result, reply_markup=main_menu())
             except: await m.reply_text(result, reply_markup=main_menu())
+        _release_busy_account()
         atk_state.clear()
         return
 
@@ -6957,6 +7094,7 @@ async def _steps_impl(c, m):
         # چک کن اکانت از قبل وجود نداشته باشه
         if phone in list_saved_accounts():
             await m.reply_text(f"⚠️ اکانت {phone} از قبل در لیست ذخیره شده است! نیازی به افزودن مجدد نیست، از لیست اکانت ها انتخاب کنید.", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
             return
         # Validate phone
@@ -6969,6 +7107,7 @@ async def _steps_impl(c, m):
                 "• <code>09123456789</code> (با صفر)\n"
                 "• <code>9123456789</code> (بدون صفر)", 
                 reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
             return
         atk_state["phone"] = phone
@@ -6996,6 +7135,7 @@ async def _steps_impl(c, m):
                     "• اگه قبلاً این اکانت رو اضافه کردی، از منوی اکانت‌ها انتخابش کن",
                     reply_markup=main_menu()
                 )
+                _release_busy_account()
                 atk_state.clear()
                 return
             
@@ -7033,6 +7173,7 @@ async def _steps_impl(c, m):
                 f"• نگران نباش، اکانتت بن نشده!",
                 reply_markup=main_menu()
             )
+            _release_busy_account()
             atk_state.clear()
         except Exception as e:
             error_msg = str(e)
@@ -7051,6 +7192,7 @@ async def _steps_impl(c, m):
                 error_text = f"❌ <b>خطا در ارسال کد:</b>\n{error_msg[:200]}\n\n💡 چند دقیقه دیگه دوباره امتحان کن."
             
             await st.edit_text(error_text, reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
         return
 
@@ -7095,6 +7237,7 @@ async def _steps_impl(c, m):
                     "لطفاً از منو دوباره شروع کنید.",
                     reply_markup=main_menu()
                 )
+                _release_busy_account()
                 atk_state.clear()
             return
         except Exception as e:
@@ -7124,6 +7267,7 @@ async def _steps_impl(c, m):
         # Backup session bytes to DB for persistence across render wipes
         try: _backup_session(phone)
         except: pass
+        _release_busy_account()
         atk_state.clear()
         await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت به صورت دائمی در دیتابیس ذخیره شد!\n✅ شناسه دستگاه ثابت ذخیره شد (انقضا نمی‌خورد)\n✅ فایل سشن در دیتابیس ابری بکاپ گرفته شد\nاز این به بعد بدون نیاز به کد می‌توانی ازش استفاده کنی.", reply_markup=main_menu())
         return
@@ -7159,6 +7303,7 @@ async def _steps_impl(c, m):
         except: pass
         try: _backup_session(phone)
         except: pass
+        _release_busy_account()
         atk_state.clear()
         await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت در دیتابیس ذخیره شد!", reply_markup=main_menu())
         return
@@ -7168,11 +7313,13 @@ async def _steps_impl(c, m):
         phone = _normalize_phone(m.text)
         if phone in list_saved_accounts():
             await m.reply_text(f"⚠️ اکانت {phone} از قبل ذخیره شده است! لطفا از منوی انتخاب اکانت استفاده کنید.", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
             return
         valid, err = _validate_phone(phone)
         if not valid:
             await m.reply_text(f"❌ شماره نامعتبر!\n\n{err}", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
             return
         atk_state["phone"] = phone
@@ -7195,9 +7342,11 @@ async def _steps_impl(c, m):
             wait_h = fw.value // 3600
             wait_m = (fw.value % 3600) // 60
             await st.edit_text(f"❌ تلگرام موقتا کد نمیدهد!\n⏱️ لطفا حدود {wait_h} ساعت و {wait_m} دقیقه صبر کنید.\n✅ اکانت شما سالم است، نگران بن نباشید.", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
         except Exception as e:
             await st.edit_text(f"❌ خطا: {str(e)[:300]}", reply_markup=main_menu())
+            _release_busy_account()
             atk_state.clear()
         return
 
@@ -7232,6 +7381,7 @@ async def _steps_impl(c, m):
                 )
             except Exception as e2:
                 await m.reply_text(f"❌ خطا در ارسال مجدد: {str(e2)[:200]}", reply_markup=main_menu())
+                _release_busy_account()
                 atk_state.clear()
             return
         except Exception as e:
@@ -7263,10 +7413,12 @@ async def _steps_impl(c, m):
         except: pass
         await asyncio.sleep(1)
         # حالا مستقیم با سشن دائمی و همین فینگر وصل شو
+        _release_busy_account()
         atk_state.clear()
         await st.edit_text(f"✅ اکانت {me.first_name} با موفقیت ذخیره شد!\nدر حال بارگذاری منوی عملیات...")
         try:
             if after_mode == "attack":
+                _release_busy_account()
                 atk_state.clear()
                 atk_state["phone"] = phone
                 atk_state["reuse_account"] = True
@@ -7284,6 +7436,7 @@ async def _steps_impl(c, m):
                 buttons.append([InlineKeyboardButton("✍️ وارد کردن دستی آیدی", callback_data="atk_target_manual")])
                 await st.edit_text(f"✅ خوش آمدی {me.first_name}! اکانت برای همیشه ذخیره شد.\nگروه هدف را انتخاب کنید:", reply_markup=InlineKeyboardMarkup(buttons))
             else:
+                _release_busy_account()
                 atk_state.clear()
                 atk_state["phone"] = phone
                 atk_state["reuse_account"] = True
@@ -7340,6 +7493,7 @@ async def _steps_impl(c, m):
         except: pass
         try: _backup_session(phone)
         except: pass
+        _release_busy_account()
         atk_state.clear()
         await st.edit_text("✅ اکانت در دیتابیس ذخیره شد! /start بزن.", reply_markup=main_menu())
         return
@@ -7363,6 +7517,7 @@ async def _steps_impl(c, m):
             await st.edit_text("✅ کد ارسال شد!\n\n📱 <b>کد ۵ رقمی رو بفرست:</b>\n⏱️ ۵ دقیقه فرصت داری", disable_web_page_preview=True)
         except Exception as e:
             await st.edit_text(f"❌ خطا: {str(e)[:300]}")
+            _release_busy_account()
             atk_state.clear()
 
     elif step == "code":
@@ -7391,6 +7546,7 @@ async def _steps_impl(c, m):
                 )
             except Exception as e2:
                 await m.reply_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
+                _release_busy_account()
                 atk_state.clear()
             return
         except Exception as e:
@@ -7476,6 +7632,7 @@ async def _steps_impl(c, m):
                 await atk.disconnect()
             except Exception as e:
                 await app.send_message(ADMIN_ID, f"❌ خطا در حمله:\n{str(e)}")
+            _release_busy_account()
             atk_state.clear()
             await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
         asyncio.create_task(run())
@@ -7488,6 +7645,7 @@ async def _steps_impl(c, m):
         already = limits.get(phone, {}).get("added", 0)
         if already >= MAX_ADD_PER_ACCOUNT:
             await m.reply_text(f"⚠️ این اکانت ({phone}) قبلا {already} نفر اضافه کرده و به سقف {MAX_ADD_PER_ACCOUNT} رسیده!\nلطفا با شماره دیگری ادامه دهید یا از منوی آمار آن را ریست کنید.")
+            _release_busy_account()
             atk_state.clear()
             await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
             return
@@ -7507,6 +7665,7 @@ async def _steps_impl(c, m):
             await st.edit_text("✅ کد تایید به اکانت ارسال شد!\n\n📱 <b>کد ۵ رقمی رو بفرست:</b>\n⏱️ ۵ دقیقه فرصت داری", disable_web_page_preview=True)
         except Exception as e:
             await st.edit_text(f"❌ خطا: {str(e)[:300]}")
+            _release_busy_account()
             atk_state.clear()
 
     elif step == "adder_code":
@@ -7535,6 +7694,7 @@ async def _steps_impl(c, m):
                 )
             except Exception as e2:
                 await m.reply_text(f"❌ خطا: {str(e2)[:200]}", reply_markup=main_menu())
+                _release_busy_account()
                 atk_state.clear()
             return
         except Exception as e:
@@ -7748,6 +7908,7 @@ async def _steps_impl(c, m):
                 await add_client.disconnect()
             except:
                 pass
+        _release_busy_account()
         atk_state.clear()
         await app.send_message(ADMIN_ID, "منوی اصلی:", reply_markup=main_menu())
 
@@ -7838,6 +7999,24 @@ class _MsgWrapper:
 
 async def _execute_simple_add(q, target_gid, client, phone, members, source_name):
     """Execute simple add flow with all advanced features"""
+    ok_b, owner = account_state.mark_busy(phone, "ادد تک")
+    if not ok_b:
+        try:
+            await q.message.edit_text(
+                f"⚠️ اکانت <code>{phone}</code> مشغول است ({owner}). برای جلوگیری از سوختن سشن، ادد شروع نشد."
+            )
+        except Exception:
+            pass
+        return
+    try:
+        await _execute_simple_add_inner(q, target_gid, client, phone, members, source_name)
+    finally:
+        account_state.release(phone)
+        account_state.mark_used(phone)
+
+
+async def _execute_simple_add_inner(q, target_gid, client, phone, members, source_name):
+    """بدنه واقعی ادد تک — قفل اشغال در لایه بیرونی گرفته می‌شود"""
     from pyrogram.raw.functions.channels import InviteToChannel
     from pyrogram.raw.functions.contacts import AddContact
     from pyrogram.raw.types import InputPeerUser
@@ -8320,6 +8499,21 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     except: pass
 
     async def worker_account(phone, info):
+        nonlocal total_added, total_failed, total_skipped
+        from pyrogram import Client
+        from attacker import safe_phone_filename as spfn
+
+        ok_b, owner = account_state.mark_busy(phone, "ادد موازی")
+        if not ok_b:
+            print(f"⚠️ [{phone}] مشغول است ({owner}) — از ادد موازی کنار گذاشته شد", flush=True)
+            return
+        try:
+            await _worker_account_inner(phone, info)
+        finally:
+            account_state.release(phone)
+            account_state.mark_used(phone)
+
+    async def _worker_account_inner(phone, info):
         nonlocal total_added, total_failed, total_skipped
         from pyrogram import Client
         from attacker import safe_phone_filename as spfn

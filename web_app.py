@@ -97,14 +97,22 @@ def get_dashboard_dict():
         limited_count = 0
         today_total_adds = 0
         
+        try:
+            from account_doctor import session_disk_ok as _disk_ok
+        except Exception:
+            _disk_ok = None
         for phone in accounts:
             st = db.get_account_status(phone)
             status_str = st.get("status", "healthy")
             today_total_adds += st.get("added", 0)
-            if status_str == "healthy":
-                healthy_count += 1
-            elif status_str == "limited":
+            if status_str == "limited":
                 limited_count += 1
+            elif _disk_ok and not _disk_ok(phone):
+                pass
+            elif (st.get("added") or 0) == 0:
+                pass
+            elif status_str == "healthy":
+                healthy_count += 1
                 
         cfg = db.get_config()
         target_group = cfg.get("group_name") or "@gament_super_gp"
@@ -163,18 +171,45 @@ def get_accounts_dict():
             return _ACCOUNTS_CACHE["data"]
         accs = db.load_accounts()
         out = []
+        try:
+            import account_state
+            from account_doctor import session_disk_ok
+        except Exception:
+            account_state = None
+            session_disk_ok = None
         for phone, info in accs.items():
             st = db.get_account_status(phone)
+            status = st.get("status", "healthy")
+            reason = ""
+            has_session = True
+            busy = None
+            if session_disk_ok:
+                has_session = session_disk_ok(phone)
+            if account_state:
+                busy = account_state.busy_label(phone)
+                if not reason:
+                    reason = account_state.get_last_error(phone) or ""
+            if busy:
+                status = "busy"
+                reason = reason or f"مشغول: {busy}"
+            elif not has_session:
+                status = "no_session"
+                reason = reason or "سشن روی دیسک نیست"
+            elif status != "limited" and (st.get("added") or 0) == 0:
+                status = "unused"
+                reason = reason or "تا حالا استفاده نشده / استخراجی نزده"
             out.append({
                 "phone": phone,
                 "name": info.get("name", "اکانت"),
                 "username": info.get("username", ""),
                 "added_today": st.get("added", 0),
                 "max_limit": 100,
-                "status": st.get("status", "healthy"),
+                "status": status,
                 "limitation_type": st.get("limitation_type"),
                 "remaining_seconds": st.get("remaining_seconds", 0),
-                "last_used": info.get("last_used", 0)
+                "last_used": info.get("last_used", 0),
+                "has_session": has_session,
+                "reason": reason,
             })
         result = {"ok": True, "accounts": out}
         _ACCOUNTS_CACHE["data"] = result
@@ -250,8 +285,12 @@ def trigger_scrape_group(chat_target):
         if not accs:
             return False, "هیچ اکانت متصلی برای اسکرپ وجود ندارد."
 
-        phone = list(accs.keys())[0]
-        acc_info = accs[phone]
+        from account_doctor import pick_scrape_account
+        import account_state
+        phone, acc_info, skipped = pick_scrape_account()
+        if not phone:
+            return False, f"هیچ اکانت آزادی برای استخراج پیدا نشد. ({skipped})"
+        acc_info = acc_info or accs.get(phone, {})
 
         if atk_state_ref:
             atk_state_ref["add_in_progress"] = True
@@ -261,8 +300,15 @@ def trigger_scrape_group(chat_target):
             atk_state_ref["live_skipped"] = 0
             atk_state_ref["live_mode"] = "اسکرپ گروه"
             atk_state_ref["live_last_user"] = f"در حال استخراج از {chat_target}..."
+            atk_state_ref["live_current_account"] = phone
 
         async def run_scrape_job():
+            ok_b, owner = account_state.mark_busy(phone, "اسکرپ مینی‌اپ")
+            if not ok_b:
+                if atk_state_ref:
+                    atk_state_ref["live_last_user"] = f"اکانت مشغول است ({owner})"
+                    atk_state_ref["add_in_progress"] = False
+                return
             try:
                 from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename
                 from config import API_ID, API_HASH
@@ -278,14 +324,20 @@ def trigger_scrape_group(chat_target):
                 if atk_state_ref:
                     count_got = len(scraped.get("found_users", {})) if isinstance(scraped, dict) else len(scraped or [])
                     atk_state_ref["live_last_user"] = f"✅ {count_got} ممبر جدید ذخیره شد!"
+                account_state.set_last_error(phone, "")
             except Exception as e:
                 print(f"Scrape job error: {e}", flush=True)
+                account_state.set_last_error(phone, str(e)[:200])
+                if atk_state_ref:
+                    atk_state_ref["live_last_user"] = f"❌ خطا: {str(e)[:80]}"
             finally:
+                account_state.release(phone)
+                account_state.mark_used(phone)
                 if atk_state_ref:
                     atk_state_ref["add_in_progress"] = False
 
         _schedule_coro(run_scrape_job())
-        return True, f"عملیات استخراج ممبر از {chat_target} شروع شد."
+        return True, f"عملیات استخراج ممبر از {chat_target} با اکانت {phone} شروع شد."
     except Exception as e:
         return False, str(e)
 
@@ -1334,6 +1386,18 @@ MINI_APP_HTML = """<!DOCTYPE html>
                             label = 'محدود';
                             labelColor = 'text-rose-300';
                             if (acc.remaining_seconds > 0) label += ' (' + Math.ceil(acc.remaining_seconds / 60) + 'm)';
+                        } else if (acc.status === 'no_session') {
+                            dotColor = 'bg-rose-500';
+                            label = 'بدون سشن';
+                            labelColor = 'text-rose-300';
+                        } else if (acc.status === 'busy') {
+                            dotColor = 'bg-sky-400';
+                            label = 'مشغول';
+                            labelColor = 'text-sky-300';
+                        } else if (acc.status === 'unused') {
+                            dotColor = 'bg-slate-400';
+                            label = 'بی‌استفاده';
+                            labelColor = 'text-slate-300';
                         } else if (acc.added_today >= 100) {
                             dotColor = 'bg-amber-500';
                             label = 'ظرفیت پر';
@@ -1375,6 +1439,12 @@ MINI_APP_HTML = """<!DOCTYPE html>
                         if (acc.status === 'limited') {
                             const min = Math.ceil(acc.remaining_seconds / 60);
                             statusBadge = `<span class="px-2.5 py-1 bg-rose-500/20 text-rose-300 text-[10px] font-bold rounded-lg border border-rose-500/30">🔴 محدود (${min}m)</span>`;
+                        } else if (acc.status === 'no_session') {
+                            statusBadge = '<span class="px-2.5 py-1 bg-rose-500/20 text-rose-300 text-[10px] font-bold rounded-lg border border-rose-500/30">🔴 بدون سشن</span>';
+                        } else if (acc.status === 'busy') {
+                            statusBadge = '<span class="px-2.5 py-1 bg-sky-500/20 text-sky-300 text-[10px] font-bold rounded-lg border border-sky-500/30">🟡 مشغول</span>';
+                        } else if (acc.status === 'unused') {
+                            statusBadge = '<span class="px-2.5 py-1 bg-slate-500/20 text-slate-300 text-[10px] font-bold rounded-lg border border-slate-500/30">⚪ بی‌استفاده</span>';
                         } else if (acc.added_today >= 100) {
                             statusBadge = '<span class="px-2.5 py-1 bg-amber-500/20 text-amber-300 text-[10px] font-bold rounded-lg border border-amber-500/30">⚠️ ظرفیت پر</span>';
                         }
@@ -1387,6 +1457,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                                     <div>
                                         <div class="text-xs font-extrabold text-white">${acc.name}</div>
                                         <div class="text-[10px] font-mono text-slate-400 mt-0.5">${acc.phone}</div>
+                                        ${acc.reason ? '<div class="text-[10px] text-amber-300/90 mt-1 leading-5">'+acc.reason+'</div>' : ''}
                                     </div>
                                     ${statusBadge}
                                 </div>

@@ -24,7 +24,7 @@ jobs:
         run: python -m compileall -q .
 
       - name: تحلیل استاتیک (pyflakes)
-        run: python -m pyflakes config.py add_engine.py logging_setup.py db.py web_app.py bg_scraper.py
+        run: python -m pyflakes config.py add_engine.py logging_setup.py db.py web_app.py bg_scraper.py account_state.py account_doctor.py
 
       - name: اجرای تست‌ها
         run: python -m pytest tests/ -v

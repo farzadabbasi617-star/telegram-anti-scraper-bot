@@ -24,6 +24,7 @@ from attacker import AdvancedScraper, SESSIONS_DIR, DEVICE_FP, _enable_wal_on_se
 
 # ⚙️ استفاده از پیکربندی مرکزی (همان اعتبارنامه‌های bot.py — از ناسازگاری سشن‌ها جلوگیری می‌کند)
 from config import API_ID, API_HASH
+import account_state
 
 
 _loop = None
@@ -339,14 +340,35 @@ async def bg_loop(app_bot, admin_id):
                 last = st.get("last_run") or 0
                 interval = max(15, int(st.get("interval_minutes",60))) * 60
                 if now - last >= interval:
-                    phone = st.get("account_phone")
                     cfg = get_config()
-                    gid = st.get("target_group_id") or cfg.get("group_id",0)
-                    gname = cfg.get("group_name","گروه هدف")
-                    if phone and gid:
-                        set_bg_status("preparing")
-                        count, status = await run_one_scan(phone, gid, gname, app_bot, admin_id)
-                        print(f"[bg_scraper] run complete: {count} users, status={status}", flush=True)
+                    gid = st.get("target_group_id") or cfg.get("group_id", 0)
+                    gname = cfg.get("group_name", "گروه هدف")
+                    preferred = st.get("account_phone")
+                    if gid:
+                        from account_doctor import pick_scrape_account
+                        phone, _info, skipped = pick_scrape_account(preferred=preferred)
+                        if not phone:
+                            set_bg_status("no_usable_account")
+                            print(f"[bg_scraper] no usable account (skipped={skipped})", flush=True)
+                            await asyncio.sleep(120)
+                            continue
+                        ok_b, owner = account_state.mark_busy(phone, "اسکن خودکار")
+                        if not ok_b:
+                            set_bg_status(f"busy:{owner}")
+                            print(f"[bg_scraper] {phone} busy ({owner}), skip", flush=True)
+                            continue
+                        try:
+                            set_bg_status("preparing")
+                            print(f"[bg_scraper] using {phone} (preferred={preferred}, skipped={skipped})", flush=True)
+                            count, status = await run_one_scan(phone, gid, gname, app_bot, admin_id)
+                            print(f"[bg_scraper] run complete: {count} users, status={status}", flush=True)
+                            if status == "ok":
+                                account_state.set_last_error(phone, "")
+                            else:
+                                account_state.set_last_error(phone, status)
+                            account_state.mark_used(phone)
+                        finally:
+                            account_state.release(phone)
                     else:
                         set_bg_status("no_target")
                         print("[bg_scraper] no target/account set, skipping", flush=True)

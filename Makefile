@@ -16,7 +16,7 @@ test: ## اجرای تست‌ها
 	python -m pytest tests/ -v
 
 lint: ## تحلیل استاتیک ماژول‌های اصلی
-	python -m pyflakes config.py add_engine.py logging_setup.py db.py web_app.py bg_scraper.py
+	python -m pyflakes config.py add_engine.py logging_setup.py db.py web_app.py bg_scraper.py account_state.py account_doctor.py
 
 check: ## بررسی سینتکس همه فایل‌ها
 	python -m compileall -q .

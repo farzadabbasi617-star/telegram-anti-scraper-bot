@@ -50,6 +50,8 @@ CI گیت‌هاب هم روی هر push اجرا می‌شود و پوش شکس
 
 - **استیت زنده مینی‌اپ:** `web_app.set_app_refs(app, atk_state)` → `bot.set_atk_state_ref(atk_state)`.
   فلوهای ادد از `atk_state_ref` برای آمار زنده استفاده می‌کنند (کلیدها: `live_added`, `live_skipped`, `live_remaining`, `live_current_account`, `live_active_accounts`, `live_last_user`, `live_mode`, `live_total`, `add_in_progress`).
+- **اشغال اکانت:** قبل از connect به هر سشن `account_state.mark_busy(phone, label)` و در finally `release`.
+  اسکن خودکار با `account_doctor.pick_scrape_account()` بین همه اکانت‌های آزاد می‌چرخد.
 - **لیست ممنوعه:** همه‌جا از `add_engine.get_blocked_ids_cached()` (کش ۱۲۰ ثانیه‌ای).
   ثبت ممنوعه: `add_engine.never_add_again(uid, reason)` — دلایل: `privacy`, `left`, `invalid`.
 - **رمزنگاری سشن:** فرمت `SES3` = MAGIC + nonce(16) + AES-CTR + HMAC-SHA256.
