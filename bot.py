@@ -8522,8 +8522,15 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
         sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
 
         if not os.path.exists(sess_path + ".session"):
-            print(f"⚠️ [{phone}] Session file missing: {sess_path}.session", flush=True)
-            return
+            try:
+                from account_doctor import ensure_session
+                ok, msg = ensure_session(phone)
+            except Exception as e:
+                ok, msg = False, str(e)
+            if not ok or not os.path.exists(sess_path + ".session"):
+                print(f"⚠️ [{phone}] Session file missing: {msg}", flush=True)
+                account_state.set_last_error(phone, f"سشن نیست: {msg}")
+                return
 
         temp_dir = tempfile.mkdtemp()
         temp_sess_name = f"temp_{spfn(phone)}_{int(time.time())}"
@@ -8769,6 +8776,16 @@ if __name__ == "__main__":
         cleanup_temp_sessions()
     except Exception as e:
         print(f"⚠️ Temp session cleanup error: {e}", flush=True)
+
+    # همه سشن‌ها را از بکاپ ابری روی دیسک بیاور تا اکانت‌های 0/100 هم مثل بقیه کار کنند
+    try:
+        from account_doctor import ensure_all_sessions
+        restored, missing = ensure_all_sessions()
+        print(f"✅ Sessions ready: {len(restored)} | missing: {len(missing)}", flush=True)
+        if missing:
+            print(f"⚠️ Missing sessions: {missing}", flush=True)
+    except Exception as e:
+        print(f"⚠️ ensure_all_sessions error: {e}", flush=True)
 
     try:
         import web_app

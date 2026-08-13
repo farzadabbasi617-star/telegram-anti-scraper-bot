@@ -172,6 +172,55 @@ def render_offline_report(rows):
     return "\n".join(lines)
 
 
+
+def ensure_session(phone):
+    """سشن را روی دیسک حاضر کن (از بکاپ ابری اگر لازم شد)."""
+    if session_disk_ok(phone):
+        return True, "ok"
+    return restore_session_from_db(phone)
+
+
+def ensure_all_sessions():
+    """بازیابی سشن همه اکانت‌ها — بعد از ری‌استارت رندر ضروری است."""
+    accs = _db.load_accounts() or {}
+    restored, missing = [], []
+    for phone in accs:
+        ok, msg = ensure_session(phone)
+        if ok:
+            restored.append(phone)
+        else:
+            missing.append((phone, msg))
+    return restored, missing
+
+
+def collect_ready_accounts():
+    """اکانت‌های قابل‌استفاده برای ادد/استخراج (شامل صفر-اددها)."""
+    ensure_all_sessions()
+    accs = _db.load_accounts() or {}
+    ready = {}
+    skipped = []
+    for phone, info in accs.items():
+        if account_state.busy_label(phone):
+            skipped.append((phone, "مشغول"))
+            continue
+        try:
+            st = _db.get_account_status(phone)
+        except Exception:
+            st = {"added": 0, "status": "healthy"}
+        if st.get("status") == "limited":
+            skipped.append((phone, "محدود"))
+            continue
+        if (st.get("added") or 0) >= 100:
+            skipped.append((phone, "ظرفیت پر"))
+            continue
+        ok, msg = ensure_session(phone)
+        if not ok:
+            skipped.append((phone, msg))
+            continue
+        ready[phone] = info
+    return ready, skipped
+
+
 def pick_scrape_account(preferred=None, skip_limited=True):
     """انتخاب عادلانه اکانت آزاد برای استخراج (کم‌استفاده‌ترین اول)."""
     accs = _db.load_accounts() or {}

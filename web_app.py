@@ -97,20 +97,12 @@ def get_dashboard_dict():
         limited_count = 0
         today_total_adds = 0
         
-        try:
-            from account_doctor import session_disk_ok as _disk_ok
-        except Exception:
-            _disk_ok = None
         for phone in accounts:
             st = db.get_account_status(phone)
             status_str = st.get("status", "healthy")
             today_total_adds += st.get("added", 0)
             if status_str == "limited":
                 limited_count += 1
-            elif _disk_ok and not _disk_ok(phone):
-                pass
-            elif (st.get("added") or 0) == 0:
-                pass
             elif status_str == "healthy":
                 healthy_count += 1
                 
@@ -193,11 +185,18 @@ def get_accounts_dict():
                 status = "busy"
                 reason = reason or f"مشغول: {busy}"
             elif not has_session:
-                status = "no_session"
-                reason = reason or "سشن روی دیسک نیست"
-            elif status != "limited" and (st.get("added") or 0) == 0:
-                status = "unused"
-                reason = reason or "تا حالا استفاده نشده / استخراجی نزده"
+                # بکاپ ابری را هم چک/بازیابی کن تا اکانت «بدون سشن» نماند
+                try:
+                    from account_doctor import ensure_session
+                    ok, _ = ensure_session(phone)
+                    if ok:
+                        has_session = True
+                    else:
+                        status = "no_session"
+                        reason = reason or "سشن روی دیسک نیست"
+                except Exception:
+                    status = "no_session"
+                    reason = reason or "سشن روی دیسک نیست"
             out.append({
                 "phone": phone,
                 "name": info.get("name", "اکانت"),
@@ -395,6 +394,11 @@ def trigger_single_add(phone, add_type):
                 from bot import _execute_simple_add
                 accs = db.load_accounts()
                 acc_info = accs.get(phone, {})
+                try:
+                    from account_doctor import ensure_session
+                    ensure_session(phone)
+                except Exception:
+                    pass
                 client = AdvancedScraper(
                     session_name=os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}"),
                     api_id=API_ID,
@@ -449,15 +453,11 @@ def trigger_parallel_add(add_mode, add_type):
         if not filtered:
             return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
 
-        accs = db.load_accounts()
-        healthy_accs = {}
-        for p, info in accs.items():
-            st = db.get_account_status(p)
-            if st.get("status") == "healthy" and st.get("added", 0) < 100:
-                healthy_accs[p] = info
+        from account_doctor import collect_ready_accounts
+        healthy_accs, skipped = collect_ready_accounts()
 
         if not healthy_accs:
-            return False, "هیچ اکانت سالمی برای ادد موازی یافت نشد!"
+            return False, f"هیچ اکانت آماده‌ای برای ادد موازی یافت نشد! ({skipped})"
 
         if atk_state_ref:
             atk_state_ref["add_in_progress"] = True
@@ -903,6 +903,9 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 <h3 class="text-sm font-bold text-white">📊 وضعیت سلامت و ظرفیت اکانت‌ها</h3>
                 <span class="text-xs text-slate-400">ظرفیت روزانه: ۱۰۰ ادد</span>
             </div>
+            <button id="btn-use-ready" onclick="startParallelAddFromAccounts()" class="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg active:scale-95">
+                ▶️ ادد موازی با همه اکانت‌های سالم (شامل صفر-اددها)
+            </button>
             
             <div id="accounts-list" class="space-y-2.5">
                 <div class="text-center text-slate-400 text-xs py-8">در حال بارگذاری اکانت‌ها...</div>
@@ -1188,6 +1191,12 @@ MINI_APP_HTML = """<!DOCTYPE html>
             }
         }
 
+        async function startParallelAddFromAccounts() {
+            if (!confirm('ادد موازی با همه اکانت‌های سالم (حتی آن‌هایی که هنوز 0/100 هستند) شروع شود؟')) return;
+            selectedParallelSpeed = selectedParallelSpeed || 'fast';
+            await startParallelAdd();
+        }
+
         async function startParallelAdd() {
             const addType = document.getElementById('select-parallel-type').value;
 
@@ -1396,7 +1405,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                             labelColor = 'text-sky-300';
                         } else if (acc.status === 'unused') {
                             dotColor = 'bg-slate-400';
-                            label = 'بی‌استفاده';
+                            label = 'سالم';
                             labelColor = 'text-slate-300';
                         } else if (acc.added_today >= 100) {
                             dotColor = 'bg-amber-500';
@@ -1444,7 +1453,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                         } else if (acc.status === 'busy') {
                             statusBadge = '<span class="px-2.5 py-1 bg-sky-500/20 text-sky-300 text-[10px] font-bold rounded-lg border border-sky-500/30">🟡 مشغول</span>';
                         } else if (acc.status === 'unused') {
-                            statusBadge = '<span class="px-2.5 py-1 bg-slate-500/20 text-slate-300 text-[10px] font-bold rounded-lg border border-slate-500/30">⚪ بی‌استفاده</span>';
+                            statusBadge = '<span class="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 text-[10px] font-bold rounded-lg border border-emerald-500/30">✅ سالم</span>';
                         } else if (acc.added_today >= 100) {
                             statusBadge = '<span class="px-2.5 py-1 bg-amber-500/20 text-amber-300 text-[10px] font-bold rounded-lg border border-amber-500/30">⚠️ ظرفیت پر</span>';
                         }

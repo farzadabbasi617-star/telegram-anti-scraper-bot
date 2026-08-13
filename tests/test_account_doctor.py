@@ -69,6 +69,19 @@ def test_pick_prefers_never_used(monkeypatch):
     assert phone == "fresh"
 
 
+def test_collect_ready_includes_zero_add(monkeypatch):
+    accs = {"98900": {"name": "A"}, "98901": {"name": "B"}}
+    monkeypatch.setattr(account_doctor._db, "load_accounts", lambda: accs)
+    monkeypatch.setattr(account_doctor._db, "get_account_status", lambda p: {
+        "added": 0, "status": "healthy"
+    })
+    monkeypatch.setattr(account_doctor, "ensure_session", lambda p: (True, "ok"))
+    monkeypatch.setattr(account_doctor, "ensure_all_sessions", lambda: (["98900", "98901"], []))
+    ready, skipped = account_doctor.collect_ready_accounts()
+    assert set(ready) == {"98900", "98901"}
+    assert skipped == []
+
+
 def test_render_offline_report_contains_names(monkeypatch):
     monkeypatch.setattr(account_doctor, "check_session_local", lambda p: {
         "phone": p, "disk_file": True, "db_blob": False, "disk_size": 10, "blob_size": 0
