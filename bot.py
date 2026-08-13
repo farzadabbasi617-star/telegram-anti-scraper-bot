@@ -57,6 +57,9 @@ from db import (
     get_scanned_chats, get_scanned_chat, update_chat_category,
     get_users_by_source, count_users_by_source, get_all_categories, get_category_stats,
     delete_scanned_chat, toggle_chat_favorite, upsert_scanned_chat,
+    delete_user as _db_delete_user, delete_users_bulk as _db_delete_users_bulk,
+    add_do_not_add as _db_add_dna, is_do_not_add as _db_is_dna,
+    is_added_anywhere as _db_is_added_any, get_blocked_user_ids as _db_blocked_ids,
 )
 from bg_scraper import start_in_background as bg_scraper_start, _backup_session
 try:
@@ -545,6 +548,73 @@ def is_user_already_added(chat_id, user_id):
     return _db_is_added(chat_id, user_id)
 
 
+# =================================================================
+# 🧠 وقفه‌های انسانی + لیست ممنوعه (Anti-Ban & No-ReAdd System)
+# =================================================================
+
+def human_delay(add_mode="fast"):
+    """تاخیر شبیه‌سازی‌شده به رفتار انسان — با نویز تصادفی و مکث‌های گاه‌به‌گاه.
+    هدف: اکانت‌ها زود بن نشوند (به‌جای ریتم رباتی ثابت)."""
+    if add_mode == "ultra":
+        base = random.uniform(5, 10)
+    elif add_mode == "fast":
+        base = random.uniform(16, 38)
+    else:  # safe
+        base = random.uniform(45, 95)
+    # ۱۵٪ مواقع مثل یک انسان واقعی بیشتر صبر می‌کند (چک کردن گوشی، حرف زدن و...)
+    if random.random() < 0.15:
+        base *= random.uniform(1.6, 2.8)
+    # نویز کوچک پایانی
+    base *= random.uniform(0.9, 1.15)
+    return base
+
+
+def human_break_seconds(add_mode="fast"):
+    """استراحت تصادفی بین دسته‌های ادد (قهوه/استراحت انسانی)"""
+    if add_mode == "ultra":
+        return random.randint(45, 120)
+    elif add_mode == "fast":
+        return random.randint(60, 180)
+    return random.randint(120, 300)
+
+
+_BLOCKED_IDS_CACHE = {"ids": None, "ts": 0}
+_BLOCKED_CACHE_TTL = 120  # ثانیه
+
+
+def get_blocked_ids_cached():
+    """ست آیدی کاربران ممنوعه (ادد شده قبلی + لیست ممنوعه) با کش ۲ دقیقه‌ای"""
+    global _BLOCKED_IDS_CACHE
+    now = time.time()
+    if _BLOCKED_IDS_CACHE["ids"] is None or (now - _BLOCKED_IDS_CACHE["ts"]) > _BLOCKED_CACHE_TTL:
+        try:
+            _BLOCKED_IDS_CACHE["ids"] = _db_blocked_ids()
+            _BLOCKED_IDS_CACHE["ts"] = now
+        except Exception as e:
+            print(f"blocked cache err: {e}", flush=True)
+            return set()
+    return _BLOCKED_IDS_CACHE["ids"] or set()
+
+
+def invalidate_blocked_cache():
+    global _BLOCKED_IDS_CACHE
+    _BLOCKED_IDS_CACHE["ids"] = None
+    _BLOCKED_IDS_CACHE["ts"] = 0
+
+
+def never_add_again(uid, reason=""):
+    """حذف از دیتابیس ممبرها + ثبت در لیست «هرگز دوباره ادد نشود»"""
+    try:
+        _db_add_dna(uid, reason)
+    except Exception as e:
+        print(f"dna err: {e}", flush=True)
+    try:
+        _db_delete_user(uid)
+    except Exception as e:
+        print(f"del err: {e}", flush=True)
+    invalidate_blocked_cache()
+
+
 def load_accounts():
     return _db_load_accounts()
 
@@ -608,7 +678,19 @@ def save_scraped(users, group_name="", group_id=0):
     if isinstance(users, dict):
         users_list = list(users.values())
     else:
-        users_list = users
+        users_list = users or []
+    # 🚫 فیلتر ضد-ادد-تکراری: هر کسی که قبلاً توسط بات ادد شده یا لفت داده/ممنوع شده
+    # هرگز دوباره وارد دیتابیس ممبرها نمی‌شود (حتی اگر دوباره از گروه استخراج شود)
+    try:
+        blocked = get_blocked_ids_cached()
+        if blocked:
+            before = len(users_list)
+            users_list = [u for u in users_list if int(u.get("user_id") or 0) not in blocked]
+            removed = before - len(users_list)
+            if removed:
+                print(f"🚫 {removed} کاربر قبلاً ادد شده/لفت داده بودند → در استخراج رد شدند", flush=True)
+    except Exception as e:
+        print(f"save_scraped filter err: {e}", flush=True)
     _db_bulk_users(users_list, group_id, group_name)
     if group_id:
         c = _db_get_config()
@@ -2494,13 +2576,32 @@ async def group_welcome(c, m):
 
 @app.on_message(filters.left_chat_member & filters.group)
 async def group_leave(c, m):
-    """Handle member leave: delete service message"""
+    """Handle member leave: delete service message + blacklist users WE added so they are never re-added"""
+    
+    left_user = m.left_chat_member
+    if left_user and not getattr(left_user, "is_self", False):
+        uid = getattr(left_user, "id", 0)
+        try:
+            # اگر این کاربر قبلاً توسط بات ادد شده بود (در تاریخچه ادد ثبت شده):
+            # ۱) برای همیشه وارد لیست «هرگز دوباره ادد نشود» می‌شود
+            # ۲) از دیتابیس ممبرها حذف می‌شود تا در استخراج‌های بعدی هم برنگردد
+            if _db_is_added(m.chat.id, uid) or _db_is_added_any(uid):
+                never_add_again(uid, "left")
+                print(f"🚪 کاربر {uid} گروه را ترک کرد → بلاک‌لیست شد و از دیتابیس حذف شد", flush=True)
+        except Exception as e:
+            print(f"leave-blacklist err: {e}", flush=True)
     
     if GROUP_SETTINGS["delete_leave_messages"]:
         try:
             await m.delete()
         except Exception as e:
             print(f"⚠️ Could not delete leave message: {e}", flush=True)
+    
+    # ⚠️ ادامه انتشار آپدیت به هندلر مدافع (تشخیص اسکریپر با لفت سریع)
+    try:
+        await m.continue_propagation()
+    except Exception:
+        pass
 
 @app.on_message(filters.text & filters.group)
 async def group_message_filter(c, m):
@@ -7827,6 +7928,14 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
     
     total = min(len(members), remaining)
     
+    # 📡 آمار زنده برای مینی‌اپ
+    if atk_state_ref:
+        atk_state_ref["add_in_progress"] = True
+        atk_state_ref["live_total"] = total
+        atk_state_ref["live_remaining"] = total
+        atk_state_ref["live_mode"] = "اد تک اکانت"
+        atk_state_ref["live_current_account"] = phone
+    
     async def upd():
         try:
             elapsed = int(time.time() - start_t)
@@ -7845,8 +7954,10 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             
             txt = (
                 f"📂 {source_name} → 👥 {target_name}\n"
+                f"📱 اکانت فعال: {phone}\n"
                 f"{bar} {pct}%\n"
-                f"✅ {added} ❌ {failed} ⏭ {skipped}\n"
+                f"✅ اضافه: {added} | ⏭ رد: {skipped} | ❌ خطا: {failed}\n"
+                f"⏳ باقی‌مانده: {max(0, total - added - failed - skipped)}\n"
                 f"⏱ {m:02d}:{s:02d} ⚡ {spd}/min\n"
                 f"📊 ظرفیت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
                 f"{status_text}"
@@ -7863,7 +7974,8 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             skipped += 1
             continue
         
-        if is_user_already_added(target_gid, uid):
+        # 🚫 چک سراسری ضد-تکرار: قبلاً به هر گروهی ادد شده یا در لیست ممنوعه است → هرگز دوباره ادد نشود
+        if is_user_already_added(target_gid, uid) or _db_is_added_any(uid) or _db_is_dna(uid):
             skipped += 1
             continue
         
@@ -7975,9 +8087,20 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
                 atk_state_ref["live_added"] = added
                 atk_state_ref["live_failed"] = failed
                 atk_state_ref["live_skipped"] = skipped
+                atk_state_ref["live_remaining"] = max(0, total - added - failed - skipped)
+                atk_state_ref["live_current_account"] = phone
             
-            # Smooth delay between adds
-            delay = random.randint(8, 15)
+            # 🧠 وقفه انسانی با نویز تصادفی (ضد بن شدن اکانت)
+            delay = human_delay("fast")
+            # هر چند اد یک استراحت انسانی کوتاه (شبیه رفتار کاربر واقعی)
+            if added > 0 and added % random.randint(8, 12) == 0:
+                brk = human_break_seconds("fast")
+                print(f"☕ استراحت انسانی {brk}s بعد از {added} اد...", flush=True)
+                try:
+                    await prog.edit_text(f"☕ استراحت انسانی کوتاه ({brk} ثانیه)...\n✅ {added} | ⏭ {skipped} | ❌ {failed}")
+                except Exception:
+                    pass
+                await asyncio.sleep(brk)
             await asyncio.sleep(delay)
             
         except FloodWait as fw:
@@ -7999,12 +8122,17 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             errors_detail["already"] += 1
             mark_user_as_added(target_gid, target_name, uid)
         except (UserPrivacyRestricted, UserNotMutualContact):
-            failed += 1
+            # 🔒 پروفایل قفل است (از تنظیمات تلگرام ادد را بسته) → جزو آمار ادد حساب نمی‌شود!
+            # اسکیپ + حذف از دیتابیس + ثبت در لیست «هرگز دوباره ادد نشود»
+            skipped += 1
             errors_detail["privacy"] += 1
             mark_user_as_added(target_gid, target_name, uid)
+            never_add_again(uid, "privacy")
         except PeerIdInvalid:
-            failed += 1
+            # آیدی نامعتبر → اسکیپ + حذف از DB + بلاک‌لیست
+            skipped += 1
             errors_detail["peer"] += 1
+            never_add_again(uid, "invalid")
         except ChatAdminRequired:
             failed += 1
             errors_detail["other"] += 1
@@ -8038,6 +8166,12 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
         
         if (added + failed + skipped) % 3 == 0:
             await upd()
+    
+    # 📡 پایان عملیات در مینی‌اپ
+    if atk_state_ref:
+        atk_state_ref["add_in_progress"] = False
+        atk_state_ref["live_remaining"] = max(0, total - added - failed - skipped)
+        atk_state_ref["live_current_account"] = ""
     
     # Final report
     elapsed = int(time.time() - start_t)
@@ -8185,7 +8319,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     """Execute parallel add using Smart Round-Robin distribution across all active accounts."""
     from pyrogram.raw.functions.channels import InviteToChannel
     from pyrogram.raw.functions.contacts import AddContact
-    from pyrogram.errors import FloodWait, UserAlreadyParticipant, UserPrivacyRestricted, UserNotMutualContact, ChatAdminRequired, UsersTooMuch
+    from pyrogram.errors import FloodWait, UserAlreadyParticipant, UserPrivacyRestricted, UserNotMutualContact, ChatAdminRequired, UsersTooMuch, PeerIdInvalid
     import tempfile, shutil
 
     reset_stop_event()
@@ -8196,6 +8330,14 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     if num_accounts == 0 or total_members == 0:
         return
 
+    # 📡 آمار زنده برای مینی‌اپ
+    if atk_state_ref:
+        atk_state_ref["add_in_progress"] = True
+        atk_state_ref["live_total"] = total_members
+        atk_state_ref["live_remaining"] = total_members
+        atk_state_ref["live_mode"] = f"اد موازی ({add_mode})"
+        atk_state_ref["live_active_accounts"] = []
+
     # Shared queue of members to add
     member_queue = asyncio.Queue()
     for m in members:
@@ -8205,13 +8347,9 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     total_failed = 0
     total_skipped = 0
 
-    # Determine per-account delay based on add_mode & account count
-    if add_mode == "ultra":
-        per_account_delay = max(1.5, 10.0 / max(1, num_accounts))  # ~1.5-3s interval for target group
-    elif add_mode == "fast":
-        per_account_delay = 12.0
-    else:  # safe
-        per_account_delay = 25.0
+    # 🧠 تاخیر انسانی هر اکانت مستقل از بقیه است (ریتم رباتی همزمان = پرچم بن)
+    # حد مجاز روزانه در حالت ultra پایین‌تر است تا اکانت‌ها زود بن نشوند
+    MODE_DAILY_CAP = {"ultra": 50, "fast": 100, "safe": 100}
 
     target_name = "گروه مقصد"
     try:
@@ -8239,11 +8377,16 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
         acc_added = 0
         acc_limits = load_adder_limits()
         already_added = acc_limits.get(phone, {}).get("added", 0)
-        max_for_this_acc = max(0, MAX_ADD_PER_ACCOUNT - already_added)
+        day_cap = MODE_DAILY_CAP.get(add_mode, 100)
+        max_for_this_acc = max(0, min(MAX_ADD_PER_ACCOUNT, day_cap) - already_added)
 
         if max_for_this_acc <= 0:
-            print(f"⚠️ [{phone}] Daily capacity full ({already_added}/100)", flush=True)
+            print(f"⚠️ [{phone}] ظرفیت روزانه پر شد ({already_added}/{day_cap})", flush=True)
             return
+
+        # 📡 ثبت اکانت فعال در آمار زنده (برای نمایش در مینی‌اپ)
+        if atk_state_ref and phone not in atk_state_ref.get("live_active_accounts", []):
+            atk_state_ref["live_active_accounts"].append(phone)
 
         try:
             shutil.copy2(sess_path + ".session", temp_sess_path + ".session")
@@ -8279,7 +8422,8 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 uid = member.get("user_id", 0)
                 username = member.get("username", "").strip()
 
-                if uid <= 10000 or uid >= 10**11 or is_user_already_added(target_gid, uid):
+                # 🚫 چک سراسری ضد-تکرار: آیدی نامعتبر / قبلاً ادد شده / در لیست ممنوعه → هرگز دوباره ادد نشود
+                if uid <= 10000 or uid >= 10**11 or is_user_already_added(target_gid, uid) or _db_is_added_any(uid) or _db_is_dna(uid):
                     total_skipped += 1
                     member_queue.task_done()
                     continue
@@ -8326,12 +8470,23 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                         atk_state_ref["live_added"] = total_added
                         atk_state_ref["live_failed"] = total_failed
                         atk_state_ref["live_skipped"] = total_skipped
+                        atk_state_ref["live_remaining"] = max(0, total_members - total_added - total_failed - total_skipped)
+                        atk_state_ref["live_current_account"] = f"{phone} (+{acc_added} اد)"
 
                     print(f"✅ [{phone}] Invited {display_user}! (Acc Total: {already_added + acc_added}/100, Global Added: {total_added})", flush=True)
 
-                    # Instant interruptible sleep
+                    # 🧠 وقفه انسانی با نویز تصادفی + استراحت دوره‌ای (ضد بن شدن اکانت‌ها)
+                    if acc_added > 0 and acc_added % random.randint(10, 15) == 0:
+                        brk = human_break_seconds(add_mode)
+                        print(f"☕ [{phone}] استراحت انسانی {brk}s بعد از {acc_added} اد...", flush=True)
+                        try:
+                            await asyncio.wait_for(stop_event.wait(), timeout=brk)
+                            print(f"⏹️ [{phone}] Interrupted during break, stopping worker.", flush=True)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
                     try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=per_account_delay + random.uniform(0.5, 1.5))
+                        await asyncio.wait_for(stop_event.wait(), timeout=human_delay(add_mode))
                         print(f"⏹️ [{phone}] Interrupted during delay, stopping worker.", flush=True)
                         break
                     except asyncio.TimeoutError:
@@ -8347,9 +8502,16 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     total_skipped += 1
                     mark_user_as_added(target_gid, "", uid)
                 except (UserPrivacyRestricted, UserNotMutualContact) as e:
-                    total_failed += 1
+                    # 🔒 پروفایل قفل است → جزو آمار ادد حساب نمی‌شود (اسکیپ)
+                    # + حذف از دیتابیس + ثبت در لیست «هرگز دوباره ادد نشود»
+                    total_skipped += 1
                     mark_user_as_added(target_gid, "", uid)
-                    print(f"🔒 [{phone}] Privacy restricted for {uid}, marked processed: {type(e).__name__}", flush=True)
+                    never_add_again(uid, "privacy")
+                    print(f"🔒 [{phone}] پروفایل قفل {uid} → اسکیپ + حذف از دیتابیس", flush=True)
+                except PeerIdInvalid:
+                    total_skipped += 1
+                    never_add_again(uid, "invalid")
+                    print(f"👻 [{phone}] آیدی نامعتبر {uid} → اسکیپ + حذف از دیتابیس", flush=True)
                 except Exception as e:
                     total_failed += 1
                     print(f"❌ [{phone}] Add error for {uid}: {e}", flush=True)
@@ -8366,6 +8528,13 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
             if os.path.exists(temp_dir):
                 try: shutil.rmtree(temp_dir)
                 except: pass
+            # 📡 حذف اکانت از لیست فعال‌های زنده
+            if atk_state_ref:
+                try:
+                    if phone in atk_state_ref.get("live_active_accounts", []):
+                        atk_state_ref["live_active_accounts"].remove(phone)
+                except Exception:
+                    pass
 
     # Launch worker tasks for all healthy accounts concurrently
     tasks = [asyncio.create_task(worker_account(phone, info)) for phone, info in accs.items()]
@@ -8373,6 +8542,9 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
 
     if atk_state_ref:
         atk_state_ref["add_in_progress"] = False
+        atk_state_ref["live_active_accounts"] = []
+        atk_state_ref["live_current_account"] = ""
+        atk_state_ref["live_remaining"] = max(0, total_members - total_added - total_failed - total_skipped)
 
     elapsed = int(time.time() - start_t)
     m, s = elapsed // 60, elapsed % 60

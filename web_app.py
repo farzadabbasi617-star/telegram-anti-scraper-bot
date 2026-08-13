@@ -108,8 +108,11 @@ def get_dashboard_dict():
                 "failed": atk_state_ref.get("live_failed", 0),
                 "skipped": atk_state_ref.get("live_skipped", 0),
                 "total": atk_state_ref.get("live_total", 0),
+                "remaining": atk_state_ref.get("live_remaining", 0),
                 "mode": atk_state_ref.get("live_mode", "-"),
                 "last_user": atk_state_ref.get("live_last_user", "در حال آماده‌سازی کاربر..."),
+                "current_account": atk_state_ref.get("live_current_account", ""),
+                "active_accounts": atk_state_ref.get("live_active_accounts", []),
                 "speed_per_min": speed,
                 "elapsed_sec": elapsed,
                 "status_text": atk_state_ref.get("live_status_text", "در حال ادد زنده...")
@@ -124,6 +127,7 @@ def get_dashboard_dict():
                 "limited_accounts": limited_count,
                 "today_adds": today_total_adds,
                 "total_leads": total_leads,
+                "blocked_count": db.count_do_not_add(),
                 "target_group": target_group,
                 "is_adding": is_running,
                 "add_progress": add_progress
@@ -474,14 +478,15 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
     <!-- STICKY ACTIVE ADD BANNER (ALWAYS VISIBLE WHEN ADDING IS RUNNING) -->
     <div id="sticky-add-banner" class="glass-card bg-emerald-950/90 border border-emerald-500/50 p-3 mx-2 mt-2 flex items-center justify-between shadow-2xl rounded-2xl hidden">
-        <div class="flex items-center gap-2.5">
-            <span class="w-3 h-3 rounded-full bg-emerald-400 pulse-live"></span>
-            <div>
+        <div class="flex items-center gap-2.5 min-w-0 flex-1">
+            <span class="w-3 h-3 rounded-full bg-emerald-400 pulse-live shrink-0"></span>
+            <div class="min-w-0">
                 <div class="text-xs font-black text-emerald-200" id="banner-mode-title">🚀 عملیات ادد زنده در حال اجراست</div>
-                <div class="text-[10px] text-emerald-300 font-bold" id="banner-stats-text">✅ 0 موفق | ❌ 0 خطا | ⚡ 0/min</div>
+                <div class="text-[10px] text-emerald-300 font-bold truncate" id="banner-stats-text">✅ 0 موفق | ⏭ 0 رد | ⏳ 0 باقی</div>
+                <div class="text-[10px] text-emerald-200/80 font-bold truncate" id="banner-account-text">📱 اکانت فعال: —</div>
             </div>
         </div>
-        <button onclick="stopAddOperation()" class="px-3.5 py-2 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs rounded-xl shadow-lg border border-rose-400/40 flex items-center gap-1 active:scale-95 transition">
+        <button onclick="stopAddOperation()" class="px-3.5 py-2 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-extrabold text-xs rounded-xl shadow-lg border border-rose-400/40 flex items-center gap-1 active:scale-95 transition shrink-0 ml-2">
             <span class="pulse-live">⏹️</span>
             <span>توقف فوری</span>
         </button>
@@ -493,6 +498,59 @@ MINI_APP_HTML = """<!DOCTYPE html>
         <!-- TAB 1: DASHBOARD -->
         <section id="tab-dashboard" class="tab-content space-y-4">
             
+            <!-- 🟢 LIVE OPERATION CONSOLE (نمایش زنده: بات الان داره چی کار میکنه) -->
+            <div id="dash-live-console" class="glass-card p-4 space-y-3 border-2 border-emerald-500/40 shadow-2xl relative overflow-hidden hidden">
+                <div class="absolute -top-10 -left-10 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none"></div>
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-2">
+                        <span class="w-3 h-3 rounded-full bg-emerald-400 pulse-live"></span>
+                        <div>
+                            <div id="dash-live-title" class="text-xs font-black text-emerald-300">🟢 عملیات ادد زنده</div>
+                            <div id="dash-live-account" class="text-[10px] text-slate-300 font-bold mt-0.5">📱 اکانت فعال: —</div>
+                        </div>
+                    </div>
+                    <button onclick="stopAddOperation()" class="px-3 py-2 bg-gradient-to-r from-rose-600 to-red-600 text-white font-extrabold text-xs rounded-xl shadow-lg border border-rose-400/40 active:scale-95 transition">⏹️ توقف فوری</button>
+                </div>
+                <div class="space-y-1.5">
+                    <div class="flex justify-between text-[11px] font-bold">
+                        <span class="text-slate-300">پیشرفت کل عملیات</span>
+                        <span id="dash-live-pct" class="text-emerald-300 text-base font-black">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-900 border border-slate-700/60 rounded-full h-4 p-0.5 overflow-hidden shadow-inner">
+                        <div id="dash-live-bar" class="bg-gradient-to-r from-emerald-500 via-teal-400 to-emerald-300 h-full rounded-full transition-all duration-500 shadow-md" style="width:0%"></div>
+                    </div>
+                </div>
+                <div class="grid grid-cols-4 gap-1.5 text-center text-xs">
+                    <div class="bg-slate-900/70 p-2.5 rounded-xl border border-slate-800">
+                        <div class="text-[10px] text-slate-400">✅ اضافه شد</div>
+                        <div id="dash-live-added" class="font-black text-emerald-400 text-lg mt-0.5">0</div>
+                    </div>
+                    <div class="bg-slate-900/70 p-2.5 rounded-xl border border-slate-800">
+                        <div class="text-[10px] text-slate-400">⏭️ رد شد</div>
+                        <div id="dash-live-skipped" class="font-black text-amber-400 text-lg mt-0.5">0</div>
+                    </div>
+                    <div class="bg-slate-900/70 p-2.5 rounded-xl border border-slate-800">
+                        <div class="text-[10px] text-slate-400">⏳ باقی‌مانده</div>
+                        <div id="dash-live-remaining" class="font-black text-blue-400 text-lg mt-0.5">0</div>
+                    </div>
+                    <div class="bg-slate-900/70 p-2.5 rounded-xl border border-slate-800">
+                        <div class="text-[10px] text-slate-400">❌ خطا</div>
+                        <div id="dash-live-failed" class="font-black text-rose-400 text-lg mt-0.5">0</div>
+                    </div>
+                </div>
+                <div class="p-3 bg-slate-900/90 border border-slate-700/50 rounded-xl flex items-center gap-3">
+                    <div class="w-9 h-9 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 flex items-center justify-center font-bold text-sm shrink-0">👤</div>
+                    <div class="overflow-hidden flex-1">
+                        <div class="text-[10px] text-emerald-400 font-bold flex items-center gap-1">
+                            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                            آخرین ممبر اضافه شده:
+                        </div>
+                        <div id="dash-live-last" class="text-xs font-extrabold text-white truncate">در حال اضافه کردن...</div>
+                    </div>
+                    <span id="dash-live-time" class="font-mono font-bold text-blue-300 text-[11px] shrink-0">00:00</span>
+                </div>
+            </div>
+
             <!-- METRICS GRID -->
             <div class="grid grid-cols-2 gap-3">
                 <div class="glass-card p-4 text-center">
@@ -510,6 +568,14 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 <div class="glass-card p-4 text-center">
                     <div class="text-3xl font-black text-cyan-400" id="m-leads">...</div>
                     <div class="text-xs text-slate-400 mt-1">🎮 لیدها / گروه‌ها</div>
+                </div>
+                <div class="glass-card p-4 text-center">
+                    <div class="text-3xl font-black text-rose-400" id="m-limited">0</div>
+                    <div class="text-xs text-slate-400 mt-1">🔴 اکانت‌های محدود</div>
+                </div>
+                <div class="glass-card p-4 text-center">
+                    <div class="text-3xl font-black text-amber-400" id="m-blocked">0</div>
+                    <div class="text-xs text-slate-400 mt-1">🚫 لیست «دیگه ادد نشه»</div>
                 </div>
             </div>
 
@@ -539,6 +605,20 @@ MINI_APP_HTML = """<!DOCTYPE html>
                         <span class="text-xl">🎮</span>
                         <span>شکارچی گروه و لید</span>
                     </button>
+                </div>
+            </div>
+
+            <!-- 📱 LIVE ACCOUNT STATUS STRIP (وضعیت زنده اکانتها روی داشبورد) -->
+            <div class="glass-card p-4 space-y-3">
+                <div class="flex items-center justify-between">
+                    <h3 class="text-sm font-bold text-white flex items-center gap-2">
+                        <span>📱 وضعیت اکانت‌ها</span>
+                        <span id="dash-acc-badge" class="text-[10px] px-2 py-0.5 rounded-md bg-blue-500/20 text-blue-300 border border-blue-500/30">0 اکانت</span>
+                    </h3>
+                    <button onclick="switchTab('accounts')" class="text-[10px] text-blue-400 font-bold hover:text-blue-300 transition">مشاهده همه ←</button>
+                </div>
+                <div id="dash-accounts-strip" class="space-y-2">
+                    <div class="text-[11px] text-slate-500 text-center py-2">در حال بارگذاری اکانت‌ها...</div>
                 </div>
             </div>
         </section>
@@ -1078,6 +1158,9 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     document.getElementById('m-accounts').innerText = m.healthy_accounts;
                     document.getElementById('m-adds').innerText = m.today_adds;
                     document.getElementById('m-limited').innerText = m.limited_accounts;
+                    if (document.getElementById('m-blocked')) {
+                        document.getElementById('m-blocked').innerText = (m.blocked_count || 0).toLocaleString('fa-IR');
+                    }
                     if (document.getElementById('m-leads')) {
                         document.getElementById('m-leads').innerText = (m.total_leads || 0).toLocaleString('fa-IR');
                     }
@@ -1089,8 +1172,38 @@ MINI_APP_HTML = """<!DOCTYPE html>
                         document.getElementById('banner-mode-title').innerText = '🚀 عملیات ادد زنده (' + (m.add_progress.mode || 'فعال') + ')';
                         const added = (m.add_progress.added || 0).toLocaleString('fa-IR');
                         const failed = (m.add_progress.failed || 0).toLocaleString('fa-IR');
+                        const skipped = (m.add_progress.skipped || 0).toLocaleString('fa-IR');
+                        const remaining = (m.add_progress.remaining || 0).toLocaleString('fa-IR');
                         const speed = (m.add_progress.speed_per_min || 0).toLocaleString('fa-IR');
-                        document.getElementById('banner-stats-text').innerText = `✅ ${added} موفق | ❌ ${failed} خطا | ⚡ ${speed} member/min`;
+                        document.getElementById('banner-stats-text').innerText = `✅ ${added} | ⏭ ${skipped} | ❌ ${failed} | ⏳ ${remaining} | ⚡ ${speed}/min`;
+                        document.getElementById('banner-account-text').innerText = '📱 اکانت فعال: ' + (m.add_progress.current_account || '—');
+
+                        // 🟢 LIVE CONSOLE on dashboard
+                        document.getElementById('dash-live-console').classList.remove('hidden');
+                        document.getElementById('dash-live-title').innerText = '🟢 عملیات ادد زنده (' + (m.add_progress.mode || 'فعال') + ')';
+                        document.getElementById('dash-live-account').innerText = '📱 اکانت فعال: ' + (m.add_progress.current_account || '—');
+                        if (m.add_progress.active_accounts && m.add_progress.active_accounts.length) {
+                            document.getElementById('dash-live-account').innerText = '📱 اکانت‌های فعال: ' + m.add_progress.active_accounts.join('، ');
+                        }
+
+                        const p = m.add_progress;
+                        const total = p.total || 1;
+                        const current = (p.added || 0) + (p.failed || 0) + (p.skipped || 0);
+                        const pct = Math.min(100, Math.round((current / total) * 100));
+
+                        document.getElementById('dash-live-pct').innerText = pct + '%';
+                        document.getElementById('dash-live-bar').style.width = pct + '%';
+                        document.getElementById('dash-live-added').innerText = added;
+                        document.getElementById('dash-live-skipped').innerText = skipped;
+                        document.getElementById('dash-live-failed').innerText = failed;
+                        document.getElementById('dash-live-remaining').innerText = remaining;
+                        document.getElementById('dash-live-last').innerText = p.last_user || 'در حال آماده‌سازی کاربر بعدی...';
+
+                        const dsec = p.elapsed_sec || 0;
+                        const dmins = Math.floor(dsec / 60);
+                        const dremSec = dsec % 60;
+                        document.getElementById('dash-live-time').innerText =
+                            String(dmins).padStart(2, '0') + ':' + String(dremSec).padStart(2, '0');
 
                         // Form Buttons transform into STOP buttons
                         const btnSingle = document.getElementById('btn-single-start');
@@ -1121,11 +1234,6 @@ MINI_APP_HTML = """<!DOCTYPE html>
                         document.getElementById('live-meter-section').classList.remove('hidden');
                         document.getElementById('live-last-user-card').classList.remove('hidden');
 
-                        const skipped = (m.add_progress.skipped || 0).toLocaleString('fa-IR');
-                        const total = m.add_progress.total || 1;
-                        const current = (m.add_progress.added || 0) + (m.add_progress.failed || 0) + (m.add_progress.skipped || 0);
-                        const pct = Math.min(100, Math.round((current / total) * 100));
-
                         document.getElementById('prog-pct').innerText = pct + '%';
                         document.getElementById('prog-bar').style.width = pct + '%';
                         document.getElementById('prog-added').innerText = added;
@@ -1144,6 +1252,8 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     } else {
                         // Hide sticky banner
                         document.getElementById('sticky-add-banner').classList.add('hidden');
+                        // Hide dashboard live console
+                        document.getElementById('dash-live-console').classList.add('hidden');
 
                         // Reset buttons to start state
                         const btnSingle = document.getElementById('btn-single-start');
@@ -1172,6 +1282,57 @@ MINI_APP_HTML = """<!DOCTYPE html>
                         document.getElementById('live-meter-section').classList.add('hidden');
                         document.getElementById('live-last-user-card').classList.add('hidden');
                     }
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadDashAccounts() {
+            try {
+                const res = await fetch('/api/accounts');
+                const data = await res.json();
+                if (data.ok) {
+                    const strip = document.getElementById('dash-accounts-strip');
+                    const badge = document.getElementById('dash-acc-badge');
+                    if (!strip) return;
+                    const accs = data.accounts || [];
+                    badge.innerText = accs.length + ' اکانت';
+                    strip.innerHTML = '';
+                    if (!accs.length) {
+                        strip.innerHTML = '<div class="text-[11px] text-slate-500 text-center py-2">هنوز اکانتی ثبت نشده.</div>';
+                        return;
+                    }
+                    accs.forEach(acc => {
+                        let dotColor = 'bg-emerald-500', label = 'سالم', labelColor = 'text-emerald-300';
+                        if (acc.status === 'limited') {
+                            dotColor = 'bg-rose-500';
+                            label = 'محدود';
+                            labelColor = 'text-rose-300';
+                            if (acc.remaining_seconds > 0) label += ' (' + Math.ceil(acc.remaining_seconds / 60) + 'm)';
+                        } else if (acc.added_today >= 100) {
+                            dotColor = 'bg-amber-500';
+                            label = 'ظرفیت پر';
+                            labelColor = 'text-amber-300';
+                        }
+                        const pct = Math.min(100, Math.round((acc.added_today / 100) * 100));
+                        strip.innerHTML += `
+                            <div class="flex items-center justify-between gap-2 p-2.5 bg-slate-900/60 border border-slate-800 rounded-xl">
+                                <div class="flex items-center gap-2 min-w-0">
+                                    <span class="w-2 h-2 rounded-full ${dotColor} shrink-0"></span>
+                                    <div class="min-w-0">
+                                        <div class="text-[11px] font-bold text-white truncate">${acc.name}</div>
+                                        <div class="text-[9px] font-mono text-slate-500 truncate">${acc.phone}</div>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2 shrink-0">
+                                    <span class="text-[9px] font-bold ${labelColor}">${label}</span>
+                                    <div class="w-12 bg-slate-900 h-1.5 rounded-full overflow-hidden border border-slate-800">
+                                        <div class="bg-gradient-to-r from-blue-500 to-emerald-400 h-full rounded-full" style="width:${pct}%"></div>
+                                    </div>
+                                    <span class="text-[9px] font-mono text-slate-400">${acc.added_today}/100</span>
+                                </div>
+                            </div>
+                        `;
+                    });
                 }
             } catch (e) { console.error(e); }
         }
@@ -1259,11 +1420,13 @@ MINI_APP_HTML = """<!DOCTYPE html>
         // Live refresh every 1 second
         setInterval(() => {
             loadDashboard();
+            loadDashAccounts();
             if (activeTab === 'accounts') loadAccounts();
         }, 1000);
 
         // Initial Load
         loadDashboard();
+        loadDashAccounts();
     </script>
 </body>
 </html>

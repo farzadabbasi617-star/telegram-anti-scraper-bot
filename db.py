@@ -157,6 +157,17 @@ def init_tables():
             PRIMARY KEY (group_id, user_id)
         )
     """)
+    # 🚫 لیست «هرگز دوباره ادد نشود» — کاربرانی که privacy بسته‌اند، invalid شده‌اند،
+    # یا یک‌بار ادد شدند و از گروه لفت دادند. این‌ها برای همیشه از چرخه ادد خارج می‌شوند.
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS do_not_add_tbl (
+            user_id BIGINT PRIMARY KEY,
+            reason TEXT DEFAULT '',
+            added_at BIGINT
+        )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_added_history_user ON added_history_tbl(user_id);")
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS adder_limits_tbl (
             phone TEXT PRIMARY KEY,
@@ -278,6 +289,10 @@ def kv_set(key, value):
 @db_retry()
 def save_user(user_id, username, first_name, last_name, phone, group_id, group_name):
     try:
+        uid = int(user_id)
+        # 🚫 کاربر ممنوعه/ادد‌شده قبلی هرگز دوباره ذخیره نمی‌شود
+        if is_do_not_add(uid) or is_added_anywhere(uid):
+            return
         cur = get_conn().cursor()
         cur.execute("""
             INSERT INTO scraped_users (user_id, username, first_name, last_name, phone, source_group_id, source_group_name, added_at)
@@ -286,7 +301,7 @@ def save_user(user_id, username, first_name, last_name, phone, group_id, group_n
                 username = EXCLUDED.username,
                 first_name = EXCLUDED.first_name,
                 last_name = EXCLUDED.last_name
-        """, (int(user_id), username, first_name, last_name, phone, int(group_id or 0), group_name or "", int(time.time())))
+        """, (uid, username, first_name, last_name, phone, int(group_id or 0), group_name or "", int(time.time())))
         cur.close()
     except Exception as e:
         print(f"save_user err: {e}", flush=True)
@@ -328,15 +343,39 @@ def bulk_save_users(users_list, group_id, group_name):
     if not users_list: return
     conn = get_conn()
     cur = conn.cursor()
+    # 🚫 فیلتر ضد-ادد-تکراری در لایه DB: هر کسی که قبلاً ادد شده یا در لیست «هرگز دوباره ادد نشود»
+    # است (لفت داده / پروفایل قفل / آیدی نامعتبر) هرگز دوباره وارد دیتابیس ممبرها نمی‌شود.
+    blocked_ids = set()
+    try:
+        incoming_ids = []
+        for u in users_list:
+            try:
+                incoming_ids.append(int(u.get("user_id")))
+            except:
+                pass
+        if incoming_ids:
+            cur.execute("SELECT user_id FROM do_not_add_tbl WHERE user_id = ANY(%s)", (incoming_ids,))
+            blocked_ids.update(int(r[0]) for r in cur.fetchall())
+            cur.execute("SELECT DISTINCT user_id FROM added_history_tbl WHERE user_id = ANY(%s)", (incoming_ids,))
+            blocked_ids.update(int(r[0]) for r in cur.fetchall())
+    except Exception as e:
+        print(f"bulk_save filter err: {e}", flush=True)
     rows = []
     for u in users_list:
         try:
             uid = int(u.get("user_id"))
+            if uid in blocked_ids:
+                continue  # قبلاً ادد شده / لفت داده / ممنوع → ذخیره نمی‌شود
             phone = u.get("phone", "") or ""
             rows.append((uid, u.get("username",""), u.get("first_name",""), u.get("last_name",""), phone,
                          int(group_id or 0), group_name or "", int(time.time())))
         except:
             continue
+    if blocked_ids:
+        print(f"🚫 {len(blocked_ids)} کاربر ممنوعه/ادد‌شده از ذخیره‌سازی رد شدند", flush=True)
+    if not rows:
+        cur.close()
+        return
     try:
         from psycopg2.extras import execute_values
         execute_values(cur, """
@@ -1000,6 +1039,84 @@ def delete_users_bulk(user_ids: list) -> int:
         cur.close()
         return deleted
     except: return 0
+
+
+# ---------------- 🚫 Do-Not-Add Blacklist (هرگز دوباره ادد نشود) ----------------
+
+@db_retry()
+def add_do_not_add(user_id: int, reason: str = "") -> bool:
+    """افزودن کاربر به لیست «هرگز دوباره ادد نشود» (پرایوسی بسته / لفت داده / آیدی نامعتبر)"""
+    try:
+        cur = get_conn().cursor()
+        cur.execute("""
+            INSERT INTO do_not_add_tbl (user_id, reason, added_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                reason = EXCLUDED.reason,
+                added_at = EXCLUDED.added_at
+        """, (int(user_id), reason or "", int(time.time())))
+        cur.close()
+        return True
+    except Exception as e:
+        print(f"add_do_not_add err: {e}", flush=True)
+        return False
+
+
+@db_retry()
+def is_do_not_add(user_id: int) -> bool:
+    """آیا کاربر در لیست ممنوعه است؟"""
+    try:
+        cur = get_conn().cursor()
+        cur.execute("SELECT 1 FROM do_not_add_tbl WHERE user_id=%s", (int(user_id),))
+        row = cur.fetchone()
+        cur.close()
+        return bool(row)
+    except:
+        return False
+
+
+@db_retry()
+def count_do_not_add() -> int:
+    try:
+        cur = get_conn().cursor()
+        cur.execute("SELECT COUNT(*) FROM do_not_add_tbl")
+        r = cur.fetchone()[0]
+        cur.close()
+        return r
+    except:
+        return 0
+
+
+@db_retry()
+def is_added_anywhere(user_id: int) -> bool:
+    """آیا این کاربر قبلاً توسط بات به *هر* گروهی ادد شده؟ (جلوگیری از ادد تکراری برای همیشه)"""
+    try:
+        cur = get_conn().cursor()
+        cur.execute("SELECT 1 FROM added_history_tbl WHERE user_id=%s LIMIT 1", (int(user_id),))
+        row = cur.fetchone()
+        cur.close()
+        return bool(row)
+    except:
+        return False
+
+
+def get_blocked_user_ids() -> set:
+    """ست کامل آیدی کاربرانی که هرگز نباید دوباره ادد/استخراج شوند:
+    (۱) هر کسی که قبلاً ادد شده + (۲) هر کسی که در لیست ممنوعه است."""
+    blocked = set()
+    try:
+        cur = get_conn().cursor()
+        cur.execute("SELECT user_id FROM added_history_tbl")
+        blocked.update(int(r[0]) for r in cur.fetchall())
+        cur.close()
+        cur = get_conn().cursor()
+        cur.execute("SELECT user_id FROM do_not_add_tbl")
+        blocked.update(int(r[0]) for r in cur.fetchall())
+        cur.close()
+    except Exception as e:
+        print(f"get_blocked_user_ids err: {e}", flush=True)
+    return blocked
+
 
 
 # ---------------- Leads CRM Storage (Game Lead Finder) ----------------
