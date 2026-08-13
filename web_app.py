@@ -165,38 +165,38 @@ def get_accounts_dict():
         out = []
         try:
             import account_state
-            from account_doctor import session_disk_ok
+            from account_doctor import load_probe_results
+            probes = load_probe_results()
         except Exception:
             account_state = None
-            session_disk_ok = None
+            probes = {}
         for phone, info in accs.items():
             st = db.get_account_status(phone)
             status = st.get("status", "healthy")
             reason = ""
             has_session = True
             busy = None
-            if session_disk_ok:
-                has_session = session_disk_ok(phone)
+            pr = (probes or {}).get(phone) or (probes or {}).get(str(phone)) or {}
             if account_state:
                 busy = account_state.busy_label(phone)
-                if not reason:
-                    reason = account_state.get_last_error(phone) or ""
             if busy:
                 status = "busy"
-                reason = reason or f"مشغول: {busy}"
-            elif not has_session:
-                # بکاپ ابری را هم چک/بازیابی کن تا اکانت «بدون سشن» نماند
-                try:
-                    from account_doctor import ensure_session
-                    ok, _ = ensure_session(phone)
-                    if ok:
-                        has_session = True
-                    else:
-                        status = "no_session"
-                        reason = reason or "سشن روی دیسک نیست"
-                except Exception:
-                    status = "no_session"
-                    reason = reason or "سشن روی دیسک نیست"
+                reason = f"مشغول: {busy}"
+            elif st.get("status") == "limited":
+                status = "limited"
+                reason = pr.get("error") or ""
+            elif pr.get("ok") is True:
+                status = "healthy"
+                reason = ""
+            elif pr.get("ok") is False:
+                status = "dead"
+                reason = pr.get("error") or "تست زنده شکست خورد — باید دوباره لاگین شود"
+            elif pr.get("ok") is None:
+                status = "unchecked"
+                reason = pr.get("note") or "سشن فایل موجود است؛ تست زنده اتصال هنوز انجام نشده"
+            else:
+                status = "unchecked"
+                reason = "هنوز تست زنده نشده"
             out.append({
                 "phone": phone,
                 "name": info.get("name", "اکانت"),
@@ -903,8 +903,11 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 <h3 class="text-sm font-bold text-white">📊 وضعیت سلامت و ظرفیت اکانت‌ها</h3>
                 <span class="text-xs text-slate-400">ظرفیت روزانه: ۱۰۰ ادد</span>
             </div>
+            <button id="btn-live-probe" onclick="runLiveProbe()" class="w-full py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-xl shadow-lg active:scale-95">
+                🔬 تست زنده اتصال اکانت‌های صفر-ادد
+            </button>
             <button id="btn-use-ready" onclick="startParallelAddFromAccounts()" class="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg active:scale-95">
-                ▶️ ادد موازی با همه اکانت‌های سالم (شامل صفر-اددها)
+                ▶️ ادد موازی فقط با اکانت‌هایی که تست زنده را پاس کرده‌اند
             </button>
             
             <div id="accounts-list" class="space-y-2.5">
@@ -1191,6 +1194,19 @@ MINI_APP_HTML = """<!DOCTYPE html>
             }
         }
 
+        async function runLiveProbe() {
+            if (!confirm('تست زنده اتصال برای اکانت‌های صفر-ادد شروع شود؟ ممکن است ۱-۲ دقیقه طول بکشد.')) return;
+            const btn = document.getElementById('btn-live-probe');
+            if (btn) { btn.innerText = '⏳ در حال تست زنده...'; btn.disabled = true; }
+            try {
+                const res = await fetch('/api/accounts/probe', { method: 'POST' });
+                const data = await res.json();
+                alert(data.message || (data.ok ? 'تست شروع شد' : data.error));
+            } catch (e) { alert('خطا: ' + e); }
+            if (btn) { btn.innerText = '🔬 تست زنده اتصال اکانت‌های صفر-ادد'; btn.disabled = false; }
+            loadAccounts();
+        }
+
         async function startParallelAddFromAccounts() {
             if (!confirm('ادد موازی با همه اکانت‌های سالم (حتی آن‌هایی که هنوز 0/100 هستند) شروع شود؟')) return;
             selectedParallelSpeed = selectedParallelSpeed || 'fast';
@@ -1403,10 +1419,18 @@ MINI_APP_HTML = """<!DOCTYPE html>
                             dotColor = 'bg-sky-400';
                             label = 'مشغول';
                             labelColor = 'text-sky-300';
+                        } else if (acc.status === 'dead') {
+                            dotColor = 'bg-rose-500';
+                            label = 'خراب';
+                            labelColor = 'text-rose-300';
+                        } else if (acc.status === 'unchecked') {
+                            dotColor = 'bg-amber-400';
+                            label = 'تست‌نشده';
+                            labelColor = 'text-amber-300';
                         } else if (acc.status === 'unused') {
-                            dotColor = 'bg-slate-400';
-                            label = 'سالم';
-                            labelColor = 'text-slate-300';
+                            dotColor = 'bg-amber-400';
+                            label = 'تست‌نشده';
+                            labelColor = 'text-amber-300';
                         } else if (acc.added_today >= 100) {
                             dotColor = 'bg-amber-500';
                             label = 'ظرفیت پر';
@@ -1452,8 +1476,10 @@ MINI_APP_HTML = """<!DOCTYPE html>
                             statusBadge = '<span class="px-2.5 py-1 bg-rose-500/20 text-rose-300 text-[10px] font-bold rounded-lg border border-rose-500/30">🔴 بدون سشن</span>';
                         } else if (acc.status === 'busy') {
                             statusBadge = '<span class="px-2.5 py-1 bg-sky-500/20 text-sky-300 text-[10px] font-bold rounded-lg border border-sky-500/30">🟡 مشغول</span>';
-                        } else if (acc.status === 'unused') {
-                            statusBadge = '<span class="px-2.5 py-1 bg-emerald-500/20 text-emerald-300 text-[10px] font-bold rounded-lg border border-emerald-500/30">✅ سالم</span>';
+                        } else if (acc.status === 'dead') {
+                            statusBadge = '<span class="px-2.5 py-1 bg-rose-500/20 text-rose-300 text-[10px] font-bold rounded-lg border border-rose-500/30">🔴 خراب</span>';
+                        } else if (acc.status === 'unchecked' || acc.status === 'unused') {
+                            statusBadge = '<span class="px-2.5 py-1 bg-amber-500/20 text-amber-300 text-[10px] font-bold rounded-lg border border-amber-500/30">⏳ تست زنده نشده</span>';
                         } else if (acc.added_today >= 100) {
                             statusBadge = '<span class="px-2.5 py-1 bg-amber-500/20 text-amber-300 text-[10px] font-bold rounded-lg border border-amber-500/30">⚠️ ظرفیت پر</span>';
                         }
@@ -1630,6 +1656,12 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
                 st = post_data.get("status")
                 db.update_lead_status(lead_id, st)
                 body = json.dumps({"ok": True}).encode('utf-8')
+            elif path == '/api/accounts/probe':
+                async def _run_probe():
+                    from account_doctor import probe_zero_add_accounts
+                    await probe_zero_add_accounts(quick=True)
+                _schedule_coro(_run_probe())
+                body = json.dumps({"ok": True, "message": "تست زنده اکانت‌های صفر-ادد شروع شد. چند لحظه بعد تب اکانت‌ها را رفرش کن."}).encode('utf-8')
             elif path == '/api/accounts/reset':
                 db.reset_adder_limits()
                 body = json.dumps({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."}).encode('utf-8')
@@ -1739,6 +1771,14 @@ def create_web_app(app_bot=None, atk_state=None):
             except Exception as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
 
+        async def aio_api_probe_accounts(request):
+            try:
+                from account_doctor import probe_zero_add_accounts
+                _schedule_coro(probe_zero_add_accounts(quick=True))
+                return web.json_response({"ok": True, "message": "تست زنده اکانت‌های صفر-ادد شروع شد. چند لحظه بعد تب اکانت‌ها را رفرش کن."}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
+
         async def aio_api_reset_limits(request):
             db.reset_adder_limits()
             return web.json_response({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."}, headers=NO_CACHE)
@@ -1778,6 +1818,7 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_post('/api/leads/update_status', aio_api_leads_update_status)
         app.router.add_post('/api/add/single', aio_api_add_single)
         app.router.add_post('/api/add/parallel', aio_api_add_parallel)
+        app.router.add_post('/api/accounts/probe', aio_api_probe_accounts)
         app.router.add_post('/api/accounts/reset', aio_api_reset_limits)
         app.router.add_post('/api/settings/target', aio_api_set_target)
         app.router.add_post('/api/add/stop', aio_api_stop_add)

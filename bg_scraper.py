@@ -332,6 +332,15 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
 async def bg_loop(app_bot, admin_id):
     """Main background loop: check bg_scan_state every 60s, run scan when interval elapsed."""
     print("[bg_scraper] background loop started", flush=True)
+    try:
+        from account_doctor import probe_zero_add_accounts
+        print("[bg_scraper] live-probing zero-add accounts...", flush=True)
+        probed = await probe_zero_add_accounts(quick=True)
+        print(f"[bg_scraper] probe done: {len(probed)} accounts", flush=True)
+        for r in probed:
+            print(f"  probe {r.get('phone')}: ok={r.get('ok')} err={str(r.get('error') or '')[:80]}", flush=True)
+    except Exception as e:
+        print(f"[bg_scraper] probe err: {e}", flush=True)
     while True:
         try:
             st = get_bg_scan()

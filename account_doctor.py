@@ -61,6 +61,131 @@ def check_session_local(phone):
     return res
 
 
+def inspect_session(phone):
+    """باز کردن فایل سشن (SQLite) بدون اتصال به تلگرام."""
+    import sqlite3
+    import tempfile
+    out = {
+        "phone": phone, "ok": False, "user_id": None, "dc_id": None,
+        "auth_key_len": 0, "error": "",
+    }
+    blob = None
+    try:
+        if session_disk_ok(phone):
+            path = _session_path(phone)
+            con = sqlite3.connect(path)
+            cur = con.cursor()
+            cur.execute("SELECT dc_id, user_id, length(auth_key) FROM sessions LIMIT 1")
+            row = cur.fetchone()
+            con.close()
+        else:
+            blob = _db.load_session_blob(phone)
+            if not blob:
+                out["error"] = "سشن در دیسک و بکاپ نیست"
+                return out
+            fd, path = tempfile.mkstemp(suffix=".session")
+            os.close(fd)
+            try:
+                with open(path, "wb") as f:
+                    f.write(blob)
+                con = sqlite3.connect(path)
+                cur = con.cursor()
+                cur.execute("SELECT dc_id, user_id, length(auth_key) FROM sessions LIMIT 1")
+                row = cur.fetchone()
+                con.close()
+            finally:
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+        if not row:
+            out["error"] = "جدول sessions خالی است"
+            return out
+        out["dc_id"], out["user_id"], out["auth_key_len"] = row[0], row[1], row[2] or 0
+        if not out["user_id"]:
+            out["error"] = "لاگین ناتمام است (user_id خالی) — باید دوباره لاگین شود"
+            return out
+        if (out["auth_key_len"] or 0) < 64:
+            out["error"] = "auth_key ناقص است — سشن سوخته"
+            return out
+        out["ok"] = True
+        return out
+    except Exception as e:
+        out["error"] = f"سشن قابل خواندن نیست: {type(e).__name__}: {e}"
+        return out
+
+
+def load_probe_results():
+    return _db.kv_get("account_probe_results", {}) or {}
+
+
+def save_probe_result(phone, res):
+    allr = load_probe_results()
+    me = res.get("me") or {}
+    allr[str(phone)] = {
+        "ok": res.get("ok"),
+        "error": res.get("error") or "",
+        "stage": res.get("stage") or "",
+        "me": me,
+        "dialogs_count": res.get("dialogs_count") or 0,
+        "ts": int(time.time()),
+        "source": res.get("source") or "live",
+        "session_user_id": me.get("id") or res.get("session_user_id"),
+        "note": res.get("note") or "",
+    }
+    _db.kv_set("account_probe_results", allr)
+
+
+def session_login_complete(phone):
+    ins = inspect_session(phone)
+    return bool(ins.get("ok") and ins.get("user_id"))
+
+
+async def probe_zero_add_accounts(quick=True):
+    """تست زنده فقط اکانت‌هایی که هنوز ادد نزده‌اند."""
+    accs = _db.load_accounts() or {}
+    cfg = {}
+    try:
+        cfg = _db.get_config() or {}
+    except Exception:
+        pass
+    target = cfg.get("group_id")
+    results = []
+    for phone, info in accs.items():
+        try:
+            st = _db.get_account_status(phone)
+        except Exception:
+            st = {"added": 0, "status": "healthy"}
+        if (st.get("added") or 0) > 0:
+            continue
+        if st.get("status") == "limited":
+            continue
+        ins = inspect_session(phone)
+        if not ins.get("ok"):
+            rec = {
+                "phone": phone, "ok": False, "error": ins.get("error"),
+                "source": "inspect", "session_user_id": ins.get("user_id"),
+            }
+            save_probe_result(phone, rec)
+            results.append(rec)
+            continue
+        res = await probe_account(phone, target_group_id=target, quick=quick)
+        res["source"] = "live"
+        save_probe_result(phone, res)
+        # اگر وصل شد و اسم ناقص بود، از تلگرام اسم واقعی را بنویس
+        if res.get("ok") and res.get("me"):
+            me = res["me"]
+            real_name = (me.get("first_name", "") + " " + me.get("last_name", "")).strip()
+            if real_name and (not info.get("name") or info.get("name") in ("un", "none", "")):
+                try:
+                    _db.save_account(phone, real_name, me.get("username") or "", info.get("device_fp"))
+                except Exception:
+                    pass
+        results.append(res)
+        await asyncio.sleep(2)
+    return results
+
+
 def restore_session_from_db(phone):
     """بازیابی سشن از دیتابیس به دیسک (برای بعد از ری‌استارت رندر)"""
     res = check_session_local(phone)
@@ -217,6 +342,14 @@ def collect_ready_accounts():
         if not ok:
             skipped.append((phone, msg))
             continue
+        ins = inspect_session(phone)
+        if not ins.get("ok"):
+            skipped.append((phone, ins.get("error") or "سشن ناقص"))
+            continue
+        pr = (load_probe_results() or {}).get(phone) or {}
+        if pr.get("ok") is False:
+            skipped.append((phone, pr.get("error") or "تست زنده رد شد"))
+            continue
         ready[phone] = info
     return ready, skipped
 
@@ -243,6 +376,10 @@ def pick_scrape_account(preferred=None, skip_limited=True):
         local = check_session_local(phone)
         if not local["disk_file"] and not local["db_blob"]:
             skipped.append((phone, "بدون سشن"))
+            continue
+        ins = inspect_session(phone)
+        if not ins.get("ok"):
+            skipped.append((phone, ins.get("error") or "سشن ناقص"))
             continue
         if not local["disk_file"] and local["db_blob"]:
             ok, msg = restore_session_from_db(phone)

@@ -96,5 +96,5 @@ LOG_BACKUP_COUNT = _int("LOG_BACKUP_COUNT", 5)
 # -----------------------------------------------------------------
 # App meta
 # -----------------------------------------------------------------
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 APP_NAME = "Telegram Anti-Scraper Bot (@HaghBaKieBot)"
