@@ -18,7 +18,6 @@ import json
 import time
 import asyncio
 import re
-import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import db
@@ -33,13 +32,18 @@ def set_app_refs(app_bot, atk_state):
     global bot_app, atk_state_ref
     bot_app = app_bot
     atk_state_ref = atk_state
+    # 📡 همگام‌سازی استیت زنده با bot.py (برای آمار زنده فلوی ادد)
+    try:
+        import bot as _bot
+        _bot.set_atk_state_ref(atk_state)
+    except Exception:
+        pass
 
 def set_main_event_loop(loop):
     global main_event_loop
     main_event_loop = loop
 
 def _schedule_coro(coro):
-    global main_event_loop
     if main_event_loop and main_event_loop.is_running():
         asyncio.run_coroutine_threadsafe(coro, main_event_loop)
     else:
@@ -261,7 +265,7 @@ def trigger_scrape_group(chat_target):
         async def run_scrape_job():
             try:
                 from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename
-                from bot import API_ID, API_HASH
+                from config import API_ID, API_HASH
                 client = AdvancedScraper(
                     session_name=os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}"),
                     api_id=API_ID,
@@ -335,7 +339,8 @@ def trigger_single_add(phone, add_type):
         async def run_single_job():
             try:
                 from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename
-                from bot import API_ID, API_HASH, _execute_simple_add
+                from config import API_ID, API_HASH
+                from bot import _execute_simple_add
                 accs = db.load_accounts()
                 acc_info = accs.get(phone, {})
                 client = AdvancedScraper(

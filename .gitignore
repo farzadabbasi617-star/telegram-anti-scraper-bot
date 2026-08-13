@@ -1,12 +1,30 @@
-*.session
-*.session-journal
+# ---------------------------------------------------------------
+# 🐍 Python
+# ---------------------------------------------------------------
 __pycache__/
 *.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------
+# 🔐 اسرار و محیط اجرا
+# ---------------------------------------------------------------
 .env
+config.json
+
+# ---------------------------------------------------------------
+# 💾 داده‌های اجرایی (هرگز commit نشوند)
+# ---------------------------------------------------------------
+*.db
+*.session
+*.session-journal
 scraped_users.json
 adder_limits.json
 saved_accounts.json
-config.json
 saved_sessions/
 added_members_history.json
 found_treasures.json
@@ -20,3 +38,12 @@ sessions/
 data/
 channel_adder_sessions/
 channel_adder_data/
+
+# ---------------------------------------------------------------
+# 📜 لاگ‌ها و ابزارها
+# ---------------------------------------------------------------
+logs/
+*.log
+.idea/
+.vscode/
+.DS_Store

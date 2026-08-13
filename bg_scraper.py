@@ -12,21 +12,18 @@ import asyncio
 import os
 import time
 import random
-import json
-import threading
-import psycopg2
 
 from pyrogram.errors import AuthKeyDuplicated, AuthKeyUnregistered, FloodWait
 
 from db import (
     get_bg_scan, set_bg_status, mark_bg_run, load_accounts,
-    get_config, save_account, load_session_blob, save_session_blob,
-    bulk_save_users, count_users, kv_set, kv_get
+    get_config, load_session_blob, save_session_blob,
+    bulk_save_users, count_users
 )
-from attacker import AdvancedScraper, safe_phone_filename, SESSIONS_DIR, DEVICE_FP, _enable_wal_on_session
+from attacker import AdvancedScraper, SESSIONS_DIR, DEVICE_FP, _enable_wal_on_session
 
-API_ID = int(os.environ.get("API_ID", 6))
-API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
+# ⚙️ استفاده از پیکربندی مرکزی (همان اعتبارنامه‌های bot.py — از ناسازگاری سشن‌ها جلوگیری می‌کند)
+from config import API_ID, API_HASH
 
 
 _loop = None
@@ -86,7 +83,7 @@ async def run_one_scan(phone, group_id, group_name, app_bot=None, admin_id=None)
         _enable_wal_on_session(sc.app.name)
         await sc.connect()
         _enable_wal_on_session(sc.app.name)
-        me = await sc.app.get_me()
+        await sc.app.get_me()
     except (AuthKeyDuplicated, AuthKeyUnregistered, ConnectionError) as e:
         set_bg_status(f"auth_error:{str(e)[:50]}")
         try: await sc.disconnect()

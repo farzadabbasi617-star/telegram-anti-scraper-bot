@@ -28,8 +28,8 @@ from threading import Thread
 sys.path.insert(0, '.')
 
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import SessionPasswordNeeded, AuthKeyDuplicated, AuthKeyUnregistered, FloodWait, PhoneCodeExpired, PhoneCodeInvalid
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ChatPermissions
+from pyrogram.errors import SessionPasswordNeeded, AuthKeyDuplicated, AuthKeyUnregistered, FloodWait, PhoneCodeExpired, PhoneCodeInvalid, PeerIdInvalid
 
 from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename, DEVICE_FP, _get_session_lock, _enable_wal_on_session
 # _global_connect_lock حالا از attacker میاد
@@ -57,9 +57,6 @@ from db import (
     get_scanned_chats, get_scanned_chat, update_chat_category,
     get_users_by_source, count_users_by_source, get_all_categories, get_category_stats,
     delete_scanned_chat, toggle_chat_favorite, upsert_scanned_chat,
-    delete_user as _db_delete_user, delete_users_bulk as _db_delete_users_bulk,
-    add_do_not_add as _db_add_dna, is_do_not_add as _db_is_dna,
-    is_added_anywhere as _db_is_added_any, get_blocked_user_ids as _db_blocked_ids,
 )
 from bg_scraper import start_in_background as bg_scraper_start, _backup_session
 try:
@@ -77,20 +74,19 @@ except Exception as e:
         'upload_ig_session':lambda *a,**kw:False,
     })()
 
-API_ID = int(os.environ.get("API_ID", 2040))
-API_HASH = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8790569799:AAFZuVDuVg62v87yQqmaQy3LS_w71-Q6yz0")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", 564234793))
-PORT = int(os.environ.get("PORT", 10000))
+# ⚙️ پیکربندی مرکزی — همه مقادیر از config.py (env / .env)
+from config import (
+    API_ID, API_HASH, BOT_TOKEN, ADMIN_ID, PORT,
+    PUBLIC_URL, DEFAULT_TARGET_USERNAME, FIXED_TARGET_LINK,
+    MAX_ADD_PER_ACCOUNT, MODE_DAILY_CAP, DB_POOL_SIZE,
+)
 CONFIG_FILE = "config.json"
 SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"
 ADDED_MEMBERS_FILE = "added_members_history.json"
 ACCOUNTS_FILE = "saved_accounts.json"
-MAX_ADD_PER_ACCOUNT = 100  # Safer limit to avoid quick limitations  # For older accounts (2+ years). New accounts: use 50  # 🔒 Supergroup: 200/day safe, we use 50 to be conservative  # 🔒 محدودیت امن — تلگرام بعد از 30-50 اد PEER_FLOOD میده
 
 # گروه مقصد ثابت - ممبرها همیشه به این گروه اضافه میشن
-FIXED_TARGET_LINK = "https://t.me/+gLScToU4DZdjZmM0"
 FIXED_TARGET_GID = None  # will be resolved on first use
 
 LAST_ERROR = ""  # آخرین خطای رخ داده برای دیباگ
@@ -543,11 +539,7 @@ def mark_user_as_added(chat_id, chat_title, user_id):
     """ثبت کردن این کاربر که به این گروه اضافه شد (در DB)"""
     _db_mark_added(chat_id, user_id, "")
     # ⚡ همگام‌سازی کش در حافظه — برای چک‌های بعدی (ضد تکرار/لفت) کوئری لازم نیست
-    try:
-        if _BLOCKED_IDS_CACHE["ids"] is not None:
-            _BLOCKED_IDS_CACHE["ids"].add(int(user_id))
-    except Exception:
-        pass
+    mark_added_local(user_id)
 
 def is_user_already_added(chat_id, user_id):
     """چک میکند که این کاربر قبلا به این گروه اضافه شده یا نه"""
@@ -555,71 +547,13 @@ def is_user_already_added(chat_id, user_id):
 
 
 # =================================================================
-# 🧠 وقفه‌های انسانی + لیست ممنوعه (Anti-Ban & No-ReAdd System)
+# 🧠 وقفه‌های انسانی + لیست ممنوعه → ماژول مستقل add_engine.py
 # =================================================================
-
-def human_delay(add_mode="fast"):
-    """تاخیر شبیه‌سازی‌شده به رفتار انسان — با نویز تصادفی و مکث‌های گاه‌به‌گاه.
-    هدف: اکانت‌ها زود بن نشوند (به‌جای ریتم رباتی ثابت)."""
-    if add_mode == "ultra":
-        base = random.uniform(5, 10)
-    elif add_mode == "fast":
-        base = random.uniform(16, 38)
-    else:  # safe
-        base = random.uniform(45, 95)
-    # ۱۵٪ مواقع مثل یک انسان واقعی بیشتر صبر می‌کند (چک کردن گوشی، حرف زدن و...)
-    if random.random() < 0.15:
-        base *= random.uniform(1.6, 2.8)
-    # نویز کوچک پایانی
-    base *= random.uniform(0.9, 1.15)
-    return base
-
-
-def human_break_seconds(add_mode="fast"):
-    """استراحت تصادفی بین دسته‌های ادد (قهوه/استراحت انسانی)"""
-    if add_mode == "ultra":
-        return random.randint(45, 120)
-    elif add_mode == "fast":
-        return random.randint(60, 180)
-    return random.randint(120, 300)
-
-
-_BLOCKED_IDS_CACHE = {"ids": None, "ts": 0}
-_BLOCKED_CACHE_TTL = 120  # ثانیه
-
-
-def get_blocked_ids_cached():
-    """ست آیدی کاربران ممنوعه (ادد شده قبلی + لیست ممنوعه) با کش ۲ دقیقه‌ای"""
-    global _BLOCKED_IDS_CACHE
-    now = time.time()
-    if _BLOCKED_IDS_CACHE["ids"] is None or (now - _BLOCKED_IDS_CACHE["ts"]) > _BLOCKED_CACHE_TTL:
-        try:
-            _BLOCKED_IDS_CACHE["ids"] = _db_blocked_ids()
-            _BLOCKED_IDS_CACHE["ts"] = now
-        except Exception as e:
-            print(f"blocked cache err: {e}", flush=True)
-            return set()
-    return _BLOCKED_IDS_CACHE["ids"] or set()
-
-
-def invalidate_blocked_cache():
-    global _BLOCKED_IDS_CACHE
-    _BLOCKED_IDS_CACHE["ids"] = None
-    _BLOCKED_IDS_CACHE["ts"] = 0
-
-
-def never_add_again(uid, reason=""):
-    """حذف از دیتابیس ممبرها + ثبت در لیست «هرگز دوباره ادد نشود»"""
-    try:
-        _db_add_dna(uid, reason)
-    except Exception as e:
-        print(f"dna err: {e}", flush=True)
-    try:
-        _db_delete_user(uid)
-    except Exception as e:
-        print(f"del err: {e}", flush=True)
-    invalidate_blocked_cache()
-
+from add_engine import (
+    human_delay, human_break_seconds,
+    get_blocked_ids_cached, invalidate_blocked_cache,
+    never_add_again, mark_added_local,
+)
 
 def load_accounts():
     return _db_load_accounts()
@@ -724,6 +658,12 @@ if CURRENT_GROUP_ID:
     defender = AdvancedDefender(app, CURRENT_GROUP_ID, ADMIN_ID)
     defender.MIN_ACCOUNT_AGE_DAYS = 25 if config.get("defense_enabled", True) else 0
 atk_state = {}
+# 📡 پل استیت زنده مینی‌اپ — web_app.set_app_refs این مقدار را ست می‌کند
+atk_state_ref = None
+
+def set_atk_state_ref(ref):
+    global atk_state_ref
+    atk_state_ref = ref
 bg_started = False
 
 def build_welcome_text():
@@ -1182,7 +1122,7 @@ async def _show_ig_follow_stats(q):
     text += f"📦 کل تاریخچه: <b>{stats['total_ever']:,}</b>\n\n"
 
     if followed:
-        text += f"👤 <b>آخرین follow شده{ها}:</b>\n"
+        text += f"👤 <b>آخرین follow شده‌ها:</b>\n"
         for u in followed[-20:]:
             text += f"✅ @{u}\n"
     else:
@@ -2284,7 +2224,7 @@ def main_menu():
 
 def _db_count_users():
     try:
-        return count_users()
+        return db.count_users()
     except:
         users, _, _ = load_scraped()
         return len(users)
@@ -2347,7 +2287,7 @@ def auto_reset_adder_limits_thread():
 # ═══════════════════════════════════════════════════════
 # DEFAULT TARGET GROUP FOR ADDING MEMBERS
 # ═══════════════════════════════════════════════════════
-DEFAULT_TARGET_USERNAME = "gament_super_gp"  # Default group for adding members
+# DEFAULT_TARGET_USERNAME از config.py ایمپورت می‌شود
 
 # ═══════════════════════════════════════════════════════
 
@@ -7873,7 +7813,7 @@ def run_health():
             time.sleep(5)
 
 # ضدخواب: هر ۵ دقیقه خودش به خودش درخواست میزنه که رندر متوجه فعال بودن سرویس بشه
-PUBLIC_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://telegram-anti-scraper-bot.onrender.com")
+# PUBLIC_URL از config.py ایمپورت می‌شود
 def keep_awake_loop():
     import urllib.request
     while True:
@@ -8595,6 +8535,23 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
 
 
 if __name__ == "__main__":
+    # 📜 سیستم لاگینگ حرفه‌ای (کنسول + فایل چرخشی + شکار print های قدیمی)
+    try:
+        import logging_setup
+        logging_setup.setup_logging()
+        logging_setup.install_print_logging()
+    except Exception as _le:
+        print(f"⚠️ logging setup error: {_le}", flush=True)
+
+    # 🗄️ اطمینان از ساخت جداول (در import با خطا مواجه شود، اینجا دوباره تلاش می‌شود)
+    for _t_attempt in range(5):
+        try:
+            db.init_tables()
+            break
+        except Exception as _te:
+            print(f"⚠️ init_tables retry {_t_attempt+1}: {_te}", flush=True)
+            time.sleep(3)
+
     # Import and register group manager handlers
     try:
         from group_manager import register_group_handlers

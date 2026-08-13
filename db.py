@@ -12,17 +12,28 @@ Database module - Neon PostgreSQL (Senior Architect Enhanced)
 import os
 import json
 import time
+import hmac
+import hashlib
 import threading
 import functools
 import asyncio
+import logging
 import psycopg2
 from psycopg2.extras import Json, DictCursor
 from psycopg2 import pool as _psycopg2_pool
 
-DB_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://neondb_owner:npg_fLk5QncJezR8@ep-lucky-queen-adg9b8qq-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
-)
+try:
+    import config
+    DB_URL = config.DATABASE_URL
+    DB_POOL_SIZE = config.DB_POOL_SIZE
+except Exception:
+    DB_URL = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://neondb_owner:npg_fLk5QncJezR8@ep-lucky-queen-adg9b8qq-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+    )
+    DB_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "6"))
+
+logger = logging.getLogger("antiscraper.db")
 
 # ⚡ پول اتصال — هر ترد اتصال مستقل خودش را می‌گیرد.
 # قبلاً همه کوئری‌ها (اسکرپ + ادد موازی + مینی‌اپ) روی یک سوکت مشترک صف می‌شدند.
@@ -34,7 +45,7 @@ def _init_pool():
     global _pool
     with _pool_lock:
         if _pool is None:
-            size = int(os.environ.get("DB_POOL_SIZE", "6"))
+            size = int(os.environ.get("DB_POOL_SIZE", str(DB_POOL_SIZE)))
             _pool = _psycopg2_pool.ThreadedConnectionPool(2, max(4, size), DB_URL, connect_timeout=15)
 
 
@@ -112,12 +123,12 @@ def db_retry(max_retries=2, delay=0.5):
                     return func(*args, **kwargs)
                 except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError, _psycopg2_pool.PoolError) as e:
                     last_err = e
-                    print(f"⚠️ DB Reconnect [{func.__name__}] (attempt {attempt+1}/{max_retries}): {e}", flush=True)
+                    logger.warning(f"⚠️ DB Reconnect [{func.__name__}] (attempt {attempt+1}/{max_retries}): {e}")
                     reset_db_pool()
                     if attempt < max_retries - 1:
                         time.sleep(delay)
                 except Exception as e:
-                    print(f"❌ DB Error [{func.__name__}]: {e}", flush=True)
+                    logger.error(f"❌ DB Error [{func.__name__}]: {e}")
                     raise
             if last_err:
                 raise last_err
@@ -129,32 +140,72 @@ async def async_db_call(func, *args, **kwargs):
     return await asyncio.to_thread(func, *args, **kwargs)
 
 # ---------------- Session Encryption Helpers ----------------
+# فرمت جدید (SES3): MAGIC + nonce(16) + ciphertext + HMAC-SHA256(32)
+#   - nonce تصادفی: دو سشن مشابه هرگز keystream یکسان ندارند
+#   - HMAC: هر دستکاری در داده شناسایی می‌شود (احراز اصالت)
+# فرمت قدیمی (بدون MAGIC): AES-CTR بدون nonce — موقع خواندن به‌صورت خودکار پشتیبانی می‌شود
+_SES_MAGIC = b"SES3"
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def _enc_key_material(key_str: str) -> dict:
+    h = hashlib.sha256(key_str.encode()).digest()
+    return {
+        "enc": hashlib.sha256(h + b":enc").digest(),
+        "mac": hashlib.sha256(h + b":mac").digest(),
+        "legacy": h,
+    }
+
+
 def encrypt_session_blob(blob_bytes: bytes) -> bytes:
-    """رمزنگاری اختیاری سشن‌ها قبل از ذخیره در دیتابیس"""
+    """رمزنگاری سشن‌ها — AES-CTR با nonce تصادفی + HMAC-SHA256"""
     key = os.environ.get("SESSION_ENCRYPTION_KEY")
     if not key or not blob_bytes:
         return blob_bytes
     try:
-        import pyaes, hashlib
-        key_32 = hashlib.sha256(key.encode()).digest()
-        aes = pyaes.AESModeOfOperationCTR(key_32)
-        return aes.encrypt(blob_bytes)
+        import pyaes
+        km = _enc_key_material(key)
+        nonce = os.urandom(16)
+        ct = pyaes.AESModeOfOperationCTR(km["enc"]).encrypt(blob_bytes)
+        mac = hmac.new(km["mac"], nonce + ct, hashlib.sha256).digest()
+        return _SES_MAGIC + nonce + ct + mac
     except Exception as e:
-        print(f"Session encryption failed (storing raw): {e}", flush=True)
+        logger.warning("Session encryption failed (storing raw): %s", e)
         return blob_bytes
 
+
 def decrypt_session_blob(blob_bytes: bytes) -> bytes:
-    """رمزگشایی اختیاری سشن‌ها پس از خواندن از دیتابیس"""
+    """رمزگشایی سشن‌ها — با مهاجرت خودکار از فرمت قدیمی و داده خام"""
     key = os.environ.get("SESSION_ENCRYPTION_KEY")
     if not key or not blob_bytes:
         return blob_bytes
     try:
-        import pyaes, hashlib
-        key_32 = hashlib.sha256(key.encode()).digest()
-        aes = pyaes.AESModeOfOperationCTR(key_32)
-        return aes.decrypt(blob_bytes)
+        import pyaes
+        km = _enc_key_material(key)
+        # ۱) فرمت جدید
+        if blob_bytes[:4] == _SES_MAGIC:
+            try:
+                nonce = blob_bytes[4:20]
+                mac = blob_bytes[-32:]
+                ct = blob_bytes[20:-32]
+                if not hmac.compare_digest(hmac.new(km["mac"], nonce + ct, hashlib.sha256).digest(), mac):
+                    raise ValueError("HMAC mismatch")
+                return pyaes.AESModeOfOperationCTR(km["enc"]).decrypt(ct)
+            except Exception as e:
+                logger.warning("SES3 decrypt failed (%s) — trying legacy/raw", e)
+        # ۲) داده خام (SQLite session) — بدون رمزنگاری ذخیره شده
+        if blob_bytes[:16] == _SQLITE_MAGIC:
+            return blob_bytes
+        # ۳) فرمت قدیمی: CTR بدون nonce
+        try:
+            pt = pyaes.AESModeOfOperationCTR(km["legacy"]).decrypt(blob_bytes)
+            if pt[:16] == _SQLITE_MAGIC:
+                return pt
+        except Exception:
+            pass
+        return blob_bytes
     except Exception as e:
-        print(f"Session decryption failed (returning raw): {e}", flush=True)
+        logger.warning("Session decryption failed (returning raw): %s", e)
         return blob_bytes
 
 
@@ -315,7 +366,7 @@ def kv_get(key, default=None):
         cur.close()
         return row[0] if row else default
     except Exception as e:
-        print(f"kv_get {key} err: {e}", flush=True)
+        logger.error(f"kv_get {key} err: {e}")
         return default
 
 @db_retry()
@@ -329,8 +380,7 @@ def kv_set(key, value):
         """, (key, Json(value), int(time.time()), Json(value), int(time.time())))
         cur.close()
     except Exception as e:
-        print(f"kv_set {key} err: {e}", flush=True)
-
+        logger.error(f"kv_set {key} err: {e}")
 # ---------------- Scraped users ----------------
 @db_retry()
 def save_user(user_id, username, first_name, last_name, phone, group_id, group_name):
@@ -350,8 +400,7 @@ def save_user(user_id, username, first_name, last_name, phone, group_id, group_n
         """, (uid, username, first_name, last_name, phone, int(group_id or 0), group_name or "", int(time.time())))
         cur.close()
     except Exception as e:
-        print(f"save_user err: {e}", flush=True)
-
+        logger.error(f"save_user err: {e}")
 @db_retry()
 def load_users_dict():
     try:
@@ -369,7 +418,7 @@ def load_users_dict():
         cur.close()
         return out
     except Exception as e:
-        print(f"load_users err: {e}", flush=True)
+        logger.error(f"load_users err: {e}")
         return {}
 
 @db_retry()
@@ -405,7 +454,7 @@ def bulk_save_users(users_list, group_id, group_name):
             cur.execute("SELECT DISTINCT user_id FROM added_history_tbl WHERE user_id = ANY(%s)", (incoming_ids,))
             blocked_ids.update(int(r[0]) for r in cur.fetchall())
     except Exception as e:
-        print(f"bulk_save filter err: {e}", flush=True)
+        logger.error(f"bulk_save filter err: {e}")
     rows = []
     for u in users_list:
         try:
@@ -418,7 +467,7 @@ def bulk_save_users(users_list, group_id, group_name):
         except:
             continue
     if blocked_ids:
-        print(f"🚫 {len(blocked_ids)} کاربر ممنوعه/ادد‌شده از ذخیره‌سازی رد شدند", flush=True)
+        logger.error(f"🚫 {len(blocked_ids)} کاربر ممنوعه/ادد‌شده از ذخیره‌سازی رد شدند")
     if not rows:
         cur.close()
         return
@@ -434,7 +483,7 @@ def bulk_save_users(users_list, group_id, group_name):
                 phone = COALESCE(NULLIF(EXCLUDED.phone, ''), scraped_users.phone)
         """, rows, page_size=500)
     except Exception as e:
-        print(f"bulk_save_users err: {e}", flush=True)
+        logger.error(f"bulk_save_users err: {e}")
     cur.close()
 
 # ---------------- Saved accounts (with session backup) ----------------
@@ -462,8 +511,7 @@ def save_account(phone, name, username, device_fp, session_blob=None):
             """, (phone, name or "", username or "", Json(device_fp), int(time.time()), int(time.time())))
         cur.close()
     except Exception as e:
-        print(f"save_account err: {e}", flush=True)
-
+        logger.error(f"save_account err: {e}")
 @db_retry()
 def load_accounts():
     try:
@@ -481,7 +529,7 @@ def load_accounts():
         cur.close()
         return out
     except Exception as e:
-        print(f"load_accounts err: {e}", flush=True)
+        logger.error(f"load_accounts err: {e}")
         return {}
 
 @db_retry()
@@ -501,8 +549,7 @@ def save_session_blob(phone, blob_bytes):
                     (psycopg2.Binary(encrypted_session) if encrypted_session else None, int(time.time()), phone))
         cur.close()
     except Exception as e:
-        print(f"save_session_blob err: {e}", flush=True)
-
+        logger.error(f"save_session_blob err: {e}")
 @db_retry()
 def load_session_blob(phone):
     try:
@@ -515,7 +562,7 @@ def load_session_blob(phone):
             return decrypt_session_blob(raw_bytes)
         return None
     except Exception as e:
-        print(f"load_session_blob err: {e}", flush=True)
+        logger.error(f"load_session_blob err: {e}")
         return None
 
 # ---------------- Config ----------------
@@ -529,8 +576,7 @@ def set_owner_phone(phone):
         """, (phone,))
         cur.close()
     except Exception as e:
-        print(f"set_owner_phone err: {e}", flush=True)
-
+        logger.error(f"set_owner_phone err: {e}")
 @db_retry()
 def get_owner_phone():
     try:
@@ -556,8 +602,7 @@ def set_config(group_id, group_name, defense_enabled=True, owner_phone=""):
         """, (int(group_id), group_name, defense_enabled, owner_phone))
         cur.close()
     except Exception as e:
-        print(f"set_config err: {e}", flush=True)
-
+        logger.error(f"set_config err: {e}")
 @db_retry()
 def get_config(key=None, default=None):
     if key is not None:
@@ -576,7 +621,7 @@ def get_config(key=None, default=None):
             }
         return {"group_id": None, "group_name": "", "defense_enabled": True, "owner_phone": ""}
     except Exception as e:
-        print(f"get_config err: {e}", flush=True)
+        logger.error(f"get_config err: {e}")
         return {"group_id": None, "group_name": "", "defense_enabled": True, "owner_phone": ""}
 
 # ---------------- Adder limits ----------------
@@ -596,7 +641,7 @@ def get_adder_limits():
         cur.close()
         return out
     except Exception as e:
-        print(f"get_adder_limits err: {e}", flush=True)
+        logger.error(f"get_adder_limits err: {e}")
         return {}
 
 @db_retry()
@@ -614,8 +659,7 @@ def set_adder_limit(phone, added, limitation_type=None, limitation_until=0):
         """, (phone, int(added), int(time.time()), limitation_type, int(limitation_until)))
         cur.close()
     except Exception as e:
-        print(f"set_adder_limit err: {e}", flush=True)
-
+        logger.error(f"set_adder_limit err: {e}")
 @db_retry()
 def reset_adder_limits():
     try:
@@ -623,8 +667,7 @@ def reset_adder_limits():
         cur.execute("UPDATE adder_limits_tbl SET added=0, last_used=%s", (int(time.time()),))
         cur.close()
     except Exception as e:
-        print(f"reset_adder_limits err: {e}", flush=True)
-
+        logger.error(f"reset_adder_limits err: {e}")
 @db_retry()
 def clear_account_limitation(phone):
     try:
@@ -632,8 +675,7 @@ def clear_account_limitation(phone):
         cur.execute("UPDATE adder_limits_tbl SET limitation_type=NULL, limitation_until=0 WHERE phone=%s", (phone,))
         cur.close()
     except Exception as e:
-        print(f"clear_account_limitation err: {e}", flush=True)
-
+        logger.error(f"clear_account_limitation err: {e}")
 @db_retry()
 def get_account_status(phone):
     try:
@@ -667,7 +709,7 @@ def get_account_status(phone):
             "remaining_seconds": max(0, lim_until - now) if lim_until > 0 else 0
         }
     except Exception as e:
-        print(f"get_account_status err: {e}", flush=True)
+        logger.error(f"get_account_status err: {e}")
         return {"added": 0, "status": "healthy", "limitation_type": None, "limitation_until": 0}
 
 # ---------------- Added members history ----------------
@@ -682,8 +724,7 @@ def mark_added(group_id, user_id, phone):
         """, (int(group_id), int(user_id), int(time.time()), phone or ""))
         cur.close()
     except Exception as e:
-        print(f"mark_added err: {e}", flush=True)
-
+        logger.error(f"mark_added err: {e}")
 @db_retry()
 def is_added(group_id, user_id):
     try:
@@ -724,8 +765,7 @@ def set_bg_scan(enabled, target_group_id=None, account_phone=None, interval_minu
         """, (bool(enabled), int(target_group_id) if target_group_id else None, account_phone, int(interval_minutes)))
         cur.close()
     except Exception as e:
-        print(f"set_bg_scan err: {e}", flush=True)
-
+        logger.error(f"set_bg_scan err: {e}")
 @db_retry()
 def get_bg_scan():
     try:
@@ -737,7 +777,7 @@ def get_bg_scan():
             return dict(row)
         return {"enabled": False, "target_group_id": None, "account_phone": None, "interval_minutes": 60, "last_run": 0, "total_found": 0, "status": "idle"}
     except Exception as e:
-        print(f"get_bg_scan err: {e}", flush=True)
+        logger.error(f"get_bg_scan err: {e}")
         return {"enabled": False, "target_group_id": None, "account_phone": None, "interval_minutes": 60, "last_run": 0, "total_found": 0, "status": "idle"}
 
 @db_retry()
@@ -747,8 +787,7 @@ def mark_bg_run(total_new):
         cur.execute("UPDATE bg_scan_state SET last_run=%s, total_found=total_found+%s WHERE id=1", (int(time.time()), int(total_new)))
         cur.close()
     except Exception as e:
-        print(f"mark_bg_run err: {e}", flush=True)
-
+        logger.error(f"mark_bg_run err: {e}")
 @db_retry()
 def set_bg_status(status):
     try:
@@ -756,8 +795,7 @@ def set_bg_status(status):
         cur.execute("UPDATE bg_scan_state SET status=%s WHERE id=1", (str(status),))
         cur.close()
     except Exception as e:
-        print(f"set_bg_status err: {e}", flush=True)
-
+        logger.error(f"set_bg_status err: {e}")
 # ---------------- Projects storage (Hunter / Finder) ----------------
 @db_retry()
 def save_project(url, platform, full_name, category, data):
@@ -771,8 +809,7 @@ def save_project(url, platform, full_name, category, data):
         """, (url, platform, full_name, category, Json(data), int(time.time())))
         cur.close()
     except Exception as e:
-        print(f"save_project err: {e}", flush=True)
-
+        logger.error(f"save_project err: {e}")
 @db_retry()
 def load_projects(category=None):
     try:
@@ -795,7 +832,7 @@ def load_projects(category=None):
         cur.close()
         return out
     except Exception as e:
-        print(f"load_projects err: {e}", flush=True)
+        logger.error(f"load_projects err: {e}")
         return []
 
 @db_retry()
@@ -816,12 +853,10 @@ def clear_projects():
         cur.execute("DELETE FROM projects_tbl")
         cur.close()
     except Exception as e:
-        print(f"clear_projects err: {e}", flush=True)
-
+        logger.error(f"clear_projects err: {e}")
 # ----- Sync JSON->DB on first run ----------------
 def migrate_json_to_db():
     """Import existing JSON files into DB on first run (one-shot)."""
-    import glob
     try:
         if os.path.exists("scraped_users.json"):
             with open("scraped_users.json", "r", encoding="utf-8") as f:
@@ -830,15 +865,13 @@ def migrate_json_to_db():
             gid = d.get("group_id", 0)
             gname = d.get("group_name", "")
             bulk_save_users(users, gid, gname)
-            print(f"[migrate] imported {len(users)} users from JSON", flush=True)
-
+            logger.info(f"[migrate] imported {len(users)} users from JSON")
         if os.path.exists("saved_accounts.json"):
             with open("saved_accounts.json","r",encoding="utf-8") as f:
                 accs = json.load(f)
             for phone, info in accs.items():
                 save_account(phone, info.get("name",""), info.get("username",""), info.get("device_fp"))
-            print(f"[migrate] imported {len(accs)} accounts", flush=True)
-
+            logger.info(f"[migrate] imported {len(accs)} accounts")
         if os.path.exists("adder_limits.json"):
             with open("adder_limits.json","r",encoding="utf-8") as f:
                 lim = json.load(f)
@@ -851,11 +884,13 @@ def migrate_json_to_db():
             if c.get("group_id"):
                 set_config(c["group_id"], c.get("group_name",""), c.get("defense_enabled",True))
     except Exception as e:
-        print(f"migrate err: {e}", flush=True)
-
-
-# Initialize tables at import time
-init_tables()
+        logger.error(f"migrate err: {e}")
+# Initialize tables at import time (محافظت‌شده: اگر دیتابیس موقتاً در دسترس نبود،
+# ماژول همچنان import می‌شود و bot.py موقع استارت دوباره تلاش می‌کند)
+try:
+    init_tables()
+except Exception as e:
+    logger.warning("init_tables deferred at import: %s", e)
 
 
 # ---------------- Scanned Chats History (group/channel tracker) ----------------
@@ -891,8 +926,7 @@ def upsert_scanned_chat(chat_id, chat_name, chat_type="group", category="",
                   int(progress_pct or 0), now, now))
         cur.close()
     except Exception as e:
-        print(f"upsert_scanned_chat err: {e}", flush=True)
-
+        logger.error(f"upsert_scanned_chat err: {e}")
 @db_retry()
 def get_scanned_chats(category=None):
     """Get list of scanned chats, optionally filtered by category"""
@@ -906,7 +940,7 @@ def get_scanned_chats(category=None):
         cur.close()
         return [dict(r) for r in rows]
     except Exception as e:
-        print(f"get_scanned_chats err: {e}", flush=True)
+        logger.error(f"get_scanned_chats err: {e}")
         return []
 
 @db_retry()
@@ -970,7 +1004,7 @@ def get_users_by_source(source_chat_id=None, category=None, limit=2000, offset=0
         cur.close()
         return [dict(r) for r in rows]
     except Exception as e:
-        print(f"get_users_by_source err: {e}", flush=True)
+        logger.error(f"get_users_by_source err: {e}")
         return []
 
 @db_retry()
@@ -1046,8 +1080,7 @@ def fav_add(url):
                     (Json([url]), Json([url])))
         cur.close()
     except Exception as e:
-        print(f"fav_add err: {e}", flush=True)
-
+        logger.error(f"fav_add err: {e}")
 @db_retry()
 def fav_remove(url):
     try:
@@ -1056,8 +1089,7 @@ def fav_remove(url):
                     (json.dumps(url),))
         cur.close()
     except Exception as e:
-        print(f"fav_remove err: {e}", flush=True)
-
+        logger.error(f"fav_remove err: {e}")
 def fav_list():
     v = kv_get("favorites", []) or []
     return list(v)
@@ -1104,7 +1136,7 @@ def add_do_not_add(user_id: int, reason: str = "") -> bool:
         cur.close()
         return True
     except Exception as e:
-        print(f"add_do_not_add err: {e}", flush=True)
+        logger.error(f"add_do_not_add err: {e}")
         return False
 
 
@@ -1160,7 +1192,7 @@ def get_blocked_user_ids() -> set:
         blocked.update(int(r[0]) for r in cur.fetchall())
         cur.close()
     except Exception as e:
-        print(f"get_blocked_user_ids err: {e}", flush=True)
+        logger.error(f"get_blocked_user_ids err: {e}")
     return blocked
 
 
@@ -1188,7 +1220,7 @@ def save_lead(title, url, source="web", category="گیمینگ", phone="", teleg
         cur.close()
         return True
     except Exception as e:
-        print(f"save_lead err: {e}", flush=True)
+        logger.error(f"save_lead err: {e}")
         return False
 
 @db_retry()
@@ -1210,7 +1242,7 @@ def load_leads(category=None, status=None, limit=200, offset=0):
         cur.close()
         return [dict(r) for r in rows]
     except Exception as e:
-        print(f"load_leads err: {e}", flush=True)
+        logger.error(f"load_leads err: {e}")
         return []
 
 @db_retry()
@@ -1235,7 +1267,7 @@ def update_lead_status(lead_id, status):
         cur.close()
         return True
     except Exception as e:
-        print(f"update_lead_status err: {e}", flush=True)
+        logger.error(f"update_lead_status err: {e}")
         return False
 
 @db_retry()
@@ -1246,6 +1278,6 @@ def delete_lead(lead_id):
         cur.close()
         return True
     except Exception as e:
-        print(f"delete_lead err: {e}", flush=True)
+        logger.error(f"delete_lead err: {e}")
         return False
 
