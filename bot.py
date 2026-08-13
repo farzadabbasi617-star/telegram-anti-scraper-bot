@@ -115,7 +115,7 @@ def _make_progress_updater(msg_ref, is_retry=False):
             pass
     return updater
 
-app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=1)
+app = Client("antiscraper_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN, workers=4)
 
 def _cleanup_session_locks():
     """پاک کردن فایل‌های قفل و ژورنال قدیمی Pyrogram/SQLite که از کرش قبلی مانده‌اند"""
@@ -542,6 +542,12 @@ def save_added_history(hist):
 def mark_user_as_added(chat_id, chat_title, user_id):
     """ثبت کردن این کاربر که به این گروه اضافه شد (در DB)"""
     _db_mark_added(chat_id, user_id, "")
+    # ⚡ همگام‌سازی کش در حافظه — برای چک‌های بعدی (ضد تکرار/لفت) کوئری لازم نیست
+    try:
+        if _BLOCKED_IDS_CACHE["ids"] is not None:
+            _BLOCKED_IDS_CACHE["ids"].add(int(user_id))
+    except Exception:
+        pass
 
 def is_user_already_added(chat_id, user_id):
     """چک میکند که این کاربر قبلا به این گروه اضافه شده یا نه"""
@@ -724,8 +730,9 @@ def build_welcome_text():
     """Build the rich status/welcome text shown at top of main menu."""
     saved_accs = list_saved_accounts()
     acc_count = len(saved_accs)
-    users, gname, _ = load_scraped()
-    total_users = len(users)
+    # ⚡ فقط تعداد ممبرها (COUNT) — قبلاً کل ۲۵هزار کاربر در هر رندر منو لود می‌شد!
+    total_users = _db_count_users()
+    gname = _db_get_config().get("group_name", "") or ""
     total_added = _db_count_added()
     bg_st = get_bg_scan()
     bg_state_txt = "🟢 روشن" if bg_st.get("enabled") else "🔴 خاموش"
@@ -1510,11 +1517,12 @@ async def _start_direct_add(q, target_gid):
         total_avail = _db_count_users()
         src_label = "همه کاربران"
     
-    # Filter out already-added users
+    # Filter out already-added users — ⚡ از کش در حافظه (بدون کوئری به ازای هر ممبر)
+    blocked = get_blocked_ids_cached()
     uid_list = []
     for u in user_records:
         uid = int(u.get("user_id", 0) or 0)
-        if uid and not is_user_already_added(target_gid, uid):
+        if uid and uid not in blocked:
             uid_list.append(uid)
     
     if not uid_list:
@@ -1632,6 +1640,7 @@ async def _execute_direct_add(q, target_gid):
     valid_peers = {}
     total = 0
     scanned = 0
+    blocked = get_blocked_ids_cached()  # ⚡ لیست تکراری‌ها در حافظه (بدون کوئری به ازای هر عضو)
     try:
         async for member in add_client.app.get_chat_members(source_gid, limit=10000):
             if atk_state.get("_stop_requested"):
@@ -1643,7 +1652,7 @@ async def _execute_direct_add(q, target_gid):
             uid = u.id
             if uid <= 10000 or uid >= 10**11:
                 continue
-            if is_user_already_added(target_gid, uid):
+            if uid in blocked:  # ⚡ چک از کش حافظه — قبلاً تا ۱۰هزار کوئری دیتابیس می‌زد!
                 skipped += 1
                 continue
             # Skip if over remaining
@@ -1789,11 +1798,12 @@ async def _start_parallel_direct_add(q):
     else:
         user_records = get_users_by_source(limit=total_cap)
     
-    # Filter already-added
+    # Filter already-added — ⚡ از کش در حافظه (بدون کوئری به ازای هر ممبر)
+    blocked = get_blocked_ids_cached()
     uid_list = []
     for u in user_records:
         uid = int(u.get("user_id", 0) or 0)
-        if uid and not is_user_already_added(target_gid, uid):
+        if uid and uid not in blocked:
             uid_list.append(uid)
     
     total = min(len(uid_list), total_cap)
@@ -2585,7 +2595,8 @@ async def group_leave(c, m):
             # اگر این کاربر قبلاً توسط بات ادد شده بود (در تاریخچه ادد ثبت شده):
             # ۱) برای همیشه وارد لیست «هرگز دوباره ادد نشود» می‌شود
             # ۲) از دیتابیس ممبرها حذف می‌شود تا در استخراج‌های بعدی هم برنگردد
-            if _db_is_added(m.chat.id, uid) or _db_is_added_any(uid):
+            # ⚡ چک از کش در حافظه — بدون کوئری دیتابیس
+            if uid in get_blocked_ids_cached():
                 never_add_again(uid, "left")
                 print(f"🚪 کاربر {uid} گروه را ترک کرد → بلاک‌لیست شد و از دیتابیس حذف شد", flush=True)
         except Exception as e:
@@ -6532,7 +6543,7 @@ async def _cb_impl(c, q):
                     gid, uid_list, accounts,
                     adder_limits_load=load_adder_limits,
                     save_adder_limits_fn=save_adder_limits,
-                    add_history_check=is_user_already_added,
+                    add_history_check=lambda cid, uid: uid in get_blocked_ids_cached(),
                     mark_added=mark_user_as_added,
                     max_per_account=MAX_ADD_PER_ACCOUNT,
                     progress_cb=on_progress,
@@ -7684,11 +7695,16 @@ async def _steps_impl(c, m):
             content = file.getvalue().decode("utf-8-sig")
             reader = csv.DictReader(io.StringIO(content))
             raw_user_ids = []
+            already_skipped = 0
+            total_in_file = 0
+            blocked = get_blocked_ids_cached()  # ⚡ فیلتر تکراری از کش حافظه
             for row in reader:
                 if "user_id" in row and str(row["user_id"]).lstrip('-').isdigit():
                     uid = int(row["user_id"])
-                    # فیلتر کردن افرادی که قبلا به این گروه اضافه شده اند
-                    if is_user_already_added(target_gid, uid):
+                    total_in_file += 1
+                    # فیلتر کردن افرادی که قبلا ادد شده‌اند
+                    if uid in blocked:
+                        already_skipped += 1
                         continue
                     if uid not in raw_user_ids:
                         raw_user_ids.append(uid)
@@ -7699,10 +7715,8 @@ async def _steps_impl(c, m):
             except:
                 target_title = "گروه مقصد"
             user_ids = raw_user_ids
-            total_in_file = len(user_ids)
             added = 0
             errors = 0
-            already_skipped = len([1 for row in csv.DictReader(io.StringIO(content)) if "user_id" in row and str(row["user_id"]).lstrip('-').isdigit()]) - total_in_file
             skipped_due_to_limit = 0
             remaining_slots = MAX_ADD_PER_ACCOUNT - already
             start_msg = f"شروع اضافه کردن...\n"
@@ -7967,6 +7981,10 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
     
     await upd()
     
+    # ⚡ ست تکراری‌ها در حافظه — به‌جای ۳ کوئری دیتابیس به ازای هر ممبر (۷۵هزار کوئری در ۲۵هزار اد!)
+    invalidate_blocked_cache()
+    blocked = get_blocked_ids_cached()
+    
     # Add members one by one
     for i, member in enumerate(members[:remaining]):
         uid = member.get("user_id", 0)
@@ -7974,8 +7992,8 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             skipped += 1
             continue
         
-        # 🚫 چک سراسری ضد-تکرار: قبلاً به هر گروهی ادد شده یا در لیست ممنوعه است → هرگز دوباره ادد نشود
-        if is_user_already_added(target_gid, uid) or _db_is_added_any(uid) or _db_is_dna(uid):
+        # 🚫 چک ضد-تکرار در حافظه: قبلاً ادد شده / لفت داده / در لیست ممنوعه → هرگز دوباره ادد نشود
+        if uid in blocked:
             skipped += 1
             continue
         
@@ -8338,6 +8356,10 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
         atk_state_ref["live_mode"] = f"اد موازی ({add_mode})"
         atk_state_ref["live_active_accounts"] = []
 
+    # ⚡ ست تکراری‌ها در حافظه (مشترک بین همه ورکرها) — صفر کوئری به ازای هر ممبر
+    invalidate_blocked_cache()
+    blocked_ids = get_blocked_ids_cached()
+
     # Shared queue of members to add
     member_queue = asyncio.Queue()
     for m in members:
@@ -8422,8 +8444,8 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 uid = member.get("user_id", 0)
                 username = member.get("username", "").strip()
 
-                # 🚫 چک سراسری ضد-تکرار: آیدی نامعتبر / قبلاً ادد شده / در لیست ممنوعه → هرگز دوباره ادد نشود
-                if uid <= 10000 or uid >= 10**11 or is_user_already_added(target_gid, uid) or _db_is_added_any(uid) or _db_is_dna(uid):
+                # 🚫 چک ضد-تکرار در حافظه: آیدی نامعتبر / قبلاً ادد شده / لفت داده / ممنوع → هرگز دوباره ادد نشود
+                if uid <= 10000 or uid >= 10**11 or uid in blocked_ids:
                     total_skipped += 1
                     member_queue.task_done()
                     continue

@@ -72,8 +72,19 @@ class _MiniAppMsgWrapper:
 # DATA & ATTACK TRIGGER HELPERS
 # -----------------------------------------------------------------
 
+# ⚡ کش سبک برای APIهای پول‌شونده مینی‌اپ (هر ۱ ثانیه!) — حین ادد زنده بدون کش
+_DASH_CACHE = {"data": None, "ts": 0.0}
+_ACCOUNTS_CACHE = {"data": None, "ts": 0.0}
+_CACHE_TTL = 2.0
+
+
 def get_dashboard_dict():
     try:
+        is_adding = bool(atk_state_ref and atk_state_ref.get("add_in_progress"))
+        now = time.time()
+        # حین عملیات زنده: همیشه تازه. در حالت بیکار: کش ۲ ثانیه‌ای (جلوگیری از بمباران دیتابیس)
+        if not is_adding and _DASH_CACHE["data"] is not None and (now - _DASH_CACHE["ts"]) < _CACHE_TTL:
+            return _DASH_CACHE["data"]
         total_members = db.count_users()
         accounts = db.load_accounts()
         total_leads = db.count_leads()
@@ -118,7 +129,7 @@ def get_dashboard_dict():
                 "status_text": atk_state_ref.get("live_status_text", "در حال ادد زنده...")
             }
             
-        return {
+        result = {
             "ok": True,
             "metrics": {
                 "total_members": total_members,
@@ -133,12 +144,19 @@ def get_dashboard_dict():
                 "add_progress": add_progress
             }
         }
+        if not is_adding:
+            _DASH_CACHE["data"] = result
+            _DASH_CACHE["ts"] = time.time()
+        return result
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
 def get_accounts_dict():
     try:
+        now = time.time()
+        if _ACCOUNTS_CACHE["data"] is not None and (now - _ACCOUNTS_CACHE["ts"]) < _CACHE_TTL:
+            return _ACCOUNTS_CACHE["data"]
         accs = db.load_accounts()
         out = []
         for phone, info in accs.items():
@@ -154,7 +172,10 @@ def get_accounts_dict():
                 "remaining_seconds": st.get("remaining_seconds", 0),
                 "last_used": info.get("last_used", 0)
             })
-        return {"ok": True, "accounts": out}
+        result = {"ok": True, "accounts": out}
+        _ACCOUNTS_CACHE["data"] = result
+        _ACCOUNTS_CACHE["ts"] = time.time()
+        return result
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

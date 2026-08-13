@@ -17,57 +17,103 @@ import functools
 import asyncio
 import psycopg2
 from psycopg2.extras import Json, DictCursor
+from psycopg2 import pool as _psycopg2_pool
 
 DB_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql://neondb_owner:npg_fLk5QncJezR8@ep-lucky-queen-adg9b8qq-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
 )
 
-_conn = None
-_conn_lock = threading.Lock()
+# ⚡ پول اتصال — هر ترد اتصال مستقل خودش را می‌گیرد.
+# قبلاً همه کوئری‌ها (اسکرپ + ادد موازی + مینی‌اپ) روی یک سوکت مشترک صف می‌شدند.
+_pool = None
+_pool_lock = threading.Lock()
 
-def get_conn():
-    """دریافت اتصال سالم به دیتابیس با قابلیت چک کردن پایداری سوکت"""
-    global _conn
-    with _conn_lock:
-        if _conn is not None:
+
+def _init_pool():
+    global _pool
+    with _pool_lock:
+        if _pool is None:
+            size = int(os.environ.get("DB_POOL_SIZE", "6"))
+            _pool = _psycopg2_pool.ThreadedConnectionPool(2, max(4, size), DB_URL, connect_timeout=15)
+
+
+def reset_db_pool():
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
             try:
-                if _conn.closed != 0:
-                    _conn = None
-                else:
-                    _conn.poll()
+                _pool.closeall()
+            except Exception:
+                pass
+            _pool = None
+
+
+class _PooledCursor:
+    """کرسور پروکسی — با close شدن، اتصال به‌طور خودکار به پول برمی‌گردد (بدون نشتی اتصال)"""
+    __slots__ = ("_owner", "_cur")
+    def __init__(self, owner, cur):
+        self._owner = owner
+        self._cur = cur
+    def close(self):
+        try:
+            self._cur.close()
+        except Exception:
+            pass
+        self._owner.release()
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+
+class _PooledConn:
+    """اتصال پروکسی — تمام API قبلی (cursor, poll, closed, ...) حفظ شده است"""
+    __slots__ = ("_pool", "_conn")
+    def __init__(self, pool, conn):
+        self._pool = pool
+        self._conn = conn
+    def cursor(self, *args, **kwargs):
+        return _PooledCursor(self, self._conn.cursor(*args, **kwargs))
+    def release(self):
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                self._pool.putconn(conn)
             except Exception:
                 try:
-                    _conn.close()
+                    conn.close()
                 except Exception:
                     pass
-                _conn = None
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+    def __del__(self):
+        # توری ایمنی: اگر در مسیر استثنایی cur.close() جا ماند، اتصال با GC برمی‌گردد
+        try:
+            self.release()
+        except Exception:
+            pass
 
-        if _conn is None or _conn.closed != 0:
-            _conn = psycopg2.connect(DB_URL, connect_timeout=15)
-            _conn.autocommit = True
-        return _conn
+
+def get_conn():
+    """گرفتن اتصال سالم و آماده (autocommit) از پول"""
+    _init_pool()
+    conn = _pool.getconn()
+    conn.autocommit = True
+    return _PooledConn(_pool, conn)
+
 
 def db_retry(max_retries=2, delay=0.5):
     """دکوراتور اختصاصی جهت بازیابی خودکار خطاهای شبکه و قطعی اتصال دیتابیس"""
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
-            global _conn
             last_err = None
             for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
-                except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError) as e:
+                except (psycopg2.OperationalError, psycopg2.InterfaceError, psycopg2.DatabaseError, _psycopg2_pool.PoolError) as e:
                     last_err = e
                     print(f"⚠️ DB Reconnect [{func.__name__}] (attempt {attempt+1}/{max_retries}): {e}", flush=True)
-                    with _conn_lock:
-                        if _conn:
-                            try:
-                                _conn.close()
-                            except Exception:
-                                pass
-                            _conn = None
+                    reset_db_pool()
                     if attempt < max_retries - 1:
                         time.sleep(delay)
                 except Exception as e:
