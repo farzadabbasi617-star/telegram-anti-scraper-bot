@@ -335,6 +335,42 @@ def get_diagnostics_dict():
     except Exception as e:
         out["bg_scan"] = {"error": str(e)}
 
+    # 🔐 بررسی قفل بودن گروه مقصد.
+    # اگر can_send_messages=False باشد، تلگرام به اکانت‌های عادی اجازه
+    # InviteToChannel نمی‌دهد و CHAT_WRITE_FORBIDDEN می‌دهد — حتی وقتی
+    # can_invite_users روشن است. این شایع‌ترین علت «ادد صفر» است.
+    try:
+        import requests as _rq2
+        from config import BOT_TOKEN as _BT2
+        gid = out.get("target", {}).get("resolved")
+        if _BT2 and gid:
+            _r = _rq2.get(
+                f"https://api.telegram.org/bot{_BT2}/getChat",
+                params={"chat_id": gid}, timeout=10,
+            ).json()
+            if _r.get("ok"):
+                perms = (_r["result"].get("permissions") or {})
+                can_send = perms.get("can_send_messages")
+                can_inv = perms.get("can_invite_users")
+                out["target_permissions"] = {
+                    "can_send_messages": can_send,
+                    "can_invite_users": can_inv,
+                    "ok_for_adding": bool(can_send and can_inv),
+                }
+                if can_send is False:
+                    out["target_permissions"]["hint"] = (
+                        "گروه روی حالت «فقط ادمین‌ها» است. تا وقتی ارسال پیام "
+                        "برای اعضا بسته باشد، اکانت‌ها نمی‌توانند کسی را اضافه "
+                        "کنند. راه‌حل: تنظیمات گروه ← Permissions ← Send Messages "
+                        "را روشن کن، یا اکانت‌ها را ادمین کن."
+                    )
+                elif can_inv is False:
+                    out["target_permissions"]["hint"] = (
+                        "دسترسی «Add Members» برای اعضا بسته است."
+                    )
+    except Exception:
+        pass
+
     # آخرین خطای کار پس‌زمینه (برای عیب‌یابی «ادد اجرا نشد»)
     try:
         if atk_state_ref is not None:
