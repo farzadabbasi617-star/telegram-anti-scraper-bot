@@ -8314,10 +8314,23 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 )
             except Exception:
                 pass
-            members, prefilter_stats = await prefilter_unaddable(
-                probe_client, members,
+            # ⚠️ فقط اوایل صف را بررسی کن، نه هر ۹٬۶۰۰ نفر را (۱.۶.۴).
+            #
+            # هر دسته‌ی ۱۰۰تایی یک درخواست get_users است. با کل صف یعنی
+            # ~۹۶ درخواست پشت سر هم، و ۶ اکانت هم‌زمان همین کار را
+            # می‌کردند. اکانت‌ها بودجه‌ی نرخشان را قبل از اولین ادد
+            # می‌سوزاندند و با «صفر ادد» PEER_FLOOD می‌گرفتند.
+            #
+            # عملاً هر اجرا چند ده ادد بیشتر انجام نمی‌شود، پس بررسی
+            # ابتدای صف کافی است؛ بقیه در همان حلقه‌ی ادد فیلتر می‌شوند.
+            _scan = min(len(members), max(300, len(accs) * 60))
+            _head, _tail = members[:_scan], members[_scan:]
+            _head, prefilter_stats = await prefilter_unaddable(
+                probe_client, _head,
                 log=lambda m: print(f"[prefilter] {m}", flush=True),
             )
+            # بخش بررسی‌شده + بقیه صف (که بررسی نشد ولی حذف هم نشده)
+            members = _head + _tail
             try:
                 await probe_client.stop()
             except Exception:

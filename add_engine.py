@@ -179,6 +179,7 @@ async def prefilter_unaddable(client, members, mark_blocked=True, log=None):
         staged.append((uid, m))
 
     keep = []
+    consecutive_errors = 0
     for i in range(0, len(staged), _PREFILTER_BATCH):
         chunk = staged[i:i + _PREFILTER_BATCH]
         ids = [uid for uid, _ in chunk if uid]
@@ -195,12 +196,44 @@ async def prefilter_unaddable(client, members, mark_blocked=True, log=None):
                     except Exception:
                         continue
                 stats["checked"] += len(ids)
+                consecutive_errors = 0
             except Exception as e:
                 # بررسی شکست خورد → محافظه‌کارانه همه را نگه دار
                 stats["errors"] += 1
+                name = type(e).__name__
+
+                # 🚨 مهم‌ترین محافظ (۱.۶.۴):
+                # هر get_users یک درخواست است. با ۹٬۶۰۰ کاربر یعنی ۹۶
+                # درخواست پشت سر هم — و ۶ اکانت این کار را هم‌زمان
+                # می‌کردند. اکانت‌ها تمام بودجه‌ی نرخشان را «قبل از اولین
+                # ادد» می‌سوزاندند و با صفر ادد PEER_FLOOD می‌گرفتند.
+                #
+                # اگر تلگرام دارد rate-limit می‌دهد، پیش‌فیلتر را کلاً
+                # رها کن. پیش‌فیلتر فقط یک بهینه‌سازی است؛ ادد نکردن
+                # بدتر از ادد کردن بدون پیش‌فیلتر است.
+                if "Flood" in name or "flood" in str(e).lower():
+                    if log:
+                        log(
+                            f"⛔ پیش‌فیلتر متوقف شد ({name}) — تلگرام محدود می‌کند. "
+                            f"{len(staged) - i} کاربر بدون بررسی نگه داشته شدند تا "
+                            "بودجه نرخ اکانت برای خودِ ادد بماند."
+                        )
+                    keep.extend(m for _, m in staged[i:])
+                    stats["aborted"] = True
+                    break
+
                 if log:
-                    log(f"پیش‌فیلتر برای این دسته ناموفق بود ({type(e).__name__}) — همه نگه داشته شدند")
+                    log(f"پیش‌فیلتر برای این دسته ناموفق بود ({name}) — همه نگه داشته شدند")
                 keep.extend(m for _, m in chunk)
+
+                # سه شکست پیاپی = بی‌فایده است، ادامه نده
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    if log:
+                        log("⛔ پیش‌فیلتر بعد از ۳ شکست پیاپی رها شد — بقیه بدون بررسی نگه داشته شدند")
+                    keep.extend(m for _, m in staged[i + _PREFILTER_BATCH:])
+                    stats["aborted"] = True
+                    break
                 await asyncio.sleep(0.5)
                 continue
 
