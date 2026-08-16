@@ -100,6 +100,155 @@ def prefer_addable_members(members):
     return sorted(members or [], key=_key)
 
 
+# ═══════════════════════════════════════════════════════════════
+# 🔍 پیش‌فیلتر حریم خصوصی
+# ═══════════════════════════════════════════════════════════════
+#
+# مشکل: تلاش برای ادد کاربری که تنظیمات حریم خصوصی‌اش را بسته،
+# یک درخواست کامل به تلگرام می‌فرستد، شکست می‌خورد، و سهم اکانت
+# از بودجه‌ی نرخ (rate budget) را می‌سوزاند — بدون هیچ نتیجه‌ای.
+# با ۲۵ هزار ممبر در دیتابیس، این یعنی هزاران درخواست بیهوده و
+# رسیدن سریع به FloodWait.
+#
+# راه‌حل: قبل از حلقه‌ی ادد، با یک درخواست دسته‌ای (getUsers) وضعیت
+# را بررسی کن. تلگرام برای هر کاربر پرچم‌هایی برمی‌گرداند که نشان
+# می‌دهد اصلاً قابل‌افزودن هست یا نه.
+
+# حداکثر تعداد در هر فراخوانی get_users — تلگرام سقف ~200 دارد
+_PREFILTER_BATCH = 100
+
+
+def _is_unaddable_user(u):
+    """
+    آیا این آبجکت User قطعاً غیرقابل‌ادد است؟
+
+    فقط سیگنال‌های قطعی را برمی‌گرداند تا کاربر سالمی حذف نشود:
+      • حساب حذف‌شده (deleted)
+      • ربات (bot)
+      • خودِ ما (is_self)
+    """
+    if u is None:
+        return True, "پیدا نشد"
+    if getattr(u, "is_deleted", False) or getattr(u, "deleted", False):
+        return True, "حساب حذف‌شده"
+    if getattr(u, "is_bot", False) or getattr(u, "bot", False):
+        return True, "ربات"
+    if getattr(u, "is_self", False):
+        return True, "خودِ اکانت"
+    return False, ""
+
+
+async def prefilter_unaddable(client, members, mark_blocked=True, log=None):
+    """
+    قبل از شروع ادد، کاربرانی که قطعاً اضافه نمی‌شوند را کنار بگذار.
+
+    برمی‌گرداند: (لیست_قابل_ادد، آمار)
+
+    چرا مهم است: هر تلاش ناموفق ادد، بودجه‌ی نرخ اکانت را مصرف می‌کند.
+    حذف حساب‌های پاک‌شده و ربات‌ها *قبل* از حلقه یعنی اکانت‌ها خیلی
+    دیرتر به FloodWait می‌خورند.
+
+    این تابع محافظه‌کار است: اگر بررسی شکست بخورد، کاربر را نگه می‌دارد
+    (بهتر است یک تلاش اضافه شود تا اینکه کاربر سالمی حذف گردد).
+    """
+    import asyncio
+
+    members = list(members or [])
+    stats = {"checked": 0, "removed": 0, "kept": 0, "reasons": {}, "errors": 0}
+    if not members:
+        return members, stats
+
+    app = getattr(client, "app", client)
+
+    # لیست ممنوعه‌ی از قبل شناخته‌شده — بدون هیچ درخواست شبکه‌ای
+    try:
+        blocked = get_blocked_ids_cached() or set()
+    except Exception:
+        blocked = set()
+
+    staged = []
+    for m in members:
+        try:
+            uid = int(m.get("user_id") or m.get("id") or 0)
+        except Exception:
+            uid = 0
+        if uid and uid in blocked:
+            stats["removed"] += 1
+            stats["reasons"]["در لیست ممنوعه"] = stats["reasons"].get("در لیست ممنوعه", 0) + 1
+            continue
+        staged.append((uid, m))
+
+    keep = []
+    for i in range(0, len(staged), _PREFILTER_BATCH):
+        chunk = staged[i:i + _PREFILTER_BATCH]
+        ids = [uid for uid, _ in chunk if uid]
+
+        fetched = {}
+        if ids:
+            try:
+                users = await app.get_users(ids)
+                if not isinstance(users, (list, tuple)):
+                    users = [users]
+                for u in users:
+                    try:
+                        fetched[int(getattr(u, "id", 0))] = u
+                    except Exception:
+                        continue
+                stats["checked"] += len(ids)
+            except Exception as e:
+                # بررسی شکست خورد → محافظه‌کارانه همه را نگه دار
+                stats["errors"] += 1
+                if log:
+                    log(f"پیش‌فیلتر برای این دسته ناموفق بود ({type(e).__name__}) — همه نگه داشته شدند")
+                keep.extend(m for _, m in chunk)
+                await asyncio.sleep(0.5)
+                continue
+
+        for uid, m in chunk:
+            u = fetched.get(uid)
+            if u is None and ids:
+                # تلگرام این کاربر را برنگرداند = وجود ندارد
+                stats["removed"] += 1
+                stats["reasons"]["پیدا نشد"] = stats["reasons"].get("پیدا نشد", 0) + 1
+                if mark_blocked and uid:
+                    try:
+                        never_add_again(uid, "invalid")
+                    except Exception:
+                        pass
+                continue
+
+            bad, why = _is_unaddable_user(u) if u is not None else (False, "")
+            if bad:
+                stats["removed"] += 1
+                stats["reasons"][why] = stats["reasons"].get(why, 0) + 1
+                if mark_blocked and uid:
+                    try:
+                        never_add_again(uid, "invalid")
+                    except Exception:
+                        pass
+                continue
+
+            keep.append(m)
+
+        # وقفه‌ی کوتاه بین دسته‌ها — get_users ارزان است ولی رایگان نیست
+        await asyncio.sleep(0.4)
+
+    stats["kept"] = len(keep)
+    return keep, stats
+
+
+def format_prefilter_report(stats):
+    """گزارش خوانا از نتیجه‌ی پیش‌فیلتر."""
+    if not stats or not stats.get("removed"):
+        return ""
+    lines = [f"🔍 پیش‌فیلتر: {stats['removed']} نفر قبل از شروع کنار گذاشته شدند"]
+    for reason, count in sorted(stats.get("reasons", {}).items(), key=lambda x: -x[1]):
+        lines.append(f"   • {reason}: {count}")
+    lines.append(f"   ✅ باقی‌مانده برای ادد: {stats.get('kept', 0)}")
+    lines.append("   💡 این‌ها سهمیه اکانت را مصرف نکردند.")
+    return "\n".join(lines)
+
+
 def _looks_like_chat_ref(raw):
     s = (raw or "").strip()
     if not s:

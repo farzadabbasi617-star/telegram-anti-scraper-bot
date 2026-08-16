@@ -159,6 +159,111 @@ def get_dashboard_dict():
         return {"ok": False, "error": str(e)}
 
 
+def get_diagnostics_dict():
+    """
+    گزارش تشخیصی: چرا یک اکانت استخراج/ادد انجام نمی‌دهد؟
+
+    به‌جای اینکه فقط «سالم» یا «محدود» بگوید، دقیقاً می‌گوید هر اکانت
+    از کدام مرحله رد نشده — قفل مشغولی، محدودیت، سشن ناقص، یا آماده.
+    """
+    import account_state
+    out = {"ok": True, "generated_at": int(time.time())}
+
+    # ۱) وضعیت اسکن خودکار
+    try:
+        bg = db.get_bg_scan() or {}
+        last_run = int(bg.get("last_run") or 0)
+        out["bg_scan"] = {
+            "enabled": bool(bg.get("enabled")),
+            "target_group_id": bg.get("target_group_id"),
+            "account_phone": bg.get("account_phone"),
+            "interval_minutes": bg.get("interval_minutes"),
+            "status": bg.get("status"),
+            "last_run_ts": last_run,
+            "minutes_since_last_run": (
+                round((time.time() - last_run) / 60, 1) if last_run else None
+            ),
+        }
+    except Exception as e:
+        out["bg_scan"] = {"error": str(e)}
+
+    # ۲) مقصد ادد
+    try:
+        from add_engine import resolve_add_target
+        cfg = db.get_config() or {}
+        out["target"] = {
+            "config_group_id": cfg.get("group_id"),
+            "config_group_name": cfg.get("group_name"),
+            "resolved": str(resolve_add_target(cfg)),
+        }
+    except Exception as e:
+        out["target"] = {"error": str(e)}
+
+    # ۳) چرا هر اکانت انتخاب می‌شود یا نمی‌شود
+    accounts = []
+    try:
+        import account_doctor
+        accs = db.load_accounts() or {}
+        for phone in accs.keys():
+            row = {"phone": phone, "blockers": []}
+            try:
+                row["name"] = (accs.get(phone) or {}).get("name", "")
+            except Exception:
+                row["name"] = ""
+
+            lbl = account_state.busy_label(phone)
+            if lbl:
+                row["blockers"].append(f"قفل مشغولی: {lbl}")
+
+            try:
+                st = db.get_account_status(phone) or {}
+                row["status"] = st.get("status")
+                row["added"] = st.get("added")
+                rem = int(st.get("remaining_seconds") or 0)
+                if st.get("status") == "limited":
+                    row["blockers"].append(
+                        f"{st.get('limitation_type') or 'محدود'} — "
+                        f"{round(rem/3600, 1)} ساعت باقی"
+                    )
+            except Exception as e:
+                row["blockers"].append(f"خطای وضعیت: {e}")
+
+            try:
+                local = account_doctor.check_session_local(phone)
+                row["session_on_disk"] = bool(local.get("disk_file"))
+                row["session_in_db"] = bool(local.get("db_blob"))
+                if not local.get("disk_file") and not local.get("db_blob"):
+                    row["blockers"].append("هیچ سشنی وجود ندارد")
+                else:
+                    ins = account_doctor.inspect_session(phone)
+                    row["session_valid"] = bool(ins.get("ok"))
+                    if not ins.get("ok"):
+                        row["blockers"].append(
+                            f"سشن ناقص: {ins.get('error') or 'نامشخص'}"
+                        )
+            except Exception as e:
+                row["blockers"].append(f"خطای سشن: {e}")
+
+            try:
+                lu = account_state.last_used(phone)
+                row["minutes_since_used"] = (
+                    round((time.time() - lu) / 60, 1) if lu else None
+                )
+                row["last_error"] = account_state.get_last_error(phone) or ""
+            except Exception:
+                pass
+
+            row["ready"] = not row["blockers"]
+            accounts.append(row)
+    except Exception as e:
+        out["accounts_error"] = str(e)
+
+    out["accounts"] = accounts
+    out["ready_count"] = sum(1 for a in accounts if a.get("ready"))
+    out["blocked_count"] = sum(1 for a in accounts if not a.get("ready"))
+    return out
+
+
 def get_accounts_dict():
     try:
         now = time.time()
@@ -1716,6 +1821,10 @@ def create_web_app(app_bot=None, atk_state=None):
         async def aio_api_dashboard(request):
             return web.json_response(get_dashboard_dict(), headers=NO_CACHE)
 
+        async def aio_api_diagnose(request):
+            """چرا یک اکانت کار نمی‌کند؟ — گزارش دقیق به‌جای حدس زدن."""
+            return web.json_response(get_diagnostics_dict(), headers=NO_CACHE)
+
         async def aio_api_accounts(request):
             return web.json_response(get_accounts_dict(), headers=NO_CACHE)
 
@@ -1816,6 +1925,7 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_get('/', aio_serve_mini_app)
         app.router.add_get('/app', aio_serve_mini_app)
         app.router.add_get('/api/dashboard', aio_api_dashboard)
+        app.router.add_get('/api/diagnose', aio_api_diagnose)
         app.router.add_get('/api/accounts', aio_api_accounts)
         app.router.add_get('/api/members/stats', aio_api_members_stats)
         app.router.add_get('/api/leads/stats', aio_api_leads_stats)

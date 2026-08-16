@@ -8205,6 +8205,49 @@ def reset_stop_event():
         atk_state["_stop_requested"] = False
         atk_state["stop_parallel_add"] = False
 
+async def _open_probe_client(phone):
+    """
+    یک کلاینت موقت و فقط‌خواندنی برای بررسی‌های سبک (مثل پیش‌فیلتر).
+
+    از کپی موقت سشن استفاده می‌کند تا با ورکرهای ادد تداخل نداشته باشد
+    (دو اتصال همزمان روی یک فایل سشن = AUTH_KEY_DUPLICATED و سوختن سشن).
+    برمی‌گرداند None اگر نشد — فراخوان باید بدون پیش‌فیلتر ادامه دهد.
+    """
+    import tempfile, shutil
+    from pyrogram import Client
+    from attacker import safe_phone_filename as spfn
+
+    sess_path = os.path.join(SESSIONS_DIR, f"acc_{spfn(phone)}")
+    if not os.path.exists(sess_path + ".session"):
+        try:
+            from account_doctor import ensure_session
+            ok, _ = ensure_session(phone)
+            if not ok:
+                return None
+        except Exception:
+            return None
+    if not os.path.exists(sess_path + ".session"):
+        return None
+
+    try:
+        tmp_dir = tempfile.mkdtemp()
+        tmp_sess = os.path.join(tmp_dir, f"probe_{spfn(phone)}_{int(time.time())}")
+        shutil.copy2(sess_path + ".session", tmp_sess + ".session")
+        client = Client(
+            tmp_sess,
+            api_id=API_ID,
+            api_hash=API_HASH,
+            phone_number=phone,
+            no_updates=True,
+        )
+        await asyncio.wait_for(client.start(), timeout=45)
+        client._probe_tmp_dir = tmp_dir
+        return client
+    except Exception as e:
+        print(f"⚠️ probe client برای {phone} باز نشد: {type(e).__name__}", flush=True)
+        return None
+
+
 async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode="safe"):
     """Execute parallel add using Smart Round-Robin distribution across all active accounts."""
     from pyrogram.raw.functions.channels import InviteToChannel
@@ -8231,6 +8274,46 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     # ⚡ ست تکراری‌ها در حافظه (مشترک بین همه ورکرها) — صفر کوئری به ازای هر ممبر
     invalidate_blocked_cache()
     blocked_ids = get_blocked_ids_cached()
+
+    # 🔍 پیش‌فیلتر: حساب‌های حذف‌شده/ربات/ناموجود را قبل از شروع کنار بگذار.
+    # هر تلاش ناموفق ادد، بودجه نرخ اکانت را می‌سوزاند — حذف این‌ها قبل از
+    # حلقه یعنی اکانت‌ها خیلی دیرتر به FloodWait می‌خورند.
+    prefilter_stats = None
+    try:
+        from add_engine import prefilter_unaddable, format_prefilter_report
+        probe_phone = next(iter(accs.keys())) if hasattr(accs, "keys") else accs[0][0]
+        probe_client = await _open_probe_client(probe_phone)
+        if probe_client:
+            try:
+                await q.message.edit_text(
+                    f"🔍 در حال بررسی {total_members:,} کاربر قبل از شروع ادد...\n"
+                    f"<i>این کار از سوختن بیهوده سهمیه اکانت‌ها جلوگیری می‌کند.</i>"
+                )
+            except Exception:
+                pass
+            members, prefilter_stats = await prefilter_unaddable(
+                probe_client, members,
+                log=lambda m: print(f"[prefilter] {m}", flush=True),
+            )
+            try:
+                await probe_client.stop()
+            except Exception:
+                pass
+            total_members = len(members)
+            if prefilter_stats and prefilter_stats.get("removed"):
+                print(format_prefilter_report(prefilter_stats), flush=True)
+            if total_members == 0:
+                await q.message.edit_text(
+                    "⚠️ بعد از پیش‌فیلتر هیچ کاربر قابل‌اددی نماند.\n\n"
+                    + (format_prefilter_report(prefilter_stats) or ""),
+                    reply_markup=main_menu(),
+                )
+                return
+            if atk_state_ref:
+                atk_state_ref["live_total"] = total_members
+                atk_state_ref["live_remaining"] = total_members
+    except Exception as e:
+        print(f"⚠️ پیش‌فیلتر انجام نشد ({type(e).__name__}: {e}) — ادامه بدون آن", flush=True)
 
     # Shared queue of members to add — یوزرنیم‌دارها اول
     member_queue = asyncio.Queue()
