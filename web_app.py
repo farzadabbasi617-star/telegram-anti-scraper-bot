@@ -43,17 +43,88 @@ def set_main_event_loop(loop):
     global main_event_loop
     main_event_loop = loop
 
-def _schedule_coro(coro):
+
+def _resolve_bot_loop():
+    """
+    حلقه رویدادی که کلاینت پایروگرام واقعاً روی آن اجرا می‌شود.
+
+    ⚠️ باگی که این تابع رفع می‌کند (نسخه ۱.۵.۱):
+    `bot.py` در زمان import یک loop می‌ساخت و همان را به‌عنوان
+    main_event_loop ثبت می‌کرد. ولی `app.run()` پایروگرام حلقه خودش را
+    می‌سازد و اجرا می‌کند؛ آن loop اولیه هرگز run نمی‌شد.
+
+    نتیجه: `main_event_loop.is_running()` غلط بود، `_schedule_coro` به
+    fallback می‌افتاد، یک loop سوم می‌ساخت که هیچ‌کس اجرایش نمی‌کرد، و
+    **کوروتین ادد هرگز اجرا نمی‌شد** — دکمه پیام موفقیت می‌داد ولی هیچ
+    اتفاقی نمی‌افتاد.
+
+    راه‌حل: loop را مستقیم از خود کلاینت پایروگرام بگیر.
+    """
+    global main_event_loop
     if main_event_loop and main_event_loop.is_running():
-        asyncio.run_coroutine_threadsafe(coro, main_event_loop)
-    else:
+        return main_event_loop
+
+    # از کلاینت زنده پایروگرام
+    for candidate in (bot_app, getattr(bot_app, "app", None)):
+        loop = getattr(candidate, "loop", None)
+        if loop and loop.is_running():
+            main_event_loop = loop
+            return loop
+
+    # ماژول bot را فقط اگر از قبل import شده نگاه کن — import تازه آن
+    # assert_env() را اجرا می‌کند و می‌تواند پروسه را ببندد.
+    try:
+        import sys
+        _bot = sys.modules.get("bot")
+        if _bot is not None:
+            loop = getattr(getattr(_bot, "app", None), "loop", None)
+            if loop and loop.is_running():
+                main_event_loop = loop
+                return loop
+    except Exception:
+        pass
+
+    return None
+
+
+def _schedule_coro(coro):
+    """
+    زمان‌بندی یک کوروتین روی حلقه رویداد ربات.
+
+    برمی‌گرداند True اگر واقعاً زمان‌بندی شد. اگر هیچ حلقه در حال اجرایی
+    پیدا نشود، کوروتین را در یک ترد اختصاصی اجرا می‌کند — بهتر از
+    ساختن loopیی که هرگز اجرا نمی‌شود و کار را بی‌صدا می‌بلعد.
+    """
+    loop = _resolve_bot_loop()
+    if loop is not None:
+        asyncio.run_coroutine_threadsafe(coro, loop)
+        return True
+
+    try:
+        running = asyncio.get_running_loop()
+        running.create_task(coro)
+        return True
+    except RuntimeError:
+        pass
+
+    # آخرین راه: ترد اختصاصی با حلقه خودش که واقعاً اجرا می‌شود
+    def _runner():
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(coro)
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.create_task(coro)
+            new_loop.run_until_complete(coro)
+        except Exception as e:
+            print(f"⚠️ background task error: {type(e).__name__}: {e}", flush=True)
+        finally:
+            try:
+                new_loop.close()
+            except Exception:
+                pass
+
+    import threading
+    threading.Thread(target=_runner, daemon=True).start()
+    print("ℹ️ کار پس‌زمینه روی ترد اختصاصی اجرا شد (حلقه ربات پیدا نشد)", flush=True)
+    return True
 
 
 class _MiniAppMsgWrapper:
@@ -117,11 +188,19 @@ def get_dashboard_dict():
         if atk_state_ref:
             is_running = atk_state_ref.get("add_in_progress", False)
             start_t = atk_state_ref.get("live_start_time", time.time())
-            elapsed = int(time.time() - start_t) if is_running else 0
+            # زمان سپری‌شده: حین اجرا زنده، بعد از پایان روی مقدار نهایی
+            # ثابت می‌ماند تا کاربر نتیجه را ببیند (قبلاً صفر می‌شد).
+            if is_running:
+                elapsed = int(time.time() - start_t)
+            else:
+                elapsed = int(atk_state_ref.get("live_elapsed_final", 0) or 0)
             added = atk_state_ref.get("live_added", 0)
             speed = int(added / (elapsed / 60)) if elapsed > 10 else (added * 2 if elapsed > 0 else 0)
 
             add_progress = {
+                "finished": bool(
+                    not is_running and atk_state_ref.get("live_total")
+                ),
                 "added": added,
                 "failed": atk_state_ref.get("live_failed", 0),
                 "skipped": atk_state_ref.get("live_skipped", 0),
@@ -622,6 +701,10 @@ def trigger_single_add(phone, add_type):
                     atk_state_ref["live_status_text"] = f"❌ خطا: {str(e)[:200]}"
             finally:
                 if atk_state_ref:
+                    # زمان نهایی را نگه دار تا بعد از پایان هم در UI دیده شود
+                    st = atk_state_ref.get("live_start_time")
+                    if st:
+                        atk_state_ref["live_elapsed_final"] = int(time.time() - st)
                     atk_state_ref["add_in_progress"] = False
 
         _schedule_coro(run_single_job())
@@ -750,6 +833,10 @@ def trigger_parallel_add(add_mode, add_type):
                     atk_state_ref["live_status_text"] = f"❌ خطا: {str(e)[:200]}"
             finally:
                 if atk_state_ref:
+                    # زمان نهایی را نگه دار تا بعد از پایان هم در UI دیده شود
+                    st = atk_state_ref.get("live_start_time")
+                    if st:
+                        atk_state_ref["live_elapsed_final"] = int(time.time() - st)
                     atk_state_ref["add_in_progress"] = False
 
         _schedule_coro(run_parallel_job())
@@ -1692,8 +1779,45 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
                         document.getElementById('live-speed-tag').classList.add('hidden');
                         document.getElementById('btn-stop-add').classList.add('hidden');
-                        document.getElementById('live-meter-section').classList.add('hidden');
                         document.getElementById('live-last-user-card').classList.add('hidden');
+
+                        // نتیجه آخرین عملیات را نگه دار — قبلاً همه‌چیز صفر
+                        // می‌شد و کاربر هرگز نمی‌فهمید چند نفر واقعاً اضافه شدند.
+                        const fin = m.add_progress || {};
+                        if (fin.finished) {
+                            document.getElementById('live-meter-section').classList.remove('hidden');
+                            const fAdded = fin.added || 0;
+                            const fFailed = fin.failed || 0;
+                            const fSkipped = fin.skipped || 0;
+                            const fTotal = fin.total || 1;
+                            const fPct = Math.min(100, Math.round(((fAdded + fFailed + fSkipped) / fTotal) * 100));
+
+                            document.getElementById('prog-pct').innerText = fPct + '%';
+                            document.getElementById('prog-bar').style.width = fPct + '%';
+                            document.getElementById('prog-added').innerText = fAdded;
+                            document.getElementById('prog-failed').innerText = fFailed;
+                            document.getElementById('prog-skipped').innerText = fSkipped;
+
+                            const fs = fin.elapsed_sec || 0;
+                            document.getElementById('prog-time').innerText =
+                                String(Math.floor(fs / 60)).padStart(2, '0') + ':' +
+                                String(fs % 60).padStart(2, '0');
+
+                            document.getElementById('live-card-title').innerText =
+                                '🏁 آخرین عملیات: ' + fAdded + ' عضو شد، ' +
+                                fSkipped + ' رد، ' + fFailed + ' خطا';
+                            document.getElementById('live-card-title').className =
+                                'text-xs font-bold text-sky-300';
+
+                            if (fin.status_text) {
+                                document.getElementById('status-text').innerText = fin.status_text;
+                                document.getElementById('status-text').className =
+                                    'text-xs font-medium ' +
+                                    (fin.status_text.indexOf('❌') === 0 ? 'text-rose-400' : 'text-sky-400');
+                            }
+                        } else {
+                            document.getElementById('live-meter-section').classList.add('hidden');
+                        }
                     }
                 }
             } catch (e) { console.error(e); }

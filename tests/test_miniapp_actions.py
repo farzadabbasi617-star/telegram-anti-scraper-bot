@@ -94,8 +94,11 @@ def test_add_in_progress_always_cleared(fn):
     می‌شوند. باید در finally پاک شود.
     """
     body = _function_body(fn)
-    assert re.search(r"finally:\s*\n\s*if atk_state_ref:\s*\n\s*atk_state_ref\[\"add_in_progress\"\] = False", body), (
-        f"{fn} باید add_in_progress را در finally پاک کند"
+    finally_block = re.search(r"\n(\s+)finally:\n(.*?)(?=\n\1[a-z_]|\n\s{0,8}[a-z_]+\s*=|\Z)", body, re.S)
+    assert finally_block, f"{fn} بلوک finally ندارد"
+    assert 'atk_state_ref["add_in_progress"] = False' in finally_block.group(2), (
+        f"{fn} باید add_in_progress را در finally پاک کند، وگرنه همه "
+        "اددهای بعدی برای همیشه رد می‌شوند"
     )
 
 
