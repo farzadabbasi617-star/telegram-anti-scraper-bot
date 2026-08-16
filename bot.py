@@ -8415,6 +8415,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
 
         client = None
         acc_added = 0
+        _skips_in_row = 0
         acc_limits = load_adder_limits()
         already_added = acc_limits.get(phone, {}).get("added", 0)
         day_cap = MODE_DAILY_CAP.get(add_mode, 100)
@@ -8505,6 +8506,9 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
 
                 uid = member.get("user_id", 0)
                 username = member.get("username", "").strip()
+                # آیا در این دور، درخواستی به تلگرام رفت؟ اگر آری باید
+                # تأخیر بخوریم — فرقی نمی‌کند نتیجه موفق بود یا نه.
+                _spent_request = False
 
                 # 🚫 چک ضد-تکرار در حافظه: آیدی نامعتبر / قبلاً ادد شده / لفت داده / ممنوع → هرگز دوباره ادد نشود
                 if uid <= 10000 or uid >= 10**11 or uid in blocked_ids:
@@ -8595,6 +8599,49 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                             pass
                         print(f"⚠️ [{phone}] {uid} invited but not a member — skipped", flush=True)
                         member_queue.task_done()
+
+                        # 🚨 مهم‌ترین رفع (۱.۷.۱):
+                        # این مسیر قبلاً مستقیم continue می‌زد و تأخیر
+                        # انسانی را رد می‌کرد. ولی InviteToChannel همین‌جا
+                        # هم یک درخواست کامل به تلگرام است!
+                        #
+                        # لاگ واقعی: هر ۱-۲ ثانیه یک «invited but not a
+                        # member» و بعد از ~۱۵ تای آن، PEER_FLOOD — با
+                        # صفر ادد موفق. یعنی سریع‌ترین راه سوزاندن اکانت.
+                        #
+                        # کاربرانی که پرایوسی‌شان بسته است اکثریت صف‌اند،
+                        # پس این مسیر داغ‌ترین مسیر است و حتماً باید
+                        # همان تأخیر ادد موفق را داشته باشد.
+                        # تأخیر پایه را throttle انتهای حلقه می‌دهد
+                        _spent_request = True
+                        _skips_in_row += 1
+
+                        # اگر پشت سر هم رد می‌شوند، این اکانت/بازه‌ی صف
+                        # بازدهی ندارد — استراحت بلندتر تا اکانت نسوزد.
+                        if _skips_in_row >= 8:
+                            _rest = human_break_seconds(add_mode)
+                            print(
+                                f"😴 [{phone}] {_skips_in_row} رد پیاپی — "
+                                f"{_rest}s استراحت (جلوگیری از سوختن اکانت)",
+                                flush=True,
+                            )
+                            _skips_in_row = 0
+                            try:
+                                await asyncio.wait_for(stop_event.wait(), timeout=_rest)
+                                break
+                            except asyncio.TimeoutError:
+                                pass
+                        else:
+                            # ⚠️ این مسیر continue می‌زند و throttle انتهای
+                            # حلقه را رد می‌کند — پس تأخیر را همین‌جا
+                            # اعمال کن، وگرنه بی‌مکث درخواست می‌فرستیم.
+                            try:
+                                await asyncio.wait_for(
+                                    stop_event.wait(), timeout=human_delay(add_mode)
+                                )
+                                break
+                            except asyncio.TimeoutError:
+                                pass
                         continue
 
                     first_n = member.get("first_name", "") or ""
@@ -8608,6 +8655,8 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     # ادد موفق یعنی اکانت سالم است — شمارنده صفر شود تا
                     # جریمه‌های قبلی روی هم انباشته نشوند.
                     _peer_flood_strikes.pop(phone, None)
+                    _skips_in_row = 0
+                    _spent_request = True
                     # ⚠️ ضد-تکرار بین ورکرهای موازی (۱.۷.۰):
                     # blocked_ids ست مشترک در حافظه است که همه ورکرها قبل
                     # از هر ادد چک می‌کنند. قبلاً فقط در دیتابیس ثبت
@@ -8641,12 +8690,6 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                             break
                         except asyncio.TimeoutError:
                             pass
-                    try:
-                        await asyncio.wait_for(stop_event.wait(), timeout=human_delay(add_mode))
-                        print(f"⏹️ [{phone}] Interrupted during delay, stopping worker.", flush=True)
-                        break
-                    except asyncio.TimeoutError:
-                        pass
 
                 except FloodWait as fw:
                     total_failed += 1
@@ -8656,14 +8699,19 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     break
                 except UserAlreadyParticipant:
                     total_skipped += 1
+                    _spent_request = True
                     try:
                         blocked_ids.add(int(uid))
                     except Exception:
                         pass
                     mark_user_as_added(dest_gid, "", uid, phone)
                 except (UserPrivacyRestricted, UserNotMutualContact) as e:
-                    # 🔒 پروفایل قفل است → جزو آمار ادد حساب نمی‌شود
+                    # 🔒 پروفایل قفل است → جزو آمار ادد حساب نمی‌شود.
+                    # ⚠️ این هم یک InviteToChannel کامل مصرف کرده — باید
+                    # مثل ادد موفق تأخیر بخورد، وگرنه روی صفی که اکثرش
+                    # پرایوسی‌بسته است با سرعت نامحدود درخواست می‌فرستیم.
                     total_skipped += 1
+                    _spent_request = True
                     try:
                         blocked_ids.add(int(uid))
                     except Exception:
@@ -8672,6 +8720,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     print(f"🔒 [{phone}] پروفایل قفل {uid} → اسکیپ + حذف از دیتابیس", flush=True)
                 except PeerIdInvalid:
                     total_skipped += 1
+                    _spent_request = True
                     try:
                         blocked_ids.add(int(uid))
                     except Exception:
@@ -8773,10 +8822,25 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                         continue
 
                     total_failed += 1
+                    _spent_request = True
                     print(f"❌ [{phone}] Add error for {uid}: {e}", flush=True)
-                    await asyncio.sleep(1.0)
 
                 member_queue.task_done()
+
+                # ⏱️ throttle واحد (۱.۷.۱)
+                # هر مسیری که یک درخواست به تلگرام فرستاده باید همین‌جا
+                # تأخیر بخورد. قبلاً فقط ادد موفق تأخیر داشت و مسیرهای
+                # خطا (پرایوسی، از قبل عضو، آیدی نامعتبر) بی‌مکث رد
+                # می‌شدند — و چون اکثر صف همان‌هایند، عملاً هیچ تأخیری
+                # اعمال نمی‌شد و اکانت با صفر ادد PEER_FLOOD می‌گرفت.
+                if _spent_request:
+                    try:
+                        await asyncio.wait_for(
+                            stop_event.wait(), timeout=human_delay(add_mode)
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        pass
 
         except Exception as e:
             print(f"❌ Worker error on {phone}: {e}", flush=True)

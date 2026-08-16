@@ -125,7 +125,7 @@ def test_successful_add_updates_shared_blocklist():
     """
     loop = _add_loop()
     i = loop.index("total_added += 1")
-    window = loop[i:i + 700]
+    window = loop[i:i + 1100]
     assert "blocked_ids.add(" in window, (
         "بعد از ادد موفق باید به ست مشترک اضافه شود"
     )
@@ -186,3 +186,81 @@ def test_break_interval_from_config():
     lo, hi = config.ADDS_BEFORE_BREAK
     assert 3 <= lo <= hi <= 20
     assert "random.randint(*ADDS_BEFORE_BREAK)" in BOT, "نباید هاردکد باشد"
+
+
+# ───────── throttle واحد: علت واقعی «صفر ادد، PEER_FLOOD» ─────────
+
+def test_every_network_path_is_throttled():
+    """
+    🚨 علت اصلی که سه بار از دستمان در رفت:
+
+    تأخیر انسانی فقط بعد از ادد **موفق** اعمال می‌شد. ولی مسیرهای
+    دیگر هم یک `InviteToChannel` کامل مصرف می‌کنند:
+      • UserPrivacyRestricted  (اکثریت صف!)
+      • UserAlreadyParticipant
+      • PeerIdInvalid
+      • invited but not a member
+
+    لاگ واقعی نشان داد هر ۱-۲ ثانیه یکی از این‌ها رخ می‌داد و بعد از
+    ~۱۵ تای آن PEER_FLOOD می‌آمد — با صفر ادد موفق.
+
+    چون اکثر صف پرایوسی‌بسته است، عملاً **هیچ تأخیری اعمال نمی‌شد**.
+    """
+    loop = _add_loop()
+    assert "_spent_request = False" in loop, "پرچم باید هر دور ریست شود"
+    assert loop.count("_spent_request = True") >= 5, (
+        "همه مسیرهایی که درخواست مصرف می‌کنند باید علامت بخورند"
+    )
+    assert "if _spent_request:" in loop, "throttle واحد در انتهای حلقه لازم است"
+
+
+def test_privacy_path_consumes_throttle():
+    """پرایوسی‌بسته پرتکرارترین حالت است — حتماً باید تأخیر بخورد."""
+    loop = _add_loop()
+    i = loop.index("except (UserPrivacyRestricted, UserNotMutualContact)")
+    window = loop[i:i + 700]
+    assert "_spent_request = True" in window
+
+
+def test_not_joined_path_is_throttled():
+    """
+    این مسیر `continue` می‌زند و throttle انتهای حلقه را رد می‌کند،
+    پس باید تأخیر مستقیم خودش را داشته باشد.
+    """
+    loop = _add_loop()
+    i = loop.index("invited but not a member")
+    # تا انتهای بلوک: خط اول بعد از آن که با تورفتگی کمتر شروع شود.
+    # (نمی‌توان روی رشته‌ی "continue" لنگر انداخت — در کامنت فارسی هم هست.)
+    j = loop.index("first_n = member.get(", i)
+    window = loop[i:j]
+    assert "_spent_request = True" in window
+    assert "human_delay" in window, (
+        "این مسیر throttle را رد می‌کند — باید تأخیر مستقیم داشته باشد"
+    )
+
+
+def test_no_double_delay_on_success():
+    """
+    مسیر موفق نباید هم تأخیر جداگانه داشته باشد هم throttle —
+    وگرنه سرعت نصف می‌شود.
+    """
+    loop = _add_loop()
+    i = loop.index("total_added += 1")
+    j = loop.index("member_queue.task_done()", i)
+    window = loop[i:j]
+    # فقط استراحت دوره‌ای مجاز است، نه human_delay
+    assert "human_delay" not in window, (
+        "مسیر موفق نباید تأخیر جداگانه داشته باشد — throttle کافی است"
+    )
+
+
+def test_consecutive_skips_trigger_longer_rest():
+    """
+    اگر پشت سر هم رد می‌شوند یعنی این بازه‌ی صف بازدهی ندارد —
+    ادامه دادن فقط اکانت را می‌سوزاند.
+    """
+    loop = _add_loop()
+    assert "_skips_in_row" in loop
+    i = loop.index("if _skips_in_row >=")
+    window = loop[i:i + 500]
+    assert "human_break_seconds" in window
