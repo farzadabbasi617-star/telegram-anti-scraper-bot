@@ -19,8 +19,8 @@ from pyrogram.errors import (
 
 from attacker import AdvancedScraper, safe_phone_filename, SESSIONS_DIR, DEVICE_FP, _enable_wal_on_session, _get_session_lock
 
-API_ID = int(os.environ.get("API_ID", 6))
-API_HASH = os.environ.get("API_HASH", "eb06d4abfb49dc3eeb1aeb98ae0f581e")
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
 
 # shared dash state
 dash = {

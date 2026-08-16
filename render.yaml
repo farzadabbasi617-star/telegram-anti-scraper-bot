@@ -1,0 +1,71 @@
+# ================================================================
+# 🚀 Render — سرویس اختصاصی همین ربات (اسکرپر/ادد ممبر)
+#
+# ⚠️ این ربات باید سرویس Render مستقل خودش را داشته باشد.
+#    ربات‌های دیگر این حساب (بات داوری و بات تورنومنت در ریپو Flexa_app)
+#    فریم‌ورک متفاوتی دارند و هرگز نباید در همین سرویس اجرا شوند.
+#
+# ⚠️ هر ربات = یک BOT_TOKEN جدا. اگر دو پروسه با یک توکن getUpdates بزنند
+#    تلگرام هر دو را با خطای «Conflict: terminated by other getUpdates» می‌شکند.
+# ================================================================
+services:
+  - type: web
+    name: haghbakie-scraper
+    env: python
+    plan: free
+    region: frankfurt
+    branch: main
+    healthCheckPath: /
+    autoDeploy: true
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      # --- الزامی: از داشبورد Render پر کن، هرگز در گیت کامیت نکن ---
+      - key: BOT_TOKEN
+        sync: false
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+
+      # --- رمزنگاری سشن اکانت‌ها (اکیداً توصیه می‌شود) ---
+      - key: SESSION_ENCRYPTION_KEY
+        generateValue: true
+
+      # --- سرور و مینی‌اپ ---
+      - key: PORT
+        value: '10000'
+      - key: KEEP_ALIVE_INTERVAL
+        value: '280'
+
+      # --- دیتابیس ---
+      - key: DB_POOL_SIZE
+        value: '6'
+
+      # --- موتور ادد (ضد بن) ---
+      - key: MAX_ADD_PER_ACCOUNT
+        value: '100'
+      - key: CAP_ULTRA
+        value: '50'
+      - key: CAP_FAST
+        value: '100'
+      - key: CAP_SAFE
+        value: '100'
+      - key: DEFAULT_TARGET_USERNAME
+        sync: false
+
+      # --- دفاع گروه ---
+      # off = هیچ تله‌ای در گروه کاشته نمی‌شود. نسخه ۱.۴.۰ کد قابل‌مشاهده
+      # می‌فرستاد و اعضا آن را اسکم تصور کرده و گروه را ترک می‌کردند.
+      - key: HONEYPOT_MODE
+        value: 'off'
+
+      # --- لاگینگ ---
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_DIR
+        value: logs
