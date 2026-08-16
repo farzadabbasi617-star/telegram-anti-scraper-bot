@@ -178,3 +178,52 @@ def test_add_account_guide_points_to_the_real_bot_flow():
     bot_src = (ROOT / "bot.py").read_text(encoding="utf-8")
     assert 'callback_data="manage_accounts"' in bot_src
     assert 'callback_data="add_new_account"' in bot_src
+
+
+# ───────────────────── کوئری N+1 ─────────────────────
+
+@pytest.mark.parametrize("fn", ["trigger_parallel_add", "trigger_single_add"])
+def test_no_database_query_inside_member_filter_loop(fn):
+    """
+    باگی که دکمه ادد را واقعاً از کار انداخته بود.
+
+    فیلتر ضد تکرار به ازای *هر* کاربر یک بار `db.is_added()` صدا می‌زد.
+    با ۱۰٬۰۰۰ ممبر یعنی ۱۰٬۰۰۰ رفت‌وبرگشت جداگانه به Postgres. چند دقیقه
+    طول می‌کشید و چون در مسیر همگام درخواست بود، مینی‌اپ تایم‌اوت می‌خورد
+    و کاربر فکر می‌کرد دکمه «دکور» است.
+
+    درست: یک کوئری دسته‌ای قبل از حلقه.
+    """
+    body = _function_body(fn)
+    loop = re.search(
+        r"for u in raw_users:(.*?)(?=\n        filtered = prefer)", body, re.S
+    )
+    assert loop, f"حلقه فیلتر در {fn} پیدا نشد"
+
+    queries = re.findall(r"db\.(\w+)\(", loop.group(1))
+    assert not queries, (
+        f"{fn} داخل حلقه کوئری دیتابیس می‌زند: {queries}. "
+        "با ۱۰٬۰۰۰ ممبر این یعنی هزاران کوئری و تایم‌اوت مینی‌اپ. "
+        "قبل از حلقه یک‌بار دسته‌ای بگیر."
+    )
+
+
+@pytest.mark.parametrize("fn", ["trigger_parallel_add", "trigger_single_add"])
+def test_dedup_uses_bulk_lookup(fn):
+    """ضد تکرار باید همچنان کار کند — فقط با یک کوئری دسته‌ای."""
+    body = _function_body(fn)
+    assert "get_added_user_ids" in body, "باید مجموعه اددشده‌ها را یکجا بگیرد"
+    assert "already_added_ids" in body, "باید در حافظه چک شود"
+
+
+def test_bulk_lookup_returns_a_set():
+    """
+    باید set برگرداند نه list — چک عضویت در list یعنی O(n) به ازای هر
+    کاربر و همان کندی از راه دیگری برمی‌گردد.
+    """
+    src = (ROOT / "db.py").read_text(encoding="utf-8")
+    m = re.search(r"def get_added_user_ids\(.*?\n(.*?)(?=\n@|\ndef )", src, re.S)
+    assert m, "تابع get_added_user_ids پیدا نشد"
+    body = m.group(1)
+    assert "{int(r[0])" in body or "set(" in body, "باید set بسازد"
+    assert "return set()" in body, "در خطا باید set خالی بدهد نه None"

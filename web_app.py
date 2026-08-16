@@ -516,13 +516,18 @@ def trigger_single_add(phone, add_type):
         cfg = db.get_config()
         target_gid = resolve_add_target(cfg)
 
+        # ⚡ ضد تکرار دائمی — یک کوئری به‌جای یکی به ازای هر کاربر.
+        # قبلاً is_added() داخل حلقه بود: با ۱۰٬۰۰۰ ممبر یعنی ۱۰٬۰۰۰
+        # رفت‌وبرگشت به Postgres، چند دقیقه طول می‌کشید و چون در مسیر
+        # درخواست بود مینی‌اپ تایم‌اوت می‌خورد.
+        already_added_ids = db.get_added_user_ids(target_gid)
+
         filtered = []
         for u in raw_users:
             uid = u.get("user_id") or u.get("id")
             if not uid or uid <= 10000 or uid >= 10**11: continue
 
-            # PERMANENT HISTORICAL DE-DUPLICATION: Never re-add users in added_history_tbl
-            if db.is_added(target_gid, uid):
+            if int(uid) in already_added_ids:
                 continue
 
             # Filter out deleted accounts
@@ -602,13 +607,18 @@ def trigger_parallel_add(add_mode, add_type):
         cfg = db.get_config()
         target_gid = resolve_add_target(cfg)
 
+        # ⚡ ضد تکرار دائمی — یک کوئری به‌جای یکی به ازای هر کاربر.
+        # قبلاً is_added() داخل حلقه بود: با ۱۰٬۰۰۰ ممبر یعنی ۱۰٬۰۰۰
+        # رفت‌وبرگشت به Postgres، چند دقیقه طول می‌کشید و چون در مسیر
+        # درخواست بود مینی‌اپ تایم‌اوت می‌خورد.
+        already_added_ids = db.get_added_user_ids(target_gid)
+
         filtered = []
         for u in raw_users:
             uid = u.get("user_id") or u.get("id")
             if not uid or uid <= 10000 or uid >= 10**11: continue
 
-            # PERMANENT HISTORICAL DE-DUPLICATION: Never re-add users in added_history_tbl
-            if db.is_added(target_gid, uid):
+            if int(uid) in already_added_ids:
                 continue
 
             # Filter out deleted accounts

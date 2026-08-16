@@ -752,6 +752,36 @@ def is_added(group_id, user_id):
     except:
         return False
 
+
+@db_retry()
+def get_added_user_ids(group_id):
+    """
+    همه user_idهایی که قبلاً به این گروه اضافه شده‌اند — در یک کوئری.
+
+    ⚠️ چرا این تابع لازم است (نسخه ۱.۴.۵):
+    فیلتر ادد قبلاً به ازای *هر* کاربر یک بار is_added() صدا می‌زد. با
+    ۱۰٬۰۰۰ ممبر یعنی ۱۰٬۰۰۰ رفت‌وبرگشت جداگانه به Postgres — چند دقیقه
+    طول می‌کشید و چون داخل هندلر HTTP بود، مینی‌اپ تایم‌اوت می‌خورد و
+    دکمه ادد «کار نمی‌کرد».
+
+    یک کوئری به‌جای ۱۰٬۰۰۰ تا.
+    """
+    try:
+        cur = get_conn().cursor()
+        if group_id:
+            cur.execute(
+                "SELECT user_id FROM added_history_tbl WHERE group_id=%s",
+                (int(group_id),),
+            )
+        else:
+            cur.execute("SELECT user_id FROM added_history_tbl")
+        ids = {int(r[0]) for r in cur.fetchall() if r and r[0] is not None}
+        cur.close()
+        return ids
+    except Exception as e:
+        logger.error(f"get_added_user_ids err: {e}")
+        return set()
+
 @db_retry()
 def count_added(group_id=None):
     try:
