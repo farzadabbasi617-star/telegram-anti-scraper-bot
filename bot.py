@@ -80,7 +80,11 @@ from config import (
     API_ID, API_HASH, BOT_TOKEN, ADMIN_ID, PORT,
     PUBLIC_URL, DEFAULT_TARGET_USERNAME, FIXED_TARGET_LINK,
     MAX_ADD_PER_ACCOUNT, MODE_DAILY_CAP, DB_POOL_SIZE,
+    assert_env,
 )
+
+# اگر متغیر محیطی الزامی جا افتاده باشد، همین‌جا با پیام واضح متوقف شو
+assert_env()
 CONFIG_FILE = "config.json"
 SCRAPED_FILE = "scraped_users.json"
 ADDER_LIMIT_FILE = "adder_limits.json"

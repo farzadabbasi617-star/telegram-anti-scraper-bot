@@ -27,10 +27,7 @@ try:
     DB_URL = config.DATABASE_URL
     DB_POOL_SIZE = config.DB_POOL_SIZE
 except Exception:
-    DB_URL = os.environ.get(
-        "DATABASE_URL",
-        "postgresql://neondb_owner:npg_fLk5QncJezR8@ep-lucky-queen-adg9b8qq-pooler.c-2.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
-    )
+    DB_URL = os.environ.get("DATABASE_URL", "")
     DB_POOL_SIZE = int(os.environ.get("DB_POOL_SIZE", "6"))
 
 logger = logging.getLogger("antiscraper.db")
