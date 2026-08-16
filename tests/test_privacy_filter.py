@@ -332,3 +332,20 @@ def test_probe_failure_is_logged():
     """
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     assert "probe برای" in src, "شکست probe باید لاگ شود"
+
+
+def test_inline_check_passes_user_id_not_peer():
+    """
+    🚨 باگ پروداکشن: `get_users(user_peer)` می‌داد و همیشه
+    `TypeError: 'InputPeerUser' object is not iterable` می‌گرفت —
+    فیلتر کاملاً بی‌اثر بود و بی‌صدا رد می‌شد.
+
+    get_users آی‌دی یا یوزرنیم می‌خواهد، نه آبجکت peer.
+    """
+    loop = _worker_loop()
+    i = loop.index("_is_unaddable_user")
+    window = loop[max(0, i - 600):i + 400]
+    assert "get_users(user_peer)" not in window, (
+        "get_users نباید آبجکت peer بگیرد — TypeError می‌دهد"
+    )
+    assert "get_users(int(uid))" in window

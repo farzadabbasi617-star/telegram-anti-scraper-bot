@@ -8618,7 +8618,10 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 # InviteToChannel است.
                 try:
                     from add_engine import _is_unaddable_user as _iu
-                    _u = await client.get_users(user_peer)
+                    # ⚠️ get_users آی‌دی/یوزرنیم می‌خواهد، نه آبجکت peer.
+                    # پاس دادن user_peer → TypeError: not iterable
+                    # (در پروداکشن دیده شد و فیلتر را کامل بی‌اثر کرد).
+                    _u = await client.get_users(int(uid))
                     _bad, _why = _iu(_u)
                     if _bad:
                         total_skipped += 1
