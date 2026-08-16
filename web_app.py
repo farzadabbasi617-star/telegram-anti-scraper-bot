@@ -342,7 +342,10 @@ def get_diagnostics_dict():
     try:
         import requests as _rq2
         from config import BOT_TOKEN as _BT2
-        gid = out.get("target", {}).get("resolved")
+        # مستقل از ترتیب اجرا محاسبه شود — قبلاً به out["target"] وابسته
+        # بود که در این نقطه هنوز پر نشده و نتیجه همیشه None می‌شد.
+        from add_engine import resolve_add_target as _rat2
+        gid = _rat2(db.get_config() or {})
         if _BT2 and gid:
             _r = _rq2.get(
                 f"https://api.telegram.org/bot{_BT2}/getChat",
