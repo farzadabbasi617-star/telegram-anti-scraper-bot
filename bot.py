@@ -1487,11 +1487,11 @@ async def _start_direct_add(q, target_gid):
     total = min(len(uid_list), remaining)
     
     # Get target name
-    try:
-        tgt = await add_client.app.get_chat(target_gid)
-        target_name = tgt.title
-    except:
-        target_name = atk_state.get("target_add_name", f"گروه {target_gid}")
+    from add_engine import get_target_title as _gtt, target_username_hint as _tuh0
+    target_name = await _gtt(
+        add_client, target_gid, _tuh0(),
+        atk_state.get("target_add_name", f"گروه {target_gid}")
+    )
     
     prog = await q.message.edit_text(
         f"➕ <b>ادد مستقیم از دیتابیس</b>\n"
@@ -1528,8 +1528,8 @@ async def _execute_direct_add(q, target_gid):
         return
 
     try:
-        tgt = await add_client.app.get_chat(target_gid)
-        target_name = tgt.title
+        from add_engine import resolve_target_for_account as _r1, target_username_hint as _t1
+        target_gid, _p1, target_name = await _r1(add_client, target_gid, _t1())
     except Exception as e:
         await prog_msg.edit_text(f"❌ کانال پیدا نشد: {e}",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
@@ -1583,9 +1583,12 @@ async def _execute_direct_add(q, target_gid):
     await prog_msg.edit_text(f"🔄 در حال اسکرپ از <b>{source_name}</b>...\n⏳ صبر کنید",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⏹️ توقف", callback_data="stop_op")]]))
 
-    # Resolve target once
+    # Resolve target once — یوزرنیم اول (وگرنه PeerIdInvalid)
     try:
-        target_peer = await add_client.app.resolve_peer(target_gid)
+        from add_engine import resolve_target_for_account, target_username_hint
+        target_gid, target_peer, _t = await resolve_target_for_account(
+            add_client, target_gid, target_username_hint()
+        )
     except Exception as e:
         await prog_msg.edit_text(f"❌ کانال مقصد resolve نشد: {e}",
             reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
@@ -1872,8 +1875,11 @@ async def _execute_parallel_direct_add(q):
                 print(f"  🔥 {name}: warmup {len(valid_peers)}/{len(batch)} resolved", flush=True)
             except Exception as e:
                 print(f"  ⚠️ {name}: warmup error: {e}", flush=True)
-            # Resolve target channel once
-            sc._target_peer = await sc.app.resolve_peer(target_gid)
+            # Resolve target channel once — یوزرنیم اول
+            from add_engine import resolve_target_for_account, target_username_hint
+            target_gid, sc._target_peer, _t = await resolve_target_for_account(
+                sc, target_gid, target_username_hint()
+            )
             added = 0; failed = 0
             for i, uid in enumerate(user_ids):
                 if stop_req[0]:
@@ -3510,11 +3516,8 @@ async def _cb_impl(c, q):
         except:
             source_name = "گروه منبع"
         
-        try:
-            tgt = await client.app.get_chat(target_gid)
-            target_name = tgt.title
-        except:
-            target_name = "کانال مقصد"
+        from add_engine import get_target_title as _gtt2, target_username_hint as _tuh2
+        target_name = await _gtt2(client, target_gid, _tuh2(), "کانال مقصد")
         
         await q.message.edit_text(
             f"🔄 <b>آماده اسکرپ + ادد!</b>\n"
@@ -7542,11 +7545,8 @@ async def _steps_impl(c, m):
                     if uid not in raw_user_ids:
                         raw_user_ids.append(uid)
             # پیدا کردن نام گروه برای ثبت در تاریخچه
-            try:
-                target_chat = await add_client.app.get_chat(target_gid)
-                target_title = target_chat.title
-            except:
-                target_title = "گروه مقصد"
+            from add_engine import get_target_title as _gtt3, target_username_hint as _tuh3
+            target_title = await _gtt3(add_client, target_gid, _tuh3(), "گروه مقصد")
             user_ids = raw_user_ids
             added = 0
             errors = 0
@@ -7569,7 +7569,8 @@ async def _steps_impl(c, m):
             from pyrogram.raw.functions.contacts import AddContact as _AC2
             from pyrogram.raw.functions.channels import InviteToChannel as _ITC2
             from pyrogram.errors import PeerIdInvalid as _PID2
-            _target_peer_ch = await add_client.app.resolve_peer(target_gid)
+            from add_engine import resolve_target_for_account as _rtfa, target_username_hint as _tuh
+            target_gid, _target_peer_ch, _t = await _rtfa(add_client, target_gid, _tuh())
             
             for uid in user_ids:
                 total_for_account = already + added
@@ -7791,11 +7792,8 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
     
     # Get target name
     try:
-        try:
-            tgt = await client.get_chat(target_gid)
-        except AttributeError:
-            tgt = await client.app.get_chat(target_gid)
-        target_name = tgt.title
+        from add_engine import get_target_title as _gtt4, target_username_hint as _tuh4
+        target_name = await _gtt4(client, target_gid, _tuh4(), "گروه مقصد")
         if getattr(tgt, "id", None):
             target_gid = tgt.id
             try:
@@ -7807,10 +7805,10 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
     
     # Resolve target once
     try:
-        try:
-            target_peer = await client.resolve_peer(target_gid)
-        except AttributeError:
-            target_peer = await client.app.resolve_peer(target_gid)
+        from add_engine import resolve_target_for_account, target_username_hint
+        target_gid, target_peer, _t = await resolve_target_for_account(
+            client, target_gid, target_username_hint()
+        )
     except Exception as e:
         await prog.edit_text(f"❌ گروه مقصد resolve نشد: {e}", reply_markup=InlineKeyboardMarkup([[_sub_back_btn(target="home")[0]]]))
         return
@@ -8401,18 +8399,26 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
             )
             await asyncio.wait_for(client.start(), timeout=45)
 
-            # Resolve target once for this account
-            dest_gid = target_gid
+            # Resolve target once for this account.
+            # ⚠️ باید یوزرنیم اول امتحان شود — اکانتی که گروه را در session
+            # cache ندارد با آی‌دی عددی «Peer id invalid» می‌گیرد و ورکر
+            # بلافاصله می‌میرد (باگ ۱.۵.۴: هر ۸ ورکر همین‌طور مردند).
+            from add_engine import resolve_target_for_account, target_username_hint
             try:
-                target_chat = await client.get_chat(target_gid)
-                dest_gid = target_chat.id
-                target_peer = await client.resolve_peer(dest_gid)
+                dest_gid, target_peer, _title = await resolve_target_for_account(
+                    client, target_gid, target_username_hint()
+                )
                 try:
-                    db.set_config(int(dest_gid), getattr(target_chat, "title", "") or str(dest_gid), True)
+                    db.set_config(int(dest_gid), _title, True)
                 except Exception:
                     pass
-            except Exception:
-                target_peer = await client.resolve_peer(target_gid)
+            except Exception as e:
+                print(f"❌ [{phone}] مقصد resolve نشد: {type(e).__name__}: {e}", flush=True)
+                if atk_state_ref is not None:
+                    atk_state_ref["live_status_text"] = (
+                        f"❌ اکانت {phone} نتوانست گروه مقصد را پیدا کند: {str(e)[:120]}"
+                    )
+                raise
 
             while not member_queue.empty() and acc_added < max_for_this_acc:
                 if stop_event.is_set() or atk_state.get("_stop_requested") or atk_state.get("stop_parallel_add"):

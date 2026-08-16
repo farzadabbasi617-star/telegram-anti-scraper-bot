@@ -413,3 +413,120 @@ def reset_cache_for_tests():
     """فقط برای تست‌ها"""
     global _BLOCKED_IDS_CACHE
     _BLOCKED_IDS_CACHE = {"ids": None, "ts": 0}
+
+
+async def resolve_target_for_account(client, target_gid, username_hint=None):
+    """
+    مقصد ادد را برای یک اکانت یوزر resolve می‌کند.
+
+    🚨 باگی که این تابع رفع می‌کند (نسخه ۱.۵.۴):
+
+    کد قبلی مستقیم `client.get_chat(-1004316603248)` می‌زد. ولی در
+    پایروگرام، یک اکانت فقط آی‌دی عددیِ چت‌هایی را می‌شناسد که قبلاً
+    در session cache خودش دیده باشد. برای اکانتی که تازه لاگین کرده
+    یا هرگز وارد آن گروه نشده، نتیجه همیشه:
+
+        Peer id invalid: -1004316603248
+
+    و هر ۸ ورکر بلافاصله می‌مردند — عملیات با صفر ادد تمام می‌شد در
+    حالی که خود ربات به گروه دسترسی کامل داشت.
+
+    ترتیب درست:
+      ۱) یوزرنیم عمومی (@group) — همیشه بدون cache قابل resolve است
+      ۲) آی‌دی عددی — اگر اکانت از قبل بشناسد
+      ۳) پیوستن با لینک دعوت، اگر داده شده باشد
+
+    برمی‌گرداند (dest_gid, target_peer, title) یا استثنا پرتاب می‌کند.
+    """
+    app = getattr(client, "app", client)
+    attempts = []
+
+    hint = (username_hint or "").strip()
+    if hint:
+        ref = normalize_chat_ref(hint)
+        if isinstance(ref, str):
+            attempts.append(ref)
+
+    attempts.append(target_gid)
+
+    last_err = None
+    for ref in attempts:
+        try:
+            chat = await app.get_chat(ref)
+        except Exception as e:
+            last_err = e
+            continue
+
+        dest = getattr(chat, "id", None) or ref
+        title = getattr(chat, "title", "") or str(dest)
+
+        # peer را با همان مرجعی بگیر که جواب داد. اگر اکانت آی‌دی عددی
+        # را نشناسد، resolve_peer(dest) دوباره PeerIdInvalid می‌دهد و
+        # همان باگ برمی‌گردد — پس هر دو را امتحان کن.
+        for peer_ref in (ref, dest):
+            try:
+                peer = await app.resolve_peer(peer_ref)
+                return dest, peer, title
+            except Exception as e:
+                last_err = e
+
+    # آخرین تلاش: شاید peer در cache باشد ولی get_chat شکست خورده
+    try:
+        peer = await app.resolve_peer(target_gid)
+        return target_gid, peer, str(target_gid)
+    except Exception:
+        pass
+
+    raise last_err or RuntimeError(f"مقصد {target_gid} قابل resolve نیست")
+
+
+def target_username_hint(cfg=None):
+    """
+    یوزرنیم عمومی مقصد را از config درمی‌آورد — کلید resolve شدن گروه
+    برای اکانت‌هایی که آن را در cache ندارند.
+    """
+    if cfg is None:
+        try:
+            cfg = _db.get_config() or {}
+        except Exception:
+            cfg = {}
+    name = (cfg.get("group_name") or "").strip()
+    if name and (name.startswith("@") or "t.me/" in name or name.startswith("http")):
+        ref = normalize_chat_ref(name)
+        if isinstance(ref, str):
+            return ref
+    try:
+        import config as _cfg
+        fb = getattr(_cfg, "DEFAULT_TARGET_USERNAME", "") or ""
+    except Exception:
+        fb = ""
+    fb = fb.strip().lstrip("@")
+    return f"@{fb}" if fb else None
+
+
+async def get_target_title(client, target_gid, username_hint=None, default="گروه مقصد"):
+    """
+    فقط عنوان گروه مقصد را می‌گیرد — برای نمایش.
+
+    مثل resolve_target_for_account اول یوزرنیم را امتحان می‌کند، چون
+    اکانتی که گروه را در cache ندارد با آی‌دی عددی PeerIdInvalid می‌گیرد.
+    هرگز استثنا پرتاب نمی‌کند؛ در بدترین حالت مقدار پیش‌فرض برمی‌گردد.
+    """
+    app = getattr(client, "app", client)
+    refs = []
+    hint = (username_hint or "").strip()
+    if hint:
+        ref = normalize_chat_ref(hint)
+        if isinstance(ref, str):
+            refs.append(ref)
+    refs.append(target_gid)
+
+    for ref in refs:
+        try:
+            chat = await app.get_chat(ref)
+            title = getattr(chat, "title", None)
+            if title:
+                return title
+        except Exception:
+            continue
+    return default
