@@ -8570,10 +8570,11 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     # وضعیتش را بدتر می‌کند و هیچ اددی انجام نمی‌شود.
                     if "PEER_FLOOD" in err:
                         # ⚠️ PEER_FLOOD یعنی «فعلاً آهسته‌تر»، نه «اکانت سوخت».
-                        # تلگرام هیچ مدتی اعلام نمی‌کند. نسخه ۱.۵.۵ خودسرانه
-                        # ۲۴ ساعت می‌گذاشت و اکانتی که ۱ ادد کرده بود یک روز
-                        # از دست می‌رفت. حالا بک‌آف تدریجی: ۲۰ دقیقه → ۱ →
-                        # ۳ → ۸ → ۲۴ ساعت، فقط برای تکرارهای پشت سر هم.
+                        # تلگرام هیچ مدتی اعلام نمی‌کند، پس هر عددی حدس است.
+                        #
+                        # قبلاً اینجا `break` بود: اکانت تا پایان کل عملیات
+                        # کنار گذاشته می‌شد. حالا کوتاه صبر می‌کند و **دوباره
+                        # تست می‌کند** — اولین ادد موفق یعنی تلگرام آزادش کرده.
                         from add_engine import peer_flood_cooldown, describe_cooldown
                         strikes = _peer_flood_strikes.get(phone, 0) + 1
                         _peer_flood_strikes[phone] = strikes
@@ -8581,7 +8582,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                         human = describe_cooldown(cooldown)
                         print(
                             f"🚫 [{phone}] PEER_FLOOD (بار {strikes}) — "
-                            f"{human} استراحت. تا اینجا {acc_added} ادد موفق.",
+                            f"{human} صبر و دوباره تست. تا اینجا {acc_added} ادد.",
                             flush=True,
                         )
                         db.set_adder_limit(
@@ -8591,13 +8592,30 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                         )
                         if atk_state_ref is not None:
                             atk_state_ref["live_status_text"] = (
-                                f"🚫 اکانت {phone} به محدودیت موقت تلگرام خورد — "
-                                f"{human} استراحت می‌کند (اکانت سالم است، بن نشده). "
+                                f"🚫 اکانت {phone} محدودیت موقت گرفت — {human} صبر "
+                                "و دوباره تلاش (اکانت سالم است، بن نشده). "
                                 "بقیه اکانت‌ها ادامه می‌دهند."
                             )
                         member_queue.put_nowait(member)   # کاربر هدر نرود
                         member_queue.task_done()
-                        break
+
+                        # صبر کوتاه — با احترام به دکمه توقف
+                        try:
+                            await asyncio.wait_for(stop_event.wait(), timeout=cooldown)
+                            print(f"⏹️ [{phone}] توقف در زمان استراحت", flush=True)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
+
+                        # اگر بارها پشت سر هم خورد، این اکانت واقعاً قفل است
+                        if strikes >= 6:
+                            print(
+                                f"🛑 [{phone}] بعد از {strikes} بار همچنان محدود — "
+                                "این اکانت تا اجرای بعدی کنار گذاشته شد",
+                                flush=True,
+                            )
+                            break
+                        continue   # دوباره امتحان کن
 
                     # 🔒 ربات حق افزودن عضو در گروه مقصد را ندارد.
                     # این خطای پیکربندی است، نه مشکل این کاربر — ادامه

@@ -542,13 +542,20 @@ async def get_target_title(client, target_gid, username_hint=None, default="گر
 # PEER_FLOOD یعنی «فعلاً آهسته‌تر» نه «اکانت سوخت». معمولاً با چند ده
 # دقیقه استراحت برطرف می‌شود. پس بک‌آف تدریجی بر اساس تعداد دفعات:
 
+# ⚠️ تلگرام برای PEER_FLOOD هیچ مدتی اعلام نمی‌کند و هیچ APIی هم برای
+# پرسیدن «کِی آزاد می‌شوم؟» ندارد. پس هر عددی که اینجا بنویسیم حدس است.
+#
+# نسخه ۱.۵.۸ حدسِ بد زد (۲۴ ساعت) و اکانت سالم را یک روز بیکار کرد.
+# راه درست: بازه‌های **کوتاه** و تست مکرر — اولین باری که ادد موفق شد،
+# یعنی تلگرام آزادش کرده. عقب‌نشینی فقط برای اینکه بی‌وقفه به دیوار
+# نکوبیم، نه به‌عنوان جریمه.
 _PEER_FLOOD_BACKOFF = (
-    20 * 60,      # بار اول: ۲۰ دقیقه
-    60 * 60,      # بار دوم: ۱ ساعت
-    3 * 3600,     # بار سوم: ۳ ساعت
-    8 * 3600,     # بار چهارم: ۸ ساعت
+    3 * 60,       # بار اول: ۳ دقیقه
+    8 * 60,       # بار دوم: ۸ دقیقه
+    15 * 60,      # بار سوم: ۱۵ دقیقه
+    30 * 60,      # بار چهارم: ۳۰ دقیقه
 )
-_PEER_FLOOD_MAX = 24 * 3600
+_PEER_FLOOD_MAX = 45 * 60     # هرگز بیش از ۴۵ دقیقه حدس نمی‌زنیم
 
 
 def peer_flood_cooldown(strike_count):
@@ -579,18 +586,30 @@ def describe_cooldown(seconds):
 
 def warmup_cap(historical_added, mode_cap=None):
     """
-    سقف ادد این اجرا بر اساس سابقه اکانت.
+    سقف ادد این اجرا.
 
-    ⚠️ درس گران (۱.۵.۸): اکانت‌های تازه با سقف ۱۰۰ وارد کار شدند و
-    بعد از ۱ تا ۷ ادد PEER_FLOOD گرفتند. تلگرام به اکانت نو که ناگهان
-    ده‌ها نفر اضافه می‌کند حساس است. سقف باید تدریجی بالا برود.
+    🚫 پیش‌فرض: **بدون سقف مصنوعی** (فقط mode_cap).
+
+    نسخه ۱.۵.۸ یک warm-up اختراع کرد که اکانت‌ها را به ۱۲ ادد محدود
+    می‌کرد. آن محدودیتِ ما بود نه تلگرام، و باعث می‌شد اکانت‌های سالم
+    بی‌دلیل بیکار بمانند. مالک صریحاً خواست اکانت‌ها تا حداکثر ظرفیت
+    واقعی کار کنند و فقط وقتی تلگرام جلویشان را گرفت صبر کنیم.
+
+    با `WARMUP_ENABLED=true` می‌توان دوباره فعالش کرد.
     """
+    if not getattr(config, "WARMUP_ENABLED", False):
+        return int(mode_cap) if mode_cap else config.MAX_ADD_PER_ACCOUNT
+
+    stages = getattr(config, "WARMUP_STAGES", None)
+    if not stages:
+        return int(mode_cap) if mode_cap else config.MAX_ADD_PER_ACCOUNT
+
     try:
         n = max(0, int(historical_added or 0))
     except Exception:
         n = 0
-    cap = config.WARMUP_STAGES[0][1]
-    for threshold, allowed in config.WARMUP_STAGES:
+    cap = stages[0][1]
+    for threshold, allowed in stages:
         if n >= threshold:
             cap = allowed
     if mode_cap:

@@ -57,7 +57,14 @@ def _handler(code):
         if i != -1:
             break
     assert i != -1, f"هندلر {code} پیدا نشد"
-    return body[i:body.index("break", i) + len("break")]
+    lines = body[i:].split(chr(10))
+    indent = len(lines[0]) - len(lines[0].lstrip())
+    out = [lines[0]]
+    for ln in lines[1:]:
+        if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+            break
+        out.append(ln)
+    return chr(10).join(out)
 
 
 @pytest.mark.parametrize("code", ["PEER_FLOOD", "CHAT_WRITE_FORBIDDEN", "USER_CHANNELS_TOO_MUCH"])
@@ -67,14 +74,15 @@ def test_critical_errors_are_handled(code):
     )
 
 
-def test_peer_flood_stops_that_worker():
+def test_peer_flood_pauses_then_retries():
     """
-    ادامه دادن بعد از PEER_FLOOD فقط محدودیت را تشدید می‌کند و
-    هیچ اددی انجام نمی‌شود.
+    ⚠️ تصحیح: قبلاً ورکر برای همیشه خارج می‌شد. حالا کوتاه صبر می‌کند
+    و دوباره تست می‌کند — تلگرام مدت آزادی را اعلام نمی‌کند، پس تنها
+    راه فهمیدن، تلاش دوباره است.
     """
     window = _handler("PEER_FLOOD")
     assert "set_adder_limit" in window, "اکانت باید به‌عنوان محدودشده ثبت شود"
-    assert window.rstrip().endswith("break"), "بعد از PEER_FLOOD باید ورکر متوقف شود"
+    assert "stop_event.wait()" in window, "صبر باید با دکمه توقف قابل لغو باشد"
 
 
 def test_peer_flood_cooldown_is_progressive_not_fixed():
@@ -84,8 +92,9 @@ def test_peer_flood_cooldown_is_progressive_not_fixed():
     بک‌آف تدریجی استفاده شود.
     """
     window = _handler("PEER_FLOOD")
-    assert "peer_flood_cooldown" in window, "باید از بک‌آف تدریجی استفاده کند"
+    assert "peer_flood_cooldown" in window, "باید از بک‌آف کوتاه استفاده کند"
     assert "24 * 3600" not in window, "جریمه ثابت ۲۴ ساعته نباید هاردکد باشد"
+    assert "continue" in window, "اکانت باید دوباره تلاش کند، نه اینکه خارج شود"
 
 
 def test_write_forbidden_stops_and_explains():

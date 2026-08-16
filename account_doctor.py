@@ -332,10 +332,20 @@ def collect_ready_accounts():
             st = _db.get_account_status(phone)
         except Exception:
             st = {"added": 0, "status": "healthy"}
+        # ⚠️ اکانتِ «محدود» فقط وقتی رد می‌شود که مهلتش هنوز نگذشته باشد.
+        # قبلاً هر اکانتی که برچسب limited داشت برای همیشه کنار گذاشته
+        # می‌شد، حتی وقتی تلگرام مدت‌ها بود آزادش کرده بود.
+        # get_account_status خودش مهلت گذشته را پاک می‌کند، پس اگر هنوز
+        # limited است یعنی واقعاً هنوز وقتش نرسیده.
         if st.get("status") == "limited":
-            skipped.append((phone, "محدود"))
+            rem = int(st.get("remaining_seconds") or 0)
+            skipped.append((phone, f"محدود ({max(1, rem // 60)} دقیقه دیگر)"))
             continue
-        if (st.get("added") or 0) >= 100:
+
+        # 🚫 سقف مصنوعی ۱۰۰ حذف شد. مالک خواست اکانت‌ها تا حداکثر ظرفیت
+        # واقعی کار کنند؛ تلگرام خودش جلویشان را می‌گیرد.
+        _hard_cap = getattr(config, "MAX_ADD_PER_ACCOUNT", 1000)
+        if (st.get("added") or 0) >= _hard_cap:
             skipped.append((phone, "ظرفیت پر"))
             continue
         ok, msg = ensure_session(phone)

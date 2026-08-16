@@ -1,29 +1,21 @@
 """
-ایمنی نرخ ادد — جلوگیری از PEER_FLOOD.
+سیاست نرخ ادد: **هیچ محدودیت اختراعی از طرف ما**.
 
-🚨 درس گران (۱.۵.۸):
+مالک صریحاً گفت:
+    «خودت محدودیت ایجاد نکن، بذار اکانت‌ها تا حداکثر ظرفیت خودشون ادد
+     بزنن و فقط وقتی که تلگرام خودش محدودشون کرد صبر کنیم تا آزاد بشن.»
 
-اجرای واقعی با حالت "safe" و ۸ اکانت موازی:
-    ۱۴ ادد موفق → ۵ اکانت PEER_FLOOD خوردند (بعد از ۱ تا ۷ ادد)
+تاریخچه‌ی اشتباه ما:
+- ۱.۵.۵ جریمه‌ی ۲۴ ساعته را هاردکد کرد (تلگرام هیچ مدتی نمی‌دهد).
+- ۱.۵.۸ یک warm-up اختراع کرد که اکانت‌ها را به ۱۲ ادد محدود می‌کرد،
+  و حالت safe را خودسرانه دو برابر کند کرد.
 
-دو اشتباه هم‌زمان:
+هر دو برداشته شدند. این فایل نگهبان است که دوباره برنگردند.
 
-۱) **نرخ کلی خیلی بالا بود.** safe=(45,95) یعنی هر اکانت هر ~۷۰ ثانیه،
-   ولی ۸ اکانت موازی = یک ادد هر ~۹ ثانیه به یک گروه. از دید تلگرام
-   هجوم هماهنگ اسپم.
-
-۲) **اکانت‌های نو با سقف ۱۰۰ وارد شدند.** اکانتی که هیچ سابقه‌ای ندارد
-   نباید روز اول ده‌ها نفر اضافه کند.
-
-و یک اشتباه در واکنش:
-
-۳) **جریمه ۲۴ ساعته را ما هاردکد کرده بودیم** — تلگرام هیچ مدتی
-   اعلام نمی‌کند. اکانتی که ۱ نفر ادد کرده بود یک روز از دست می‌رفت.
+تنها انتظار باقی‌مانده، عقب‌نشینی کوتاه بعد از PEER_FLOOD است — چون
+تلگرام مدت اعلام نمی‌کند و تنها راه فهمیدن، تست دوباره است.
 """
 import pathlib
-import re
-
-import pytest
 
 import config
 from add_engine import (
@@ -36,121 +28,147 @@ from add_engine import (
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-# ───────────────── بک‌آف PEER_FLOOD ─────────────────
-
-def test_first_flood_is_a_short_rest_not_a_day():
-    """
-    PEER_FLOOD یعنی «آهسته‌تر»، نه «اکانت سوخت».
-    اولین بار نباید اکانت را یک روز از دست بدهیم.
-    """
-    first = peer_flood_cooldown(1)
-    assert first <= 30 * 60, f"اولین جریمه {first}s است — خیلی زیاد"
-    assert first >= 5 * 60, "خیلی کم هم نباشد که بلافاصله دوباره بخورد"
-
-
-def test_backoff_is_progressive():
-    vals = [peer_flood_cooldown(n) for n in range(1, 6)]
-    assert vals == sorted(vals), "بک‌آف باید صعودی باشد"
-    assert len(set(vals)) > 1, "نباید ثابت باشد"
-
-
-def test_backoff_is_capped():
-    assert peer_flood_cooldown(50) <= 24 * 3600
-
-
-def test_no_hardcoded_24h_penalty_in_worker():
-    """جریمه باید از بک‌آف بیاید، نه عدد جادویی داخل ورکر."""
+def _handler(code):
+    """بلوک هندلر یک خطای مشخص در ورکر موازی."""
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    i = src.index('if "PEER_FLOOD" in err:')
-    window = src[i:src.index("break", i)]
-    assert "24 * 3600" not in window, (
-        "جریمه ۲۴ ساعته نباید هاردکد باشد — از peer_flood_cooldown بیاید"
+    for marker in (f'if "{code}" in err:', f'if "{code}" in err '):
+        i = src.find(marker)
+        if i != -1:
+            break
+    assert i != -1, f"هندلر {code} پیدا نشد"
+    # تا انتهای همین هندلر: خط بعدیِ هم‌سطح یا کم‌عمق‌تر
+    lines = src[i:].split("\n")
+    indent = len(lines[0]) - len(lines[0].lstrip())
+    out = [lines[0]]
+    for ln in lines[1:]:
+        if ln.strip() and (len(ln) - len(ln.lstrip())) <= indent:
+            break
+        out.append(ln)
+    return "\n".join(out)
+
+
+# ───────────── بدون سقف مصنوعی ─────────────
+
+def test_no_artificial_per_account_cap():
+    """اکانت باید تا ظرفیت واقعی کار کند، نه سقف اختراعی ما."""
+    assert config.MAX_ADD_PER_ACCOUNT >= 500, (
+        f"سقف {config.MAX_ADD_PER_ACCOUNT} محدودیت ماست، نه تلگرام"
     )
+
+
+def test_no_artificial_daily_cap():
+    for mode, cap in config.MODE_DAILY_CAP.items():
+        assert cap >= 500, f"سقف روزانه {mode}={cap} محدودیت ماست"
+
+
+def test_warmup_is_off_by_default():
+    """
+    warm-up اکانت‌های سالم را بیکار نگه می‌داشت. باید خاموش باشد و
+    فقط با env روشن شود.
+    """
+    assert config.WARMUP_ENABLED is False
+
+
+def test_warmup_cap_does_not_limit_when_disabled():
+    """با warm-up خاموش، سابقه‌ی اکانت نباید سقف بیاورد."""
+    for history in (0, 1, 7, 50, 300):
+        assert warmup_cap(history, 1000) == 1000, (
+            f"اکانت با سابقه {history} نباید محدود شود"
+        )
+
+
+def test_collect_ready_has_no_hardcoded_100_cap():
+    src = (ROOT / "account_doctor.py").read_text(encoding="utf-8")
+    i = src.index("def collect_ready_accounts")
+    body = src[i:i + 2000]
+    assert ">= 100" not in body, "سقف هاردکد ۱۰۰ باید حذف شده باشد"
+    assert "MAX_ADD_PER_ACCOUNT" in body
+
+
+def test_limited_account_is_retried_after_deadline():
+    """
+    اکانتی که مهلت محدودیتش گذشته باید دوباره وارد کار شود، نه اینکه
+    برای همیشه کنار گذاشته شود.
+    """
+    src = (ROOT / "account_doctor.py").read_text(encoding="typing" and "utf-8")
+    i = src.index("def collect_ready_accounts")
+    body = src[i:i + 2000]
+    assert "remaining_seconds" in body, (
+        "باید بر اساس مهلت باقی‌مانده تصمیم بگیرد، نه فقط برچسب limited"
+    )
+
+
+def test_speeds_are_user_choice_not_ours():
+    """حالت safe نباید خودسرانه کندتر از مقدار طراحی‌شده باشد."""
+    assert config.DELAY_RANGES["safe"] == (45, 95)
+    assert config.BREAK_RANGES["safe"] == (120, 300)
+
+
+# ───────────── واکنش به محدودیت واقعی تلگرام ─────────────
+
+def test_peer_flood_backoff_is_short():
+    """
+    تلگرام مدت نمی‌دهد، پس صبر باید کوتاه باشد و مکرر تست شود.
+    ۲۴ ساعت حدسِ ما بود و اکانت سالم را یک روز بیکار کرد.
+    """
+    assert peer_flood_cooldown(1) <= 5 * 60, "اولین صبر باید چند دقیقه باشد"
+    assert peer_flood_cooldown(99) <= 60 * 60, "هرگز نباید ساعت‌ها صبر کنیم"
+
+
+def test_backoff_progresses_but_stays_bounded():
+    vals = [peer_flood_cooldown(n) for n in range(1, 7)]
+    assert vals == sorted(vals)
+    assert max(vals) <= 60 * 60
+
+
+def test_no_hardcoded_day_penalty():
+    window = _handler("PEER_FLOOD")
+    assert "24 * 3600" not in window
     assert "peer_flood_cooldown" in window
 
 
+def test_flooded_account_retries_instead_of_quitting():
+    """
+    مهم‌ترین تست این فایل: اکانت بعد از PEER_FLOOD نباید تا پایان کل
+    عملیات کنار برود — باید صبر کند و دوباره تست کند.
+    """
+    window = _handler("PEER_FLOOD")
+    assert "continue" in window, (
+        "اکانت باید بعد از استراحت دوباره تلاش کند، نه اینکه خارج شود"
+    )
+    assert "stop_event.wait()" in window, "صبر باید با دکمه توقف قابل لغو باشد"
+
+
 def test_successful_add_resets_strikes():
-    """
-    اکانتی که دوباره موفق شده سالم است — جریمه‌های قبلی نباید
-    روی هم انباشته شوند.
-    """
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     assert "_peer_flood_strikes.pop(phone, None)" in src
 
 
+def test_floodwait_respects_telegram_value():
+    """
+    برخلاف PEER_FLOOD، تلگرام برای FloodWait مقدار دقیق می‌دهد —
+    باید دقیقاً همان رعایت شود، نه عدد خودمان.
+    """
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    assert "fw.value" in src
+
+
 def test_user_told_account_is_not_banned():
-    """کاربر با دیدن «محدود شد» فکر می‌کند اکانتش بن شده."""
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    i = src.index('if "PEER_FLOOD" in err:')
-    window = src[i:src.index("break", i)]
-    assert "بن نشده" in window, "باید صریح بگوید اکانت بن نشده"
+    window = _handler("PEER_FLOOD")
+    assert "بن نشده" in window
 
 
-# ───────────────── نرخ امن ─────────────────
+# ───────────── تنها هماهنگی باقی‌مانده ─────────────
 
-def test_safe_mode_is_actually_safe():
+def test_stagger_is_minimal():
     """
-    با ۸ اکانت موازی، فاصله مؤثر بین اددها به یک گروه نباید کمتر از
-    ~۱۵ ثانیه شود.
+    فاصله‌ی شروع فقط برای جلوگیری از هجوم هم‌زمان است — نباید به
+    کندسازی واقعی تبدیل شود.
     """
-    lo, hi = config.DELAY_RANGES["safe"]
-    avg = (lo + hi) / 2
-    effective = avg / 8
-    assert effective >= 12, (
-        f"با ۸ اکانت یک ادد هر {effective:.0f}s — الگوی اسپم "
-        f"(همین باعث PEER_FLOOD شد)"
-    )
+    delays = [stagger_delay(i, "safe") for i in range(8)]
+    assert max(delays) < 90, f"فاصله شروع {max(delays):.0f}s کندسازی است"
 
 
-def test_safe_slower_than_fast():
-    assert config.DELAY_RANGES["safe"][0] > config.DELAY_RANGES["fast"][0]
-    assert config.BREAK_RANGES["safe"][0] > config.BREAK_RANGES["fast"][0]
-
-
-# ───────────────── گرم کردن اکانت ─────────────────
-
-def test_brand_new_account_gets_small_cap():
-    cap = warmup_cap(0)
-    assert cap <= 15, f"اکانت بدون سابقه نباید سقف {cap} بگیرد"
-
-
-def test_cap_grows_with_history():
-    caps = [warmup_cap(h) for h in (0, 20, 60, 150, 300)]
-    assert caps == sorted(caps), "سقف باید با سابقه بالا برود"
-    assert caps[-1] > caps[0] * 3
-
-
-def test_experienced_account_reaches_full_cap():
-    assert warmup_cap(1000, 100) == 100
-
-
-def test_warmup_respects_mode_cap():
-    assert warmup_cap(1000, 30) == 30
-
-
-def test_worker_uses_warmup():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    assert "warmup_cap" in src
-    assert "count_added_by_account" in src, "سابقه واقعی باید از DB بیاید"
-
-
-def test_history_function_exists_and_uses_right_column():
-    src = (ROOT / "db.py").read_text(encoding="utf-8")
-    assert "def count_added_by_account" in src
-    i = src.index("def count_added_by_account")
-    assert "account_phone" in src[i:i + 700], "ستون درست باید استفاده شود"
-
-
-# ───────────────── شروع پلکانی ─────────────────
-
-def test_accounts_do_not_start_simultaneously():
-    """اگر همه با هم شروع کنند، تلگرام الگوی هماهنگ می‌بیند."""
-    delays = [stagger_delay(i, "safe") for i in range(6)]
-    assert max(delays) > 60, "فاصله شروع کافی نیست"
-    assert len(set(int(d) for d in delays)) > 1
-
-
-def test_worker_applies_stagger():
-    src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    assert "stagger_delay" in src or "_stag(" in src
-    assert "_worker_index" in src, "ایندکس ورکر باید پاس داده شود"
+def test_describe_cooldown_is_readable():
+    assert "دقیقه" in describe_cooldown(180)
+    assert "ساعت" in describe_cooldown(7200)
