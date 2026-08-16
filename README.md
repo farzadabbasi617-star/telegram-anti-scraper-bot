@@ -7,7 +7,7 @@
 [![CI](https://github.com/farzadabbasi617-star/telegram-anti-scraper-bot/actions/workflows/ci.yml/badge.svg)](https://github.com/farzadabbasi617-star/telegram-anti-scraper-bot/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](runtime.txt)
-[![Version](https://img.shields.io/badge/Version-1.3.0-green.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/Version-1.4.1-green.svg)](CHANGELOG.md)
 
 </div>
 
@@ -21,7 +21,7 @@
 | ➕ **ادد ممبر** | تک‌اکانت و موازی چند اکانتی با ۳ حالت سرعت (Safe / Fast / Ultra) |
 | 🐌 **ضد بن** | تاخیرهای انسانی با نویز تصادفی، استراحت‌های دوره‌ای، سقف روزانه هوشمند |
 | 🚫 **ضد تکرار** | لیست «هرگز دوباره ادد نشود» — لفت‌داده‌ها، پرایوسی‌بسته‌ها و آیدی‌های نامعتبر برای همیشه حذف می‌شوند |
-| 🛡️ **دفاع گروه** | کپچا، هانی‌پات، فیلتر سن اکانت، آنتی‌لینک، آنتی‌اسپم |
+| 🛡️ **دفاع گروه** | کپچا، فیلتر سن اکانت، آنتی‌لینک، آنتی‌اسپم — بدون آزار اعضا |
 | 📱 **مینی‌اپ** | داشبورد RTL فارسی با کنسول زنده عملیات، وضعیت اکانت‌ها و توقف فوری |
 | 🏷️ **دسته‌بندی** | تحلیل خودکار موضوع گروه‌های اسکرپ‌شده (کیورد + AI fallback) |
 | 🔎 **یافتن گروه** | جستجوی موضوعی گروه‌های تلگرام برای پیدا کردن منبع اسکرپ |

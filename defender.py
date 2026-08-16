@@ -19,6 +19,23 @@ class AdvancedDefender:
         self.MIN_ACCOUNT_AGE_DAYS = 25
         self.CAPTCHA_TIMEOUT = 60
         self.MAX_QUICK_LEAVE_SECONDS = 240
+
+        # 🍯 حالت هانی‌پات — پیش‌فرض «خاموش»
+        #
+        # چرا خاموش؟ نسخه قبلی هر ۱۰ دقیقه پیامی با کد قابل‌مشاهده
+        # `hp_trap_123456` در گروه می‌کاشت. اعضا آن را اسکم تصور کردند و
+        # گروه را ترک کردند. آسیب این تله از فایده‌اش بیشتر بود.
+        #
+        #   "off"             → هیچ پیامی در گروه کاشته نمی‌شود (پیش‌فرض امن)
+        #   "invisible_link"  → فقط یک لینک با انکر خالی، ۳ ثانیه بعد حذف
+        #
+        # تشخیص اسکرپر در هر دو حالت فعال است (کپچا، سن اکانت، خروج سریع،
+        # پروفایل مشکوک) — هانی‌پات فقط یک سیگنال اضافه است، نه ستون اصلی.
+        self.HONEYPOT_MODE = os.environ.get("HONEYPOT_MODE", "off").strip().lower()
+
+        # ⚠️ هرگز پیام هشدار/تله در گروه ارسال نکن — همه هشدارها فقط به مالک
+        self.ALERTS_TO_GROUP = False
+
         self.user_join_times = {}
         self.banned_scrapers = set()
         self.pending_captcha = set()
@@ -26,6 +43,7 @@ class AdvancedDefender:
         self.last_activity = {}
         self.captcha_codes = {}
         self.honeypot_msg_ids = set()
+        self.active_traps = set()   # توکن‌های تله‌ی فعال (فقط همین‌ها بن می‌آورند)
         self._load_banned_from_db()
 
     def _load_banned_from_db(self):
@@ -43,6 +61,14 @@ class AdvancedDefender:
             import json as _json
             db.set_config("defender_banned", _json.dumps(list(self.banned_scrapers)))
         except:
+            pass
+
+    async def _delete_after(self, msg, seconds):
+        """حذف پیام بعد از مدت مشخص — برای اینکه گروه از پیام‌های سرویسی شلوغ نشود."""
+        try:
+            await asyncio.sleep(seconds)
+            await msg.delete()
+        except Exception:
             pass
 
     async def alert(self, level, title, details):
@@ -119,9 +145,11 @@ class AdvancedDefender:
         try:
             cap_msg = await self.app.send_message(
                 self.group_id,
-                f"سلام {user.first_name} 👋\n"
-                f"برای تایید هویت در {self.CAPTCHA_TIMEOUT} ثانیه عبارت زیر را در پاسخ به همین پیام ارسال کنید:\n\n"
-                f"<code>{captcha_phrase}</code>"
+                f"سلام {user.first_name} 👋 به گروه خوش آمدید!\n\n"
+                f"این یک بررسی خودکار ضد ربات است. لطفاً ظرف "
+                f"{self.CAPTCHA_TIMEOUT} ثانیه عبارت زیر را در پاسخ به همین پیام بفرستید:\n\n"
+                f"<code>{captcha_phrase}</code>\n\n"
+                f"<i>این پیام پس از تایید حذف می‌شود.</i>"
             )
         except Exception as e:
             self.pending_captcha.discard(user.id)
@@ -140,7 +168,14 @@ class AdvancedDefender:
                 await cap_msg.delete()
             except:
                 pass
-            await self.app.send_message(self.group_id, f"✅ {user.first_name} تایید شد، خوش آمدید!")
+            # پیام تایید هم موقتی است تا گروه شلوغ نشود
+            try:
+                ok_msg = await self.app.send_message(
+                    self.group_id, f"✅ {user.first_name} تایید شد، خوش آمدید!"
+                )
+                asyncio.create_task(self._delete_after(ok_msg, 20))
+            except Exception:
+                pass
         except TimeoutError:
             await self.ban(user.id)
             try:
@@ -167,17 +202,41 @@ class AdvancedDefender:
                 f"کاربر {user.first_name} (آیدی `{user.id}`) فقط {int(spent)} ثانیه در گروه بود و خارج شد. فورا مسدود شد.")
 
     async def deploy_honeypot(self):
-        """ارسال پیام‌های هانی‌پات نامرئی با zero-width char.
-        - پیام برای کاربران عادی قابل مشاهده نیست (چون محتوا فقط کاراکترهای نامرئی + لینک تله مخفی است)
-        - اسکریپت‌های اسکرپر که API history را میخوانند، لینک 'ادمین' را میبینند و روی آن کلیک/فوروارد میکنند و شناسایی میشوند.
+        """کاشت تله‌ی نامرئی برای شناسایی اسکرپر.
+
+        ⚠️ درس گرفته‌شده (نسخه ۱.۴.۱):
+        نسخه قبلی متن `hp_trap_123456` را داخل تگ <code> می‌فرستاد. کاراکترهای
+        zero-width فقط *دورِ* آن بودند، پس خودِ کد برای همه اعضا کاملاً دیده
+        می‌شد. اعضای گروه هر ۱۰ دقیقه یک پیام مرموز می‌دیدند، فکر می‌کردند
+        گروه هک/اسکم شده و گروه را ترک می‌کردند.
+
+        روش جدید — هیچ پیامی به گروه ارسال نمی‌شود:
+        تله داخل «متن دکمه‌ی شیشه‌ای» یک پیام است که فقط برای ادمین ارسال
+        می‌شود؟ نه. بهتر: تله در بیوگرافی/عنوان ارسال نمی‌شود. در عوض
+        شناسایی اسکرپر کاملاً منفعل (passive) انجام می‌شود:
+        سیگنال‌های واقعی اسکرپینگ، بدون آزار هیچ کاربری.
+
+        اگر مالک صراحتاً تله‌ی فعال بخواهد، HONEYPOT_MODE = "invisible_link"
+        می‌شود که یک لینک واقعاً نامرئی (بدون هیچ متن قابل مشاهده) می‌فرستد
+        و ۳ ثانیه بعد پاک می‌کند.
         """
+        if self.HONEYPOT_MODE == "off":
+            return
+
+        if self.HONEYPOT_MODE != "invisible_link":
+            return
+
+        # فقط یک لینک با انکر کاملاً خالی (zero-width) — هیچ متن قابل خواندنی
+        # برای انسان وجود ندارد. اسکرپری که HTML/entities را پارس می‌کند آن را
+        # می‌بیند؛ کاربر عادی یک پیام خالی می‌بیند که بلافاصله پاک می‌شود.
         rnd = random.randint(100000, 999999)
-        # مخفی: فقط کاراکترهای Zero-width بدون محتوای قابل مشاهده که کلمه «ادمین» دارد اما دیده نمیشود
-        z1 = "\u200b\u200c\u200d\ufeff"
-        z2 = "\u200b\u200c\u200d"
-        text = (f"{z1}<a href=\"https://t.me/HP_ADMIN_{rnd}\">{z2}</a>"
-                f"{z2}<a href=\"https://t.me/HP_SUPPORT_{rnd}\">{z2}</a>"
-                f"{z2}<code>hp_trap_{rnd}</code>{z2}")
+        token = f"hp_trap_{rnd}"
+        self.active_traps.add(token)
+        if len(self.active_traps) > 50:
+            self.active_traps.pop()
+
+        zw = "\u2060"  # word-joiner: نه فاصله می‌سازد نه دیده می‌شود
+        text = f'<a href="https://t.me/{token}">{zw}</a>'
         try:
             msg = await self.app.send_message(
                 self.group_id, text,
@@ -185,17 +244,19 @@ class AdvancedDefender:
                 disable_notification=True,
             )
             self.honeypot_msg_ids.add(msg.id)
-            # بعد از ۱۵ ثانیه حذف کن تا هیچ کاربری نبینه
-            await asyncio.sleep(15)
+            # کوتاه‌ترین پنجره ممکن — قبلاً ۱۵ ثانیه بود
+            await asyncio.sleep(3)
             try:
                 await msg.delete()
-            except:
+            except Exception:
                 pass
             self.honeypot_msg_ids.discard(msg.id)
-        except Exception as e:
-            pass  # silently skip if channel invalid
+        except Exception:
+            pass
 
     async def _honeypot_loop(self):
+        if self.HONEYPOT_MODE == "off":
+            return
         await asyncio.sleep(30)
         while True:
             try:
@@ -233,17 +294,35 @@ class AdvancedDefender:
         # آپدیت آخرین فعالیت
         self.last_activity[uid] = time.time()
         text = (message.text or message.caption or "").lower()
-        # تشخیص هانی‌پات
-        if "hp_trap_" in text or "hp_admin_" in text or "hp_support_" in text:
-            await self.ban(uid)
-            try:
-                await message.delete()
-            except:
-                pass
-            await self.alert("critical", "🍯 هانی‌پات فعال شد!",
-                f"کاربر <b>{message.from_user.first_name}</b> (آیدی <code>{uid}</code>) "
-                f"تله مخفی هانی‌پات را خواند → فوراً بن شد.")
-            return
+
+        # 🍯 تشخیص هانی‌پات
+        #
+        # ⚠️ اصلاح نسخه ۱.۴.۱ — قبلاً هر پیامی که رشته "hp_trap_" داشت باعث
+        # بن فوری می‌شد. چون خودِ تله در گروه قابل مشاهده بود، هر کاربری که
+        # آن کد را کپی/نقل‌قول می‌کرد یا درباره‌اش می‌پرسید («این hp_trap_123
+        # چیه؟») فوراً بن می‌شد. حالا:
+        #   ۱) فقط توکن‌های تله‌ای که واقعاً خودمان کاشته‌ایم اعتبار دارند
+        #   ۲) اگر هانی‌پات خاموش باشد، این مسیر کلاً غیرفعال است
+        #   ۳) به‌جای بن فوری، فقط امتیاز ریسک بالا می‌رود و به مالک گزارش
+        #      می‌شود تا خودش تصمیم بگیرد
+        if self.HONEYPOT_MODE != "off" and self.active_traps:
+            matched = next((t for t in self.active_traps if t in text), None)
+            if matched:
+                self.active_traps.discard(matched)
+                self.user_risk_score[uid] += 50
+                try:
+                    await message.delete()
+                except Exception:
+                    pass
+                await self.alert(
+                    "high", "🍯 برخورد با تله هانی‌پات",
+                    f"کاربر <b>{message.from_user.first_name}</b> (آیدی <code>{uid}</code>) "
+                    f"توکن تله را بازتاب داد.\n"
+                    f"امتیاز ریسک: <b>{self.user_risk_score[uid]}</b>\n\n"
+                    f"⚠️ به‌صورت خودکار بن <b>نشد</b> — ممکن است کاربر عادی باشد که "
+                    f"متن را کپی کرده. برای بن دستی: <code>/ban {uid}</code>"
+                )
+                return
         # امتیازدهی بر اساس نام/یوزرنیم
         try:
             u = message.from_user
@@ -277,12 +356,21 @@ class AdvancedDefender:
         if await self.is_admin(uid):
             return
         data = (callback.data or "").lower()
-        if "hp_" in data or "trap" in data or "honeypot" in data:
+
+        # کلیک روی دکمه‌ی نامرئی سیگنال قوی‌تری از بازتاب متن است، ولی باز هم
+        # فقط وقتی معتبر است که خودمان تله‌ای کاشته باشیم. الگوی تطبیق هم
+        # دقیق شد: قبلاً هر کالبکی که کلمه "trap" داشت (مثلاً دکمه‌ای در
+        # ماژول دیگر) باعث بن می‌شد.
+        if self.HONEYPOT_MODE == "off":
+            return
+        if data.startswith("hp_trap_") or data.startswith("hp_admin_") or data.startswith("hp_support_"):
             try:
                 await callback.answer("⚠️ دسترسی غیرمجاز!", show_alert=True)
-            except:
+            except Exception:
                 pass
-            await self.ban(uid)
+            self.user_risk_score[uid] += 70
             await self.alert("critical", "🍯 کلیک روی دکمه هانی‌پات",
                 f"کاربر <b>{callback.from_user.first_name}</b> (آیدی <code>{uid}</code>) "
-                f"روی لینک مخفی هانی‌پات کلیک کرد → بن شد.")
+                f"روی لینک نامرئی هانی‌پات کلیک کرد.\n"
+                f"امتیاز ریسک: <b>{self.user_risk_score[uid]}</b>\n\n"
+                f"برای بن: <code>/ban {uid}</code>")

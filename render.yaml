@@ -58,6 +58,12 @@ services:
       - key: DEFAULT_TARGET_USERNAME
         sync: false
 
+      # --- دفاع گروه ---
+      # off = هیچ تله‌ای در گروه کاشته نمی‌شود. نسخه ۱.۴.۰ کد قابل‌مشاهده
+      # می‌فرستاد و اعضا آن را اسکم تصور کرده و گروه را ترک می‌کردند.
+      - key: HONEYPOT_MODE
+        value: 'off'
+
       # --- لاگینگ ---
       - key: LOG_LEVEL
         value: INFO
