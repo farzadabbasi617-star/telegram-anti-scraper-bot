@@ -158,3 +158,73 @@ def test_ui_renders_finished_summary():
     src = (ROOT / "web_app.py").read_text(encoding="utf-8")
     assert "fin.finished" in src, "UI باید خلاصه پایان را نمایش دهد"
     assert "آخرین عملیات" in src
+
+
+def test_live_bot_module_loop_wins_over_stale_reference(live_loop):
+    """
+    باگ دوم (۱.۵.۲): بعد از رفع باگ اول، ادد همچنان اجرا نمی‌شد.
+
+    عیب‌یابی زنده روی سرویس نشان داد `bot_app.loop` و حلقه واقعی
+    پایروگرام دو شیء متفاوت‌اند:
+
+        bot_module_loop = ...940304   ← پایروگرام واقعاً اینجاست
+        bot_app.loop    = ...982384   ← کهنه، ولی انتخاب می‌شد
+
+    کوروتین روی حلقه‌ای می‌رفت که کلاینت روی آن نبود.
+    ماژول زنده `bot` باید اولویت داشته باشد.
+    """
+    import sys
+    import types
+
+    stale = asyncio.new_event_loop()
+    stale_thread = threading.Thread(
+        target=lambda: (asyncio.set_event_loop(stale), stale.run_forever()),
+        daemon=True,
+    )
+    stale_thread.start()
+    for _ in range(50):
+        if stale.is_running():
+            break
+        time.sleep(0.02)
+
+    class _Stale:
+        loop = stale
+
+    web_app.bot_app = _Stale()
+    web_app.main_event_loop = stale
+
+    fake_bot = sys.modules.get("bot")
+    created = False
+    if fake_bot is None:
+        fake_bot = types.ModuleType("bot")
+        sys.modules["bot"] = fake_bot
+        created = True
+
+    saved_app = getattr(fake_bot, "app", None)
+
+    class _LiveClient:
+        loop = live_loop
+
+    fake_bot.app = _LiveClient()
+    try:
+        assert web_app._resolve_bot_loop() is live_loop, (
+            "حلقه ماژول زنده bot باید بر ارجاع کهنه اولویت داشته باشد"
+        )
+    finally:
+        if created:
+            sys.modules.pop("bot", None)
+        elif saved_app is not None:
+            fake_bot.app = saved_app
+        stale.call_soon_threadsafe(stale.stop)
+
+
+def test_resolver_checks_bot_module_first():
+    """ترتیب اولویت باید در کد صریح باشد، نه تصادفی."""
+    src = (ROOT / "web_app.py").read_text(encoding="utf-8")
+    m = re.search(r"def _resolve_bot_loop\(\):(.*?)(?=\ndef _schedule_coro)", src, re.S)
+    body = m.group(1)
+    module_pos = body.index('sys.modules.get("bot")')
+    stale_pos = body.index('getattr(bot_app, "loop"')
+    assert module_pos < stale_pos, (
+        "ماژول زنده bot باید قبل از ارجاع bot_app بررسی شود"
+    )

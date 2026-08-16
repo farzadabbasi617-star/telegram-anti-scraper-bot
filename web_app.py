@@ -48,42 +48,53 @@ def _resolve_bot_loop():
     """
     حلقه رویدادی که کلاینت پایروگرام واقعاً روی آن اجرا می‌شود.
 
-    ⚠️ باگی که این تابع رفع می‌کند (نسخه ۱.۵.۱):
-    `bot.py` در زمان import یک loop می‌ساخت و همان را به‌عنوان
-    main_event_loop ثبت می‌کرد. ولی `app.run()` پایروگرام حلقه خودش را
-    می‌سازد و اجرا می‌کند؛ آن loop اولیه هرگز run نمی‌شد.
+    ⚠️ دو باگ پشت سر هم اینجا رفع شده (۱.۵.۱ و ۱.۵.۲):
 
-    نتیجه: `main_event_loop.is_running()` غلط بود، `_schedule_coro` به
-    fallback می‌افتاد، یک loop سوم می‌ساخت که هیچ‌کس اجرایش نمی‌کرد، و
-    **کوروتین ادد هرگز اجرا نمی‌شد** — دکمه پیام موفقیت می‌داد ولی هیچ
-    اتفاقی نمی‌افتاد.
+    اول: `bot.py` هنگام import یک loop می‌ساخت و ثبتش می‌کرد، ولی
+    `app.run()` پایروگرام حلقه خودش را می‌سازد — آن loop ثبت‌شده هرگز
+    run نمی‌شد و کوروتین ادد بی‌صدا دور ریخته می‌شد.
 
-    راه‌حل: loop را مستقیم از خود کلاینت پایروگرام بگیر.
+    دوم: بعد از رفع اول، هنوز اجرا نمی‌شد. عیب‌یابی زنده نشان داد
+    `bot_app.loop` و loop واقعی پایروگرام **دو شیء متفاوت** هستند:
+
+        handler_loop    = ...940304   ← ترد وب‌سرور، پایروگرام هم اینجاست
+        bot_app.loop    = ...982384   ← کهنه
+        resolved        = ...982384   ← اشتباه انتخاب می‌شد
+
+    کوروتین روی حلقه‌ای می‌رفت که کلاینت پایروگرام روی آن نبود، پس
+    فراخوان‌های تلگرام هرگز پیش نمی‌رفتند.
+
+    ترتیب درست: اول ماژول زنده `bot` (منبع حقیقت)، بعد بقیه.
     """
     global main_event_loop
-    if main_event_loop and main_event_loop.is_running():
-        return main_event_loop
 
-    # از کلاینت زنده پایروگرام
-    for candidate in (bot_app, getattr(bot_app, "app", None)):
-        loop = getattr(candidate, "loop", None)
-        if loop and loop.is_running():
-            main_event_loop = loop
-            return loop
+    candidates = []
 
-    # ماژول bot را فقط اگر از قبل import شده نگاه کن — import تازه آن
-    # assert_env() را اجرا می‌کند و می‌تواند پروسه را ببندد.
+    # ۱) کلاینت زنده داخل ماژول bot — دقیق‌ترین منبع.
+    #    فقط اگر از قبل import شده؛ import تازه assert_env() را اجرا می‌کند.
     try:
         import sys
         _bot = sys.modules.get("bot")
         if _bot is not None:
-            loop = getattr(getattr(_bot, "app", None), "loop", None)
-            if loop and loop.is_running():
-                main_event_loop = loop
-                return loop
+            client = getattr(_bot, "app", None)
+            candidates.append(getattr(client, "loop", None))
+            # پایروگرام ۲.x گاهی حلقه را در dispatcher نگه می‌دارد
+            disp = getattr(client, "dispatcher", None)
+            candidates.append(getattr(disp, "loop", None))
     except Exception:
         pass
 
+    # ۲) ارجاعی که bot.py صریحاً داده
+    candidates.append(getattr(bot_app, "loop", None))
+    candidates.append(getattr(getattr(bot_app, "app", None), "loop", None))
+
+    # ۳) حلقه‌ای که موقع راه‌اندازی ثبت شده
+    candidates.append(main_event_loop)
+
+    for loop in candidates:
+        if loop is not None and loop.is_running():
+            main_event_loop = loop
+            return loop
     return None
 
 
