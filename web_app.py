@@ -159,6 +159,62 @@ def get_dashboard_dict():
         return {"ok": False, "error": str(e)}
 
 
+def delete_account_fully(phone):
+    """
+    حذف کامل یک اکانت: رکورد دیتابیس + فایل سشن روی دیسک + قفل‌ها.
+
+    اگر فقط رکورد DB پاک شود، فایل سشن روی دیسک می‌ماند و دفعه بعد که
+    همان شماره اضافه شود، با سشن قدیمیِ احتمالاً سوخته وصل می‌شود.
+    """
+    phone = str(phone or "").strip()
+    if not phone:
+        return False, "شماره اکانت مشخص نیست."
+
+    accs = db.load_accounts() or {}
+    if phone not in accs:
+        return False, f"اکانت {phone} در دیتابیس نیست."
+
+    # اگر همین اکانت وسط عملیات است، اجازه حذف نده
+    try:
+        import account_state
+        busy = account_state.busy_label(phone)
+        if busy:
+            return False, f"این اکانت الان مشغول است ({busy}). اول عملیات را متوقف کن."
+    except Exception:
+        pass
+
+    name = (accs.get(phone) or {}).get("name") or phone
+    removed_files = 0
+    try:
+        from attacker import SESSIONS_DIR, safe_phone_filename
+        base = os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}")
+        for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+            path = base + suffix
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                    removed_files += 1
+                except Exception as e:
+                    print(f"⚠️ حذف {path} ناموفق: {e}", flush=True)
+    except Exception as e:
+        print(f"⚠️ پاکسازی سشن {phone}: {e}", flush=True)
+
+    try:
+        db.delete_account(phone)
+    except Exception as e:
+        return False, f"حذف از دیتابیس ناموفق: {e}"
+
+    try:
+        account_state.release(phone)
+    except Exception:
+        pass
+
+    _ACCOUNTS_CACHE["data"] = None
+    _ACCOUNTS_CACHE["ts"] = 0
+    print(f"🗑️ اکانت {phone} حذف شد ({removed_files} فایل سشن پاک شد)", flush=True)
+    return True, f"اکانت «{name}» حذف شد."
+
+
 def get_diagnostics_dict():
     """
     گزارش تشخیصی: چرا یک اکانت استخراج/ادد انجام نمی‌دهد؟
@@ -485,6 +541,8 @@ def trigger_single_add(phone, add_type):
             return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
 
         if atk_state_ref:
+            if atk_state_ref.get("add_in_progress"):
+                return False, "یک عملیات ادد در حال اجراست. اول آن را متوقف کن."
             atk_state_ref["add_in_progress"] = True
             atk_state_ref["live_start_time"] = time.time()
             atk_state_ref["live_added"] = 0
@@ -493,6 +551,7 @@ def trigger_single_add(phone, add_type):
             atk_state_ref["live_total"] = len(filtered)
             atk_state_ref["live_mode"] = "تک اکانت"
             atk_state_ref["live_last_user"] = "در حال اتصال به اکانت..."
+            atk_state_ref["live_status_text"] = "🔄 در حال اتصال به اکانت..."
             atk_state_ref["_stop_requested"] = False
 
         wrapper = _MiniAppMsgWrapper()
@@ -519,7 +578,9 @@ def trigger_single_add(phone, add_type):
                 await client.connect()
                 await _execute_simple_add(wrapper, target_gid, client, phone, filtered, "دیتابیس مینی‌اپ")
             except Exception as e:
-                print(f"MiniApp single add error: {e}", flush=True)
+                print(f"MiniApp single add error: {type(e).__name__}: {e}", flush=True)
+                if atk_state_ref:
+                    atk_state_ref["live_status_text"] = f"❌ خطا: {str(e)[:200]}"
             finally:
                 if atk_state_ref:
                     atk_state_ref["add_in_progress"] = False
@@ -565,13 +626,14 @@ def trigger_parallel_add(add_mode, add_type):
         if not filtered:
             return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
 
-        from account_doctor import collect_ready_accounts
-        healthy_accs, skipped = collect_ready_accounts()
-
-        if not healthy_accs:
-            return False, f"هیچ اکانت آماده‌ای برای ادد موازی یافت نشد! ({skipped})"
-
+        # ⚠️ collect_ready_accounts() برای هر اکانت سشن را از دیتابیس بازیابی
+        # و بازرسی می‌کند. با ۸ اکانت این ده‌ها عملیات دیسک/DB است و اگر
+        # داخل هندلر HTTP اجرا شود، درخواست تا پایانش بلاک می‌ماند و مینی‌اپ
+        # تایم‌اوت می‌خورد — دکمه «کار نمی‌کند» به نظر می‌رسد.
+        # پس همه‌اش را به پس‌زمینه می‌بریم و فوراً به کاربر جواب می‌دهیم.
         if atk_state_ref:
+            if atk_state_ref.get("add_in_progress"):
+                return False, "یک عملیات ادد در حال اجراست. اول آن را متوقف کن."
             atk_state_ref["add_in_progress"] = True
             atk_state_ref["live_start_time"] = time.time()
             atk_state_ref["live_added"] = 0
@@ -579,7 +641,8 @@ def trigger_parallel_add(add_mode, add_type):
             atk_state_ref["live_skipped"] = 0
             atk_state_ref["live_total"] = len(filtered)
             atk_state_ref["live_mode"] = f"موازی ({add_mode.upper()})"
-            atk_state_ref["live_last_user"] = "در حال توزیع بین اکانت‌ها..."
+            atk_state_ref["live_last_user"] = "در حال آماده‌سازی اکانت‌ها..."
+            atk_state_ref["live_status_text"] = "🔄 در حال بازیابی و بررسی سشن اکانت‌ها..."
             atk_state_ref["_stop_requested"] = False
             atk_state_ref["stop_parallel_add"] = False
 
@@ -588,15 +651,37 @@ def trigger_parallel_add(add_mode, add_type):
 
         async def run_parallel_job():
             try:
-                await _execute_parallel_add(wrapper, target_gid, healthy_accs, filtered, add_type, add_mode)
+                # کار سنگین اینجا انجام می‌شود، نه در مسیر درخواست
+                from account_doctor import collect_ready_accounts
+                healthy_accs, skipped = await asyncio.to_thread(collect_ready_accounts)
+
+                if not healthy_accs:
+                    msg = f"هیچ اکانت آماده‌ای یافت نشد! ({skipped})"
+                    print(f"⚠️ parallel add: {msg}", flush=True)
+                    if atk_state_ref:
+                        atk_state_ref["live_status_text"] = f"⚠️ {msg}"
+                        atk_state_ref["live_last_user"] = "—"
+                    return
+
+                if atk_state_ref:
+                    atk_state_ref["live_last_user"] = "در حال توزیع بین اکانت‌ها..."
+                    atk_state_ref["live_status_text"] = (
+                        f"🚀 ادد موازی با {len(healthy_accs)} اکانت شروع شد."
+                    )
+
+                await _execute_parallel_add(
+                    wrapper, target_gid, healthy_accs, filtered, add_type, add_mode
+                )
             except Exception as e:
-                print(f"MiniApp parallel add error: {e}", flush=True)
+                print(f"MiniApp parallel add error: {type(e).__name__}: {e}", flush=True)
+                if atk_state_ref:
+                    atk_state_ref["live_status_text"] = f"❌ خطا: {str(e)[:200]}"
             finally:
                 if atk_state_ref:
                     atk_state_ref["add_in_progress"] = False
 
         _schedule_coro(run_parallel_job())
-        return True, f"عملیات ادد موازی با {len(healthy_accs)} اکانت شروع شد."
+        return True, f"عملیات ادد موازی شروع شد ({len(filtered):,} کاربر در صف). پیشرفت را در همین صفحه ببین."
     except Exception as e:
         return False, str(e)
 
@@ -1021,7 +1106,10 @@ MINI_APP_HTML = """<!DOCTYPE html>
             <button id="btn-use-ready" onclick="startParallelAddFromAccounts()" class="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg active:scale-95">
                 ▶️ ادد موازی فقط با اکانت‌هایی که تست زنده را پاس کرده‌اند
             </button>
-            
+            <button onclick="showAddAccountGuide()" class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 active:scale-95">
+                ➕ افزودن اکانت جدید
+            </button>
+
             <div id="accounts-list" class="space-y-2.5">
                 <div class="text-center text-slate-400 text-xs py-8">در حال بارگذاری اکانت‌ها...</div>
             </div>
@@ -1617,11 +1705,45 @@ MINI_APP_HTML = """<!DOCTYPE html>
                                         <div class="bg-gradient-to-r from-blue-500 to-emerald-400 h-full rounded-full transition-all duration-300" style="width: ${pct}%"></div>
                                     </div>
                                 </div>
+                                <button onclick="deleteAccount('${acc.phone}', '${(acc.name||'').replace(/'/g, "\\'")}')"
+                                        class="w-full py-2 bg-rose-600/15 hover:bg-rose-600/30 text-rose-300 text-[11px] font-bold rounded-xl border border-rose-500/30 transition">
+                                    🗑️ حذف این اکانت
+                                </button>
                             </div>
                         `;
                     });
                 }
             } catch (e) { console.error(e); }
+        }
+
+        async function deleteAccount(phone, name) {
+            if (!confirm(`اکانت «${name}» (${phone}) حذف شود؟\n\nرکورد دیتابیس و فایل سشن پاک می‌شوند. برای برگرداندن باید دوباره با کد تلگرام لاگین کنی.`)) return;
+            try {
+                const res = await fetch('/api/accounts/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone })
+                });
+                const data = await res.json();
+                alert(data.message || (data.ok ? 'حذف شد' : 'حذف ناموفق بود'));
+                if (data.ok) { loadAccounts(); loadAttackAccounts(); loadDashboard(); }
+            } catch (e) {
+                alert('خطا در ارتباط با سرور: ' + e);
+            }
+        }
+
+        function showAddAccountGuide() {
+            alert(
+                '➕ افزودن اکانت جدید\n\n' +
+                'به دلیل محدودیت‌های امنیتی تلگرام، افزودن اکانت باید از داخل ربات انجام شود ' +
+                '(کد تأیید و رمز دو مرحله‌ای نباید در مرورگر وارد شوند).\n\n' +
+                'مراحل:\n' +
+                '۱. ربات را در تلگرام باز کن و /start بزن\n' +
+                '۲. «مدیریت اکانت‌ها» ← «افزودن اکانت»\n' +
+                '۳. شماره را با کد کشور بفرست (مثال: +989121234567)\n' +
+                '۴. کد تأیید تلگرام را وارد کن\n\n' +
+                'بعد از اتمام، همین صفحه را رفرش کن.'
+            );
         }
 
         async function loadAttackAccounts() {
@@ -1777,6 +1899,9 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
             elif path == '/api/accounts/reset':
                 db.reset_adder_limits()
                 body = json.dumps({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."}).encode('utf-8')
+            elif path == '/api/accounts/delete':
+                ok, msg = delete_account_fully(post_data.get("phone", ""))
+                body = json.dumps({"ok": ok, "message": msg}, ensure_ascii=False).encode('utf-8')
             elif path == '/api/settings/target':
                 target = post_data.get("target", "").strip()
                 if target:
@@ -1899,6 +2024,14 @@ def create_web_app(app_bot=None, atk_state=None):
             db.reset_adder_limits()
             return web.json_response({"ok": True, "message": "آمار عملکرد تمام اکانت‌ها با موفقیت ریست شد."}, headers=NO_CACHE)
 
+        async def aio_api_delete_account(request):
+            try:
+                data = await request.json()
+                ok, msg = delete_account_fully(data.get("phone", ""))
+                return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "message": str(e)}, status=400, headers=NO_CACHE)
+
         async def aio_api_set_target(request):
             try:
                 data = await request.json()
@@ -1937,6 +2070,7 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_post('/api/add/parallel', aio_api_add_parallel)
         app.router.add_post('/api/accounts/probe', aio_api_probe_accounts)
         app.router.add_post('/api/accounts/reset', aio_api_reset_limits)
+        app.router.add_post('/api/accounts/delete', aio_api_delete_account)
         app.router.add_post('/api/settings/target', aio_api_set_target)
         app.router.add_post('/api/add/stop', aio_api_stop_add)
         return app
