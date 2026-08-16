@@ -162,22 +162,18 @@ def test_ui_refreshes_after_delete():
     assert "loadAttackAccounts()" in body
 
 
-def test_add_account_guide_points_to_the_real_bot_flow():
+def test_add_account_is_a_real_in_app_flow():
     """
-    افزودن اکانت نمی‌تواند در مرورگر انجام شود (کد تأیید تلگرام و رمز
-    دو مرحله‌ای). راهنما باید کاربر را به فلوی واقعی داخل ربات بفرستد.
+    نسخه اولیه فقط یک راهنمای alert بود که کاربر را به ربات می‌فرستاد.
+    مالک صریحاً خواست افزودن اکانت داخل خودِ مینی‌اپ انجام شود تا بتواند
+    برای ادد موازی شماره اضافه کند.
     """
-    assert "showAddAccountGuide" in WEB_APP_SRC
-    guide = re.search(r"function showAddAccountGuide\(\)\s*\{(.*?)\n        \}", WEB_APP_SRC, re.S)
-    assert guide, "تابع راهنما پیدا نشد"
-    text = guide.group(1)
-    assert "مدیریت اکانت" in text, "باید مسیر منوی واقعی ربات را بگوید"
-    assert "/start" in text
-
-    # و آن فلو واقعاً باید در ربات وجود داشته باشد
-    bot_src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    assert 'callback_data="manage_accounts"' in bot_src
-    assert 'callback_data="add_new_account"' in bot_src
+    assert "showAddAccountGuide" not in WEB_APP_SRC, (
+        "راهنمای alert باید با فلوی واقعی جایگزین شده باشد"
+    )
+    for route in ("/api/accounts/add", "/api/accounts/add/code", "/api/accounts/add/cancel"):
+        assert f"'{route}'" in WEB_APP_SRC, f"مسیر {route} ثبت نشده"
+    assert "account_login" in WEB_APP_SRC, "ماژول لاگین باید استفاده شود"
 
 
 # ───────────────────── کوئری N+1 ─────────────────────

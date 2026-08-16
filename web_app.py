@@ -1178,9 +1178,47 @@ MINI_APP_HTML = """<!DOCTYPE html>
             <button id="btn-use-ready" onclick="startParallelAddFromAccounts()" class="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-bold rounded-xl shadow-lg active:scale-95">
                 ▶️ ادد موازی فقط با اکانت‌هایی که تست زنده را پاس کرده‌اند
             </button>
-            <button onclick="showAddAccountGuide()" class="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700 active:scale-95">
+            <button id="btn-toggle-add" onclick="toggleAddAccount()" class="w-full py-2.5 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white text-xs font-bold rounded-xl shadow-lg active:scale-95">
                 ➕ افزودن اکانت جدید
             </button>
+
+            <div id="add-acc-panel" class="glass-card p-4 space-y-3 hidden">
+                <h4 class="text-xs font-bold text-violet-300">➕ افزودن شماره برای ادد موازی</h4>
+
+                <div id="add-step-phone" class="space-y-2">
+                    <label class="text-[10px] text-slate-400">شماره با کد کشور:</label>
+                    <input id="add-phone" type="tel" inputmode="tel" dir="ltr" placeholder="+989121234567"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-violet-500 text-left">
+                    <p class="text-[10px] text-slate-500 leading-5">۰۹۱۲… یا ۹۱۲… هم قبول است.</p>
+                    <button onclick="addAccountStart()" class="w-full py-2.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold rounded-xl active:scale-95">
+                        📨 ارسال کد تأیید
+                    </button>
+                </div>
+
+                <div id="add-step-code" class="space-y-2 hidden">
+                    <label class="text-[10px] text-slate-400">کد ۵ رقمی تلگرام:</label>
+                    <input id="add-code" type="text" inputmode="numeric" dir="ltr" placeholder="12345"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-violet-500 text-center tracking-[0.4em]">
+                    <p class="text-[10px] text-amber-300/80 leading-5">کد در خودِ اپ تلگرام می‌آید (نه پیامک) — بخش «پیام‌های سرویس».</p>
+                    <button onclick="addAccountCode()" class="w-full py-2.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold rounded-xl active:scale-95">
+                        ✅ تأیید کد
+                    </button>
+                </div>
+
+                <div id="add-step-pass" class="space-y-2 hidden">
+                    <label class="text-[10px] text-slate-400">رمز دو مرحله‌ای:</label>
+                    <input id="add-pass" type="password" dir="ltr" placeholder="••••••••"
+                           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-white outline-none focus:border-violet-500 text-left">
+                    <button onclick="addAccountPassword()" class="w-full py-2.5 bg-violet-600 hover:bg-violet-500 text-white text-xs font-bold rounded-xl active:scale-95">
+                        🔓 ورود نهایی
+                    </button>
+                </div>
+
+                <div id="add-acc-msg" class="text-[11px] leading-5 text-slate-300"></div>
+                <button onclick="addAccountCancel()" class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-[11px] font-bold rounded-xl border border-slate-700">
+                    انصراف
+                </button>
+            </div>
 
             <div id="accounts-list" class="space-y-2.5">
                 <div class="text-center text-slate-400 text-xs py-8">در حال بارگذاری اکانت‌ها...</div>
@@ -1817,6 +1855,108 @@ MINI_APP_HTML = """<!DOCTYPE html>
             copyInviteMsg(b.dataset.invTitle, b.dataset.invCat);
         });
 
+        // ── افزودن اکانت از مینی‌اپ ──────────────────────────────
+        let addAccPhone = '';
+
+        function toggleAddAccount() {
+            const p = document.getElementById('add-acc-panel');
+            p.classList.toggle('hidden');
+            if (!p.classList.contains('hidden')) {
+                addAccReset();
+                document.getElementById('add-phone').focus();
+            }
+        }
+
+        function addAccReset() {
+            addAccPhone = '';
+            document.getElementById('add-step-phone').classList.remove('hidden');
+            document.getElementById('add-step-code').classList.add('hidden');
+            document.getElementById('add-step-pass').classList.add('hidden');
+            document.getElementById('add-acc-msg').textContent = '';
+            ['add-phone', 'add-code', 'add-pass'].forEach(function (id) {
+                const el = document.getElementById(id);
+                if (el) el.value = '';
+            });
+        }
+
+        function addAccMsg(text, kind) {
+            const el = document.getElementById('add-acc-msg');
+            el.textContent = text;
+            el.className = 'text-[11px] leading-5 ' + (
+                kind === 'ok' ? 'text-emerald-300' :
+                kind === 'err' ? 'text-rose-300' : 'text-slate-300'
+            );
+        }
+
+        function addAccStep(needs) {
+            document.getElementById('add-step-phone').classList.add('hidden');
+            document.getElementById('add-step-code').classList.toggle('hidden', needs !== 'code');
+            document.getElementById('add-step-pass').classList.toggle('hidden', needs !== 'password');
+            const focus = needs === 'code' ? 'add-code' : needs === 'password' ? 'add-pass' : null;
+            if (focus) { const el = document.getElementById(focus); if (el) el.focus(); }
+        }
+
+        async function addAccPost(url, payload) {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            return await res.json();
+        }
+
+        async function addAccountStart() {
+            const phone = document.getElementById('add-phone').value.trim();
+            if (!phone) { addAccMsg('شماره را وارد کن.', 'err'); return; }
+            addAccMsg('در حال ارسال کد...', 'info');
+            try {
+                const d = await addAccPost('/api/accounts/add', { phone: phone });
+                addAccMsg(d.message || '', d.ok ? 'ok' : 'err');
+                if (d.ok) { addAccPhone = phone; addAccStep(d.needs || 'code'); }
+            } catch (e) { addAccMsg('خطای ارتباط: ' + e, 'err'); }
+        }
+
+        async function addAccountCode() {
+            const code = document.getElementById('add-code').value.trim();
+            if (!code) { addAccMsg('کد را وارد کن.', 'err'); return; }
+            addAccMsg('در حال بررسی کد...', 'info');
+            try {
+                const d = await addAccPost('/api/accounts/add/code', { phone: addAccPhone, code: code });
+                addAccMsg(d.message || '', d.ok ? 'ok' : 'err');
+                if (d.ok && d.needs === 'password') { addAccStep('password'); return; }
+                if (d.ok) { addAccDone(); }
+            } catch (e) { addAccMsg('خطای ارتباط: ' + e, 'err'); }
+        }
+
+        async function addAccountPassword() {
+            const pwd = document.getElementById('add-pass').value;
+            if (!pwd) { addAccMsg('رمز را وارد کن.', 'err'); return; }
+            addAccMsg('در حال ورود...', 'info');
+            try {
+                const d = await addAccPost('/api/accounts/add/code', { phone: addAccPhone, password: pwd });
+                addAccMsg(d.message || '', d.ok ? 'ok' : 'err');
+                if (d.ok) { addAccDone(); }
+            } catch (e) { addAccMsg('خطای ارتباط: ' + e, 'err'); }
+        }
+
+        function addAccDone() {
+            loadAccounts();
+            loadAttackAccounts();
+            loadDashboard();
+            setTimeout(function () {
+                document.getElementById('add-acc-panel').classList.add('hidden');
+                addAccReset();
+            }, 2500);
+        }
+
+        async function addAccountCancel() {
+            if (addAccPhone) {
+                try { await addAccPost('/api/accounts/add/cancel', { phone: addAccPhone }); } catch (e) {}
+            }
+            document.getElementById('add-acc-panel').classList.add('hidden');
+            addAccReset();
+        }
+
         async function deleteAccount(phone, name) {
             if (!confirm(`اکانت «${name}» (${phone}) حذف شود؟\n\nرکورد دیتابیس و فایل سشن پاک می‌شوند. برای برگرداندن باید دوباره با کد تلگرام لاگین کنی.`)) return;
             try {
@@ -1833,19 +1973,6 @@ MINI_APP_HTML = """<!DOCTYPE html>
             }
         }
 
-        function showAddAccountGuide() {
-            alert(
-                '➕ افزودن اکانت جدید\n\n' +
-                'به دلیل محدودیت‌های امنیتی تلگرام، افزودن اکانت باید از داخل ربات انجام شود ' +
-                '(کد تأیید و رمز دو مرحله‌ای نباید در مرورگر وارد شوند).\n\n' +
-                'مراحل:\n' +
-                '۱. ربات را در تلگرام باز کن و /start بزن\n' +
-                '۲. «مدیریت اکانت‌ها» ← «افزودن اکانت»\n' +
-                '۳. شماره را با کد کشور بفرست (مثال: +989121234567)\n' +
-                '۴. کد تأیید تلگرام را وارد کن\n\n' +
-                'بعد از اتمام، همین صفحه را رفرش کن.'
-            );
-        }
 
         async function loadAttackAccounts() {
             try {
@@ -2133,6 +2260,42 @@ def create_web_app(app_bot=None, atk_state=None):
             except Exception as e:
                 return web.json_response({"ok": False, "message": str(e)}, status=400, headers=NO_CACHE)
 
+        async def aio_api_add_account(request):
+            """شروع افزودن اکانت — ارسال کد تأیید."""
+            try:
+                data = await request.json()
+                import account_login
+                ok, msg, needs = await account_login.start(data.get("phone", ""))
+                return web.json_response({"ok": ok, "message": msg, "needs": needs}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "message": str(e)}, status=400, headers=NO_CACHE)
+
+        async def aio_api_add_account_code(request):
+            """مرحله دوم — کد تأیید یا رمز دو مرحله‌ای."""
+            try:
+                data = await request.json()
+                import account_login
+                if data.get("password"):
+                    ok, msg, needs = await account_login.submit_password(
+                        data.get("phone", ""), data.get("password", "")
+                    )
+                else:
+                    ok, msg, needs = await account_login.submit_code(
+                        data.get("phone", ""), data.get("code", "")
+                    )
+                return web.json_response({"ok": ok, "message": msg, "needs": needs}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "message": str(e)}, status=400, headers=NO_CACHE)
+
+        async def aio_api_add_account_cancel(request):
+            try:
+                data = await request.json()
+                import account_login
+                ok, msg = await account_login.cancel(data.get("phone", ""))
+                return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "message": str(e)}, status=400, headers=NO_CACHE)
+
         async def aio_api_set_target(request):
             try:
                 data = await request.json()
@@ -2172,6 +2335,9 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_post('/api/accounts/probe', aio_api_probe_accounts)
         app.router.add_post('/api/accounts/reset', aio_api_reset_limits)
         app.router.add_post('/api/accounts/delete', aio_api_delete_account)
+        app.router.add_post('/api/accounts/add', aio_api_add_account)
+        app.router.add_post('/api/accounts/add/code', aio_api_add_account_code)
+        app.router.add_post('/api/accounts/add/cancel', aio_api_add_account_cancel)
         app.router.add_post('/api/settings/target', aio_api_set_target)
         app.router.add_post('/api/add/stop', aio_api_stop_add)
         return app

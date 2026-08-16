@@ -20,6 +20,8 @@ endpointها زیر ۴۰۰ میلی‌ثانیه جواب می‌دادند — 
 """
 import pathlib
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -130,3 +132,36 @@ def test_html_served_by_route_is_the_validated_template():
     assert re.search(r"(return|write|body\s*=).*MINI_APP_HTML", SRC), (
         "MINI_APP_HTML باید توسط یک هندلر سرو شود"
     )
+
+# ───────────────── پارس واقعی جاوااسکریپت ─────────────────
+
+def test_javascript_actually_parses(html, tmp_path):
+    """
+    مهم‌ترین تست این فایل.
+
+    تست‌های مبتنی بر regex بالا، باگی که کل مینی‌اپ را فریز کرد نگرفتند:
+    یک `\n` در سورس پایتون به newline واقعی تبدیل شده بود و داخل رشته
+    تک‌کوتیشنی جاوااسکریپت نشسته بود — که در JS نامعتبر است و کل بلوک
+    script را می‌کشد. هیچ تبی کار نمی‌کرد.
+
+    تنها راه مطمئن، پارس کردن با موتور واقعی است.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node در دسترس نیست")
+
+    blocks = [b for b in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S) if b.strip()]
+    assert blocks, "هیچ بلوک جاوااسکریپتی پیدا نشد"
+
+    for i, block in enumerate(blocks):
+        path = tmp_path / f"block{i}.js"
+        path.write_text(block, encoding="utf-8")
+        proc = subprocess.run(
+            [node, "--check", str(path)], capture_output=True, text=True, timeout=60
+        )
+        assert proc.returncode == 0, (
+            f"بلوک script #{i} خطای نحوی دارد — کل مینی‌اپ از کار می‌افتد:\n"
+            f"{proc.stderr[:600]}"
+        )
+
+
