@@ -80,6 +80,7 @@ from config import (
     API_ID, API_HASH, BOT_TOKEN, ADMIN_ID, PORT,
     PUBLIC_URL, DEFAULT_TARGET_USERNAME, FIXED_TARGET_LINK,
     MAX_ADD_PER_ACCOUNT, MODE_DAILY_CAP, DB_POOL_SIZE,
+    DELAY_RANGES, BREAK_RANGES,
     assert_env,
 )
 
@@ -4895,9 +4896,12 @@ async def _cb_impl(c, q):
         text = "🐌 <b>Safe Mode</b>\n\n"
         text += "━━━━━━━━━━━━━━━━━━\n"
         text += "✅ حالت ایمن انتخاب شد\n\n"
-        text += "• تاخیر: 90-180 ثانیه\n"
-        text += "• استراحت: هر 10 اد، 5-10 دقیقه\n"
-        text += "• زمان: ~5 ساعت\n\n"
+        # از config بخوان تا متن با رفتار واقعی یکی باشد
+        _d = DELAY_RANGES.get("safe", (45, 95))
+        _b = BREAK_RANGES.get("safe", (120, 300))
+        text += f"• تاخیر: {_d[0]}-{_d[1]} ثانیه\n"
+        text += f"• استراحت: {_b[0] // 60}-{_b[1] // 60} دقیقه\n"
+        text += "• سقف: بدون محدودیت دستی\n\n"
         text += "آماده شروع؟"
         
         buttons = [
