@@ -56,24 +56,27 @@ def test_peer_flood_stops_that_worker():
     """
     body = _parallel_worker_body()
     i = body.index("PEER_FLOOD")
-    window = body[i:i + 900]
-    assert "break" in window, "بعد از PEER_FLOOD باید ورکر متوقف شود"
+    window = body[i:body.index("break", i) + len("break")]
     assert "set_adder_limit" in window, "اکانت باید به‌عنوان محدودشده ثبت شود"
 
 
 def test_peer_flood_records_24h_cooldown():
     body = _parallel_worker_body()
     i = body.index("PEER_FLOOD")
-    assert "24 * 3600" in body[i:i + 900], "محدودیت باید ۲۴ ساعته ثبت شود"
+    window = body[i:body.index("break", i) + len("break")]
+    assert "24 * 3600" in window, "محدودیت باید ۲۴ ساعته ثبت شود"
 
 
 def test_write_forbidden_stops_and_explains():
     """این خطای پیکربندی است — کاربر باید بفهمد چه کار کند."""
     body = _parallel_worker_body()
     i = body.index("CHAT_WRITE_FORBIDDEN")
-    window = body[i:i + 900]
-    assert "break" in window
+    # تا انتهای همین هندلر — طول ثابت با تغییر کد می‌شکند
+    window = body[i:body.index("break", i) + len("break")]
     assert "live_status_text" in window, "کاربر باید علت را در مینی‌اپ ببیند"
+    assert "بقیه اکانت‌ها ادامه" in window, (
+        "این خطا مختص یک اکانت است — نباید کل عملیات را متوقف نشان دهد"
+    )
 
 
 @pytest.mark.parametrize("code", ["PEER_FLOOD", "CHAT_WRITE_FORBIDDEN"])
@@ -84,7 +87,8 @@ def test_interrupted_member_is_requeued(code):
     """
     body = _parallel_worker_body()
     i = body.index(code)
-    assert "put_nowait(member)" in body[i:i + 900], (
+    window = body[i:body.index("break", i) + len("break")]
+    assert "put_nowait(member)" in window, (
         f"بعد از {code} کاربر باید به صف برگردد"
     )
 
@@ -113,3 +117,44 @@ def test_success_still_requires_membership_confirmation():
     assert "total_skipped += 1" in window, (
         "کاربر تأییدنشده باید در «رد شده» برود، نه «موفق»"
     )
+
+
+def test_write_forbidden_is_per_account_not_global():
+    """
+    🔍 یافته از داده واقعی (۱۶ اکانت‌دقیقه روی سرویس زنده):
+
+        +989302206873 → 2 ادد موفق
+        +989913928426 → 2 ادد موفق
+        +989038511300 → 2 ادد موفق
+        +989377649452 → 2 ادد موفق
+        +989359428854 → 1 ادد موفق
+        +989020212998 → 1 ادد موفق
+        +989034694783 → 59 خطای CHAT_WRITE_FORBIDDEN ← فقط این یکی
+
+    گروه در تمام این مدت can_send_messages=False داشت. پس بستن ارسال
+    پیام مانع ادد نیست — تحلیل اولیه غلط بود. مشکل مختص یک اکانت است
+    (عضو گروه نبودن یا محدود شدن).
+
+    این تست جلوی برگشتن آن تحلیل غلط را می‌گیرد.
+    """
+    body = _parallel_worker_body()
+    i = body.index("CHAT_WRITE_FORBIDDEN")
+    window = body[i:body.index("break", i)]
+
+    # نباید کاربر را به تنظیمات گروه بفرستد — گمراه‌کننده است
+    assert "Add Members را برای اعضا فعال" not in window, (
+        "این خطا مختص یک اکانت است، نه تنظیمات گروه"
+    )
+    assert "بقیه اکانت‌ها ادامه" in window
+
+
+def test_diagnose_does_not_blame_send_messages_permission():
+    """
+    can_send_messages=False نباید «آماده نبودن برای ادد» تلقی شود —
+    داده واقعی خلافش را ثابت کرد.
+    """
+    src = (ROOT / "web_app.py").read_text(encoding="utf-8")
+    assert '"ok_for_adding": bool(can_inv)' in src, (
+        "ok_for_adding فقط باید به can_invite_users وابسته باشد"
+    )
+    assert "تا وقتی ارسال پیام" not in src, "راهنمای غلط قبلی باید حذف شده باشد"

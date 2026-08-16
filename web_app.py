@@ -358,18 +358,23 @@ def get_diagnostics_dict():
                 out["target_permissions"] = {
                     "can_send_messages": can_send,
                     "can_invite_users": can_inv,
-                    "ok_for_adding": bool(can_send and can_inv),
+                    "ok_for_adding": bool(can_inv),   # can_send مانع ادد نیست
                 }
-                if can_send is False:
+                # ⚠️ تصحیح تحلیل قبلی: داده واقعی نشان داد با
+                # can_send_messages=False هم ادد انجام می‌شود — ۶ اکانت
+                # موفق شدند و فقط یک اکانت خطا گرفت. پس بستن ارسال پیام
+                # مانع ادد نیست؛ آنچه اهمیت دارد can_invite_users است.
+                if can_inv is False:
                     out["target_permissions"]["hint"] = (
-                        "گروه روی حالت «فقط ادمین‌ها» است. تا وقتی ارسال پیام "
-                        "برای اعضا بسته باشد، اکانت‌ها نمی‌توانند کسی را اضافه "
-                        "کنند. راه‌حل: تنظیمات گروه ← Permissions ← Send Messages "
-                        "را روشن کن، یا اکانت‌ها را ادمین کن."
+                        "دسترسی «Add Members» برای اعضا بسته است — این واقعاً "
+                        "مانع ادد می‌شود. تنظیمات گروه ← Permissions ← "
+                        "Add Members را روشن کن."
                     )
-                elif can_inv is False:
-                    out["target_permissions"]["hint"] = (
-                        "دسترسی «Add Members» برای اعضا بسته است."
+                elif can_send is False:
+                    out["target_permissions"]["note"] = (
+                        "ارسال پیام برای اعضا بسته است، ولی این مانع ادد نیست "
+                        "(آزموده شد). اگر اکانتی CHAT_WRITE_FORBIDDEN گرفت، "
+                        "مشکل خودِ آن اکانت است — احتمالاً عضو گروه نیست."
                     )
     except Exception:
         pass

@@ -8552,12 +8552,29 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     # این خطای پیکربندی است، نه مشکل این کاربر — ادامه
                     # دادن یعنی سوزاندن بی‌فایده همه اکانت‌ها.
                     if "CHAT_WRITE_FORBIDDEN" in err or "CHAT_ADMIN_REQUIRED" in err:
-                        print(f"🔒 [{phone}] دسترسی افزودن عضو در گروه مقصد وجود ندارد", flush=True)
+                        # ⚠️ این خطا مختصِ همین اکانت است، نه کل گروه.
+                        # داده واقعی: از ۷ اکانت فعال، ۶ تا با موفقیت ادد
+                        # کردند و فقط یکی این خطا را گرفت (۵۹ بار پشت هم).
+                        # علت معمولاً: اکانت عضو گروه نیست، یا میوت/محدود
+                        # شده است. پس فقط همین ورکر متوقف می‌شود و بقیه
+                        # ادامه می‌دهند — کل عملیات نباید متوقف شود.
+                        print(
+                            f"🔒 [{phone}] این اکانت اجازه افزودن در گروه مقصد را "
+                            f"ندارد (عضو نیست یا محدود شده) — ورکر متوقف شد",
+                            flush=True,
+                        )
+                        try:
+                            db.set_adder_limit(
+                                phone, already_added + acc_added,
+                                limitation_type="WriteForbidden",
+                                limitation_until=int(time.time()) + 3600,
+                            )
+                        except Exception:
+                            pass
                         if atk_state_ref is not None:
                             atk_state_ref["live_status_text"] = (
-                                "🔒 این اکانت اجازه «افزودن کاربر» در گروه مقصد را ندارد. "
-                                "در تنظیمات گروه، Add Members را برای اعضا فعال کن "
-                                "یا اکانت‌ها را ادمین کن."
+                                f"🔒 اکانت {phone} نمی‌تواند در گروه مقصد عضو اضافه کند "
+                                "(عضو گروه نیست یا محدود شده). بقیه اکانت‌ها ادامه می‌دهند."
                             )
                         member_queue.put_nowait(member)
                         member_queue.task_done()
