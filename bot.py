@@ -8528,6 +8528,49 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     never_add_again(uid, "invalid")
                     print(f"👻 [{phone}] آیدی نامعتبر {uid} → اسکیپ + حذف از دیتابیس", flush=True)
                 except Exception as e:
+                    err = str(e)
+
+                    # 🚫 اکانت توسط تلگرام محدود شده — ادامه دادن فقط
+                    # وضعیتش را بدتر می‌کند و هیچ اددی انجام نمی‌شود.
+                    if "PEER_FLOOD" in err:
+                        print(f"🚫 [{phone}] PEER_FLOOD — اکانت محدود شد، ورکر متوقف می‌شود", flush=True)
+                        db.set_adder_limit(
+                            phone, already_added + acc_added,
+                            limitation_type="PeerFlood",
+                            limitation_until=int(time.time()) + 24 * 3600,
+                        )
+                        if atk_state_ref is not None:
+                            atk_state_ref["live_status_text"] = (
+                                f"🚫 اکانت {phone} تا ۲۴ ساعت محدود شد (PEER_FLOOD). "
+                                "بقیه اکانت‌ها ادامه می‌دهند."
+                            )
+                        member_queue.put_nowait(member)   # کاربر هدر نرود
+                        member_queue.task_done()
+                        break
+
+                    # 🔒 ربات حق افزودن عضو در گروه مقصد را ندارد.
+                    # این خطای پیکربندی است، نه مشکل این کاربر — ادامه
+                    # دادن یعنی سوزاندن بی‌فایده همه اکانت‌ها.
+                    if "CHAT_WRITE_FORBIDDEN" in err or "CHAT_ADMIN_REQUIRED" in err:
+                        print(f"🔒 [{phone}] دسترسی افزودن عضو در گروه مقصد وجود ندارد", flush=True)
+                        if atk_state_ref is not None:
+                            atk_state_ref["live_status_text"] = (
+                                "🔒 این اکانت اجازه «افزودن کاربر» در گروه مقصد را ندارد. "
+                                "در تنظیمات گروه، Add Members را برای اعضا فعال کن "
+                                "یا اکانت‌ها را ادمین کن."
+                            )
+                        member_queue.put_nowait(member)
+                        member_queue.task_done()
+                        break
+
+                    # 📵 کاربر در کانال‌های زیادی است — تقصیر ما نیست
+                    if "USER_CHANNELS_TOO_MUCH" in err:
+                        total_skipped += 1
+                        never_add_again(uid, "too_many_channels")
+                        print(f"📵 [{phone}] {uid} در کانال‌های زیادی است → اسکیپ", flush=True)
+                        member_queue.task_done()
+                        continue
+
                     total_failed += 1
                     print(f"❌ [{phone}] Add error for {uid}: {e}", flush=True)
                     await asyncio.sleep(1.0)
