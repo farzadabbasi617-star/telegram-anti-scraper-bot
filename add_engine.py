@@ -138,14 +138,50 @@ def prefer_addable_members(members, drop_id_only=True):
 _PREFILTER_BATCH = 100
 
 
-def _is_unaddable_user(u):
-    """
-    آیا این آبجکت User قطعاً غیرقابل‌ادد است؟
+# وضعیت‌های last-seen که یعنی کاربر privacy را بسته است.
+#
+# 🔑 چرا این مهم است (۱.۸.۰):
+# تلگرام برای کسی که «آخرین بازدید» را مخفی کرده، به جای زمان دقیق
+# یکی از این مقادیر مبهم را برمی‌گرداند. و کسی که last-seen را بسته،
+# با احتمال بسیار بالا «چه کسی می‌تواند مرا به گروه اضافه کند» را هم
+# محدود کرده — این دو گزینه در تلگرام کنار هم در یک صفحه‌اند.
+#
+# داده‌ی واقعی ما: ۹ دعوت پیاپی، صفر عضویت. تلگرام اکانتی که مدام
+# دعوت بی‌نتیجه می‌فرستد را اسپمر می‌بیند — حتی با فاصله‌ی ۱۰۰ ثانیه.
+# پس باید *قبل از تلاش* حدس بزنیم چه کسی اضافه نمی‌شود.
+_PRIVACY_HIDDEN_STATUSES = frozenset({
+    "recently", "last_week", "lastweek", "last_month", "lastmonth",
+})
 
-    فقط سیگنال‌های قطعی را برمی‌گرداند تا کاربر سالمی حذف نشود:
-      • حساب حذف‌شده (deleted)
-      • ربات (bot)
-      • خودِ ما (is_self)
+# اکانت رهاشده — حتی اگر اضافه شود عضو مرده است
+_STALE_STATUSES = frozenset({"long_ago", "longago", "empty"})
+
+
+def _status_token(u):
+    """نام وضعیت last-seen را به صورت توکن تمیز برمی‌گرداند."""
+    st = getattr(u, "status", None)
+    if st is None:
+        return ""
+    raw = getattr(st, "value", None) or getattr(st, "name", None) or str(st)
+    raw = str(raw)
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[-1]
+    return raw.strip().lower()
+
+
+def _is_unaddable_user(u, strict_privacy=True):
+    """
+    آیا این آبجکت User غیرقابل‌ادد است؟
+
+    سیگنال‌های قطعی (همیشه):
+      • حساب حذف‌شده / ربات / خودِ ما
+
+    سیگنال‌های احتمالی (وقتی strict_privacy روشن است):
+      • last-seen مخفی  → privacy بسته، تقریباً قطعاً اضافه نمی‌شود
+      • last-seen خیلی قدیمی → اکانت رهاشده
+      • scam / fake
+
+    برمی‌گرداند (غیرقابل‌ادد؟, دلیل)
     """
     if u is None:
         return True, "پیدا نشد"
@@ -155,10 +191,23 @@ def _is_unaddable_user(u):
         return True, "ربات"
     if getattr(u, "is_self", False):
         return True, "خودِ اکانت"
+
+    if not strict_privacy:
+        return False, ""
+
+    if getattr(u, "is_scam", False) or getattr(u, "is_fake", False):
+        return True, "اسکم/جعلی"
+
+    token = _status_token(u)
+    if token in _PRIVACY_HIDDEN_STATUSES:
+        return True, "پرایوسی بسته (last-seen مخفی)"
+    if token in _STALE_STATUSES:
+        return True, "اکانت رهاشده"
+
     return False, ""
 
 
-async def prefilter_unaddable(client, members, mark_blocked=True, log=None):
+async def prefilter_unaddable(client, members, mark_blocked=True, log=None, strict_privacy=True):
     """
     قبل از شروع ادد، کاربرانی که قطعاً اضافه نمی‌شوند را کنار بگذار.
 
@@ -270,13 +319,18 @@ async def prefilter_unaddable(client, members, mark_blocked=True, log=None):
                         pass
                 continue
 
-            bad, why = _is_unaddable_user(u) if u is not None else (False, "")
+            bad, why = _is_unaddable_user(u, strict_privacy) if u is not None else (False, "")
             if bad:
                 stats["removed"] += 1
                 stats["reasons"][why] = stats["reasons"].get(why, 0) + 1
                 if mark_blocked and uid:
+                    # دلیل درست را ثبت کن تا بعداً قابل تفکیک باشد.
+                    # «پرایوسی» ممکن است روزی عوض شود؛ «ربات/حذف‌شده» نه.
+                    reason = "privacy" if "پرایوسی" in why else (
+                        "stale" if "رهاشده" in why else "invalid"
+                    )
                     try:
-                        never_add_again(uid, "invalid")
+                        never_add_again(uid, reason)
                     except Exception:
                         pass
                 continue

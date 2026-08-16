@@ -143,7 +143,7 @@ def test_all_terminal_outcomes_block_retry():
         "except PeerIdInvalid:",
     ):
         i = loop.index(marker)
-        window = loop[i:i + 500]
+        window = loop[i:i + 800]
         assert "blocked_ids.add(" in window, f"{marker} کاربر را بلاک نمی‌کند"
 
 

@@ -117,36 +117,36 @@ async def test_no_user_lost_when_prefilter_aborts(monkeypatch):
 
 # ───────── دامنه‌ی پیش‌فیلتر در ورکر ─────────
 
-def test_worker_only_prefilters_head_of_queue():
+def test_worker_scans_incrementally_not_whole_queue():
     """
-    نباید کل صف را بررسی کند — فقط آن مقداری که واقعاً ادد می‌شود.
+    نباید کل صف را یکجا بررسی کند. از ۱.۸.۰ اسکن تطبیقی است:
+    دسته‌دسته جلو می‌رود و به‌محض رسیدن به تعداد کافی کاربر سالم
+    می‌ایستد — چون حالا پرایوسی‌بسته‌ها هم رد می‌شوند.
     """
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    i = src.index("prefilter_unaddable(")
-    window = src[max(0, i - 1200):i + 300]
-    assert "_scan" in window, "دامنه بررسی باید محدود شود"
-    assert "members[:_scan]" in window or "_head" in window
+    assert "_max_scan" in src, "سقف ایمنی اسکن لازم است"
+    assert "len(_clean) < _need" in src, "باید تا رسیدن به هدف ادامه دهد"
 
 
-def test_scan_size_is_proportional_to_accounts():
-    """اندازه‌ی بررسی باید با تعداد اکانت‌ها متناسب باشد، نه کل صف."""
+def test_scan_has_hard_ceiling():
+    """
+    حتی اگر کاربر سالمی پیدا نشود، اسکن نباید بی‌نهایت ادامه یابد —
+    خودِ پیش‌فیلتر سهمیه می‌سوزاند (درس ۱.۶.۴).
+    """
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    m = re.search(r"_scan = min\(len\(members\), max\((\d+), len\(accs\) \* (\d+)\)\)", src)
-    assert m, "فرمول محدودسازی دامنه پیدا نشد"
-    floor, per_acc = int(m.group(1)), int(m.group(2))
-    assert floor <= 500 and per_acc <= 100
+    m = re.search(r"_max_scan = min\(len\(members\), (\d+)\)", src)
+    assert m, "سقف اسکن پیدا نشد"
+    ceiling = int(m.group(1))
+    assert ceiling <= 3000, f"سقف {ceiling} یعنی تا {ceiling // 100} درخواست"
 
-    # با ۶ اکانت و ۹۶۰۰ نفر: چند درخواست؟
-    scan = min(9600, max(floor, 6 * per_acc))
-    requests = (scan + 99) // 100
-    assert requests <= 8, (
-        f"{requests} درخواست قبل از اولین ادد — همین باعث PEER_FLOOD شد"
-    )
+    m2 = re.search(r"_need = max\((\d+), len\(accs\) \* (\d+)\)", src)
+    assert m2, "هدف کاربر سالم پیدا نشد"
+    assert int(m2.group(1)) <= 300 and int(m2.group(2)) <= 100
 
 
 def test_queue_is_rebuilt_after_partial_prefilter():
     """بخش بررسی‌نشده نباید از صف حذف شود."""
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    assert "members = _head + _tail" in src, (
-        "صف باید از سر بررسی‌شده + بقیه بازسازی شود، وگرنه هزاران کاربر گم می‌شوند"
+    assert "members = _clean + members[_checked:]" in src, (
+        "صف باید از سالم‌های بررسی‌شده + بقیه بازسازی شود"
     )

@@ -8316,23 +8316,54 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 )
             except Exception:
                 pass
-            # ⚠️ فقط اوایل صف را بررسی کن، نه هر ۹٬۶۰۰ نفر را (۱.۶.۴).
+            # 🎯 اسکن تا رسیدن به «تعداد کافی کاربرِ سالم» (۱.۸.۰)
             #
-            # هر دسته‌ی ۱۰۰تایی یک درخواست get_users است. با کل صف یعنی
-            # ~۹۶ درخواست پشت سر هم، و ۶ اکانت هم‌زمان همین کار را
-            # می‌کردند. اکانت‌ها بودجه‌ی نرخشان را قبل از اولین ادد
-            # می‌سوزاندند و با «صفر ادد» PEER_FLOOD می‌گرفتند.
+            # دو محدودیت متضاد را باید هم‌زمان رعایت کنیم:
+            #   ۱) هر دسته‌ی ۱۰۰تایی یک get_users است — نباید ۹۶ تا بزنیم
+            #      (درس ۱.۶.۴: خودِ پیش‌فیلتر سهمیه را می‌سوزاند)
+            #   ۲) ولی حالا پرایوسی‌بسته‌ها هم رد می‌شوند، پس ممکن است از
+            #      ۳۰۰ نفرِ اول فقط ۲۰ نفر سالم دربیاید
             #
-            # عملاً هر اجرا چند ده ادد بیشتر انجام نمی‌شود، پس بررسی
-            # ابتدای صف کافی است؛ بقیه در همان حلقه‌ی ادد فیلتر می‌شوند.
-            _scan = min(len(members), max(300, len(accs) * 60))
-            _head, _tail = members[:_scan], members[_scan:]
-            _head, prefilter_stats = await prefilter_unaddable(
-                probe_client, _head,
-                log=lambda m: print(f"[prefilter] {m}", flush=True),
+            # راه‌حل: دسته‌دسته جلو برو و به‌محض رسیدن به هدف بایست.
+            _need = max(120, len(accs) * 40)      # کاربر سالمِ موردنیاز
+            _max_scan = min(len(members), 2000)   # سقف ایمنی (~۲۰ درخواست)
+
+            _clean, _checked = [], 0
+            _step = 300
+            prefilter_stats = None
+            while _checked < _max_scan and len(_clean) < _need:
+                _chunk = members[_checked:_checked + _step]
+                if not _chunk:
+                    break
+                _kept, _st = await prefilter_unaddable(
+                    probe_client, _chunk,
+                    log=lambda m: print(f"[prefilter] {m}", flush=True),
+                )
+                _clean.extend(_kept)
+                _checked += len(_chunk)
+
+                if prefilter_stats is None:
+                    prefilter_stats = _st
+                else:
+                    prefilter_stats["checked"] += _st.get("checked", 0)
+                    prefilter_stats["removed"] += _st.get("removed", 0)
+                    prefilter_stats["errors"] += _st.get("errors", 0)
+                    for k, v in (_st.get("reasons") or {}).items():
+                        prefilter_stats["reasons"][k] = prefilter_stats["reasons"].get(k, 0) + v
+
+                # اگر تلگرام محدود کرد، ادامه نده
+                if _st.get("aborted"):
+                    _clean.extend(members[_checked:])
+                    _checked = len(members)
+                    break
+
+            print(
+                f"🎯 پیش‌فیلتر: {_checked:,} نفر بررسی شد → "
+                f"{len(_clean):,} کاربر با شانس واقعی عضویت",
+                flush=True,
             )
-            # بخش بررسی‌شده + بقیه صف (که بررسی نشد ولی حذف هم نشده)
-            members = _head + _tail
+            # بررسی‌شده‌های سالم + بقیه‌ی صف (که هنوز بررسی نشده)
+            members = _clean + members[_checked:]
             try:
                 await probe_client.stop()
             except Exception:
@@ -8361,6 +8392,13 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     total_added = 0
     total_failed = 0
     total_skipped = 0
+
+    # 🛡️ محافظ سراسری (۱.۸.۰)
+    # اگر با وجود پیش‌فیلتر باز هم هیچ‌کس عضو نمی‌شود، یعنی این صف
+    # سوخته است. ادامه دادن فقط همه‌ی اکانت‌ها را می‌سوزاند.
+    # داده‌ی واقعی: ۹ دعوت پیاپی، صفر عضویت، سپس PEER_FLOOD.
+    _global_consecutive_fails = 0
+    _ABORT_AFTER_FAILS = 25
 
     # 🧠 تاخیر انسانی هر اکانت مستقل از بقیه است (ریتم رباتی همزمان = پرچم بن)
     #
@@ -8391,7 +8429,11 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
             account_state.mark_used(phone)
 
     async def _worker_account_inner(phone, info):
+        # ⚠️ _global_consecutive_fails بین همه ورکرها مشترک است. بدون
+        # nonlocal هر انتساب یک متغیر محلی جدید می‌سازد و محافظ سراسری
+        # هرگز فعال نمی‌شود.
         nonlocal total_added, total_failed, total_skipped
+        nonlocal _global_consecutive_fails
         from pyrogram import Client
         from attacker import safe_phone_filename as spfn
 
@@ -8615,6 +8657,19 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                         # تأخیر پایه را throttle انتهای حلقه می‌دهد
                         _spent_request = True
                         _skips_in_row += 1
+                        _global_consecutive_fails += 1
+
+                        if _global_consecutive_fails >= _ABORT_AFTER_FAILS and total_added == 0:
+                            msg = (
+                                f"🛑 {_global_consecutive_fails} دعوت پیاپی بدون حتی یک "
+                                "عضویت — این بخش از صف سوخته است. عملیات متوقف شد تا "
+                                "اکانت‌ها نسوزند. یک گروه تازه اسکرپ کن."
+                            )
+                            print(msg, flush=True)
+                            if atk_state_ref is not None:
+                                atk_state_ref["live_status_text"] = msg
+                            stop_event.set()
+                            break
 
                         # اگر پشت سر هم رد می‌شوند، این اکانت/بازه‌ی صف
                         # بازدهی ندارد — استراحت بلندتر تا اکانت نسوزد.
@@ -8657,6 +8712,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     _peer_flood_strikes.pop(phone, None)
                     _skips_in_row = 0
                     _spent_request = True
+                    _global_consecutive_fails = 0
                     # ⚠️ ضد-تکرار بین ورکرهای موازی (۱.۷.۰):
                     # blocked_ids ست مشترک در حافظه است که همه ورکرها قبل
                     # از هر ادد چک می‌کنند. قبلاً فقط در دیتابیس ثبت
@@ -8712,6 +8768,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     # پرایوسی‌بسته است با سرعت نامحدود درخواست می‌فرستیم.
                     total_skipped += 1
                     _spent_request = True
+                    _global_consecutive_fails += 1
                     try:
                         blocked_ids.add(int(uid))
                     except Exception:
