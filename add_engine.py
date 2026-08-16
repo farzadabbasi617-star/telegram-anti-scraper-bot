@@ -87,8 +87,28 @@ def never_add_again(uid, reason=""):
     invalidate_blocked_cache()
 
 
-def prefer_addable_members(members):
-    """اول یوزرنیم‌دارها (نرخ عضویت واقعی خیلی بالاتر است)، بعد شماره‌دار، بعد فقط ID."""
+def prefer_addable_members(members, drop_id_only=True):
+    """
+    اول یوزرنیم‌دارها، بعد شماره‌دارها.
+
+    ⚠️ درس گران (۱.۷.۰): کاربرانی که فقط user_id دارند (نه یوزرنیم، نه
+    شماره) تقریباً هرگز resolve نمی‌شوند — اکانت آن‌ها را در session
+    cache خود ندارد. هر تلاش یک درخواست شبکه است که شکست می‌خورد و
+    بودجه‌ی نرخ را می‌سوزاند.
+
+    در دیتابیس این کاربر ۶٬۷۸۴ نفر از ۲۵٬۳۴۷ بودند (۲۷٪) — یعنی یک
+    چهارم درخواست‌ها از پیش محکوم به شکست.
+
+    حالا به‌طور پیش‌فرض کنار گذاشته می‌شوند.
+    """
+    out = []
+    for u in (members or []):
+        un = (u.get("username") or "").strip()
+        ph = (u.get("phone") or "").strip()
+        if drop_id_only and not un and not ph:
+            continue
+        out.append(u)
+
     def _key(u):
         un = (u.get("username") or "").strip()
         ph = (u.get("phone") or "").strip()
@@ -97,7 +117,7 @@ def prefer_addable_members(members):
         if ph:
             return (1, ph)
         return (2, str(u.get("user_id") or 0))
-    return sorted(members or [], key=_key)
+    return sorted(out, key=_key)
 
 
 # ═══════════════════════════════════════════════════════════════

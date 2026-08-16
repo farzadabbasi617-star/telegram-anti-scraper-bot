@@ -80,7 +80,7 @@ from config import (
     API_ID, API_HASH, BOT_TOKEN, ADMIN_ID, PORT,
     PUBLIC_URL, DEFAULT_TARGET_USERNAME, FIXED_TARGET_LINK,
     MAX_ADD_PER_ACCOUNT, MODE_DAILY_CAP, DB_POOL_SIZE,
-    DELAY_RANGES, BREAK_RANGES,
+    DELAY_RANGES, BREAK_RANGES, ADDS_BEFORE_BREAK,
     assert_env,
 )
 
@@ -668,6 +668,8 @@ atk_state = {}
 # شمارش PEER_FLOOD پشت سر هم برای هر اکانت (برای بک‌آف تدریجی).
 # بعد از یک ادد موفق صفر می‌شود.
 _peer_flood_strikes = {}
+
+
 # 📡 پل استیت زنده مینی‌اپ — web_app.set_app_refs این مقدار را ست می‌کند
 atk_state_ref = None
 
@@ -8510,17 +8512,66 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     member_queue.task_done()
                     continue
 
+                # ⚠️ درس گران (۱.۷.۰): هر فراخوانی resolve_peer روی کاربری
+                # که اکانت نمی‌شناسد، یک درخواست شبکه است و بودجه نرخ را
+                # می‌سوزاند. قبلاً برای هر کاربر تا ۲ بار resolve + یک
+                # AddContact می‌زدیم = ۳ درخواست قبل از خودِ ادد.
+                # نتیجه: اکانت با «صفر ادد» PEER_FLOOD می‌گرفت.
+                #
+                # حالا: فقط یک تلاش resolve، و اگر FloodWait داد فوراً
+                # عقب می‌کشیم به‌جای اینکه با fallback دوباره درخواست بزنیم.
                 user_peer = None
-                if username:
-                    try:
-                        clean_un = username.lstrip("@")
-                        user_peer = await client.resolve_peer(clean_un)
-                    except Exception: pass
+                _peer_flood_hit = False
+                try:
+                    ref = username.lstrip("@") if username else uid
+                    user_peer = await client.resolve_peer(ref)
+                except Exception as _e:
+                    _es = str(_e)
+                    if "FLOOD" in _es.upper() or "PEER_FLOOD" in _es:
+                        _peer_flood_hit = True
+                    elif username:
+                        # فقط اگر خطا ربطی به محدودیت نداشت، با آیدی امتحان کن
+                        try:
+                            user_peer = await client.resolve_peer(uid)
+                        except Exception as _e2:
+                            if "FLOOD" in str(_e2).upper():
+                                _peer_flood_hit = True
 
-                if user_peer is None:
+                if _peer_flood_hit:
+                    # سهمیه در حال اتمام است — کاربر را برگردان و عقب بکش.
+                    # اینجا خارج از try است، پس مستقیم رسیدگی می‌کنیم
+                    # (raise کردن باعث می‌شد ورکر کرش کند).
+                    from add_engine import peer_flood_cooldown, describe_cooldown
+                    member_queue.put_nowait(member)
+                    member_queue.task_done()
+
+                    strikes = _peer_flood_strikes.get(phone, 0) + 1
+                    _peer_flood_strikes[phone] = strikes
+                    cooldown = peer_flood_cooldown(strikes)
+                    human = describe_cooldown(cooldown)
+                    print(
+                        f"🚫 [{phone}] محدودیت در resolve (بار {strikes}) — "
+                        f"{human} صبر. تا اینجا {acc_added} ادد.",
+                        flush=True,
+                    )
+                    db.set_adder_limit(
+                        phone, already_added + acc_added,
+                        limitation_type="PeerFlood",
+                        limitation_until=int(time.time()) + cooldown,
+                    )
+                    if atk_state_ref is not None:
+                        atk_state_ref["live_status_text"] = (
+                            f"🚫 اکانت {phone} محدودیت موقت گرفت — {human} صبر "
+                            "(اکانت سالم است، بن نشده). بقیه ادامه می‌دهند."
+                        )
                     try:
-                        user_peer = await client.resolve_peer(uid)
-                    except Exception: pass
+                        await asyncio.wait_for(stop_event.wait(), timeout=cooldown)
+                        break
+                    except asyncio.TimeoutError:
+                        pass
+                    if strikes >= 6:
+                        break
+                    continue
 
                 if user_peer is None:
                     total_skipped += 1
@@ -8528,16 +8579,20 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     continue
 
                 try:
-                    if acc_added < 3:
-                        try:
-                            await client.invoke(AddContact(id=user_peer, first_name=str(uid)[:30], last_name="", phone="", add_phone_privacy_exception=False))
-                            await asyncio.sleep(0.3)
-                        except Exception: pass
-
+                    # 🚫 AddContact حذف شد (۱.۷.۰).
+                    # این فراخوانی یکی از شدیدترین rate-limit های تلگرام را
+                    # دارد و عملاً به موفقیت ادد کمکی نمی‌کرد: کاربری که
+                    # پرایوسی‌اش بسته است با AddContact هم اضافه نمی‌شود.
+                    # حذفش یعنی ۳۳٪ درخواست کمتر به ازای هر کاربر.
                     invite_res = await client.invoke(InviteToChannel(channel=target_peer, users=[user_peer]))
 
                     if invite_did_not_join(invite_res, uid) or not await confirm_joined(client, dest_gid, uid):
                         total_skipped += 1
+                        # دوباره تلاش نکن — نتیجه‌اش همین می‌شود
+                        try:
+                            blocked_ids.add(int(uid))
+                        except Exception:
+                            pass
                         print(f"⚠️ [{phone}] {uid} invited but not a member — skipped", flush=True)
                         member_queue.task_done()
                         continue
@@ -8553,6 +8608,16 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     # ادد موفق یعنی اکانت سالم است — شمارنده صفر شود تا
                     # جریمه‌های قبلی روی هم انباشته نشوند.
                     _peer_flood_strikes.pop(phone, None)
+                    # ⚠️ ضد-تکرار بین ورکرهای موازی (۱.۷.۰):
+                    # blocked_ids ست مشترک در حافظه است که همه ورکرها قبل
+                    # از هر ادد چک می‌کنند. قبلاً فقط در دیتابیس ثبت
+                    # می‌شد و این ست به‌روز نمی‌شد — یعنی دو ورکر
+                    # می‌توانستند هم‌زمان سراغ یک نفر بروند و یک درخواست
+                    # کاملاً هدر برود.
+                    try:
+                        blocked_ids.add(int(uid))
+                    except Exception:
+                        pass
                     mark_user_as_added(dest_gid, "", uid, phone)
                     db.set_adder_limit(phone, already_added + acc_added)
 
@@ -8567,7 +8632,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     print(f"✅ [{phone}] Invited {display_user}! (Acc Total: {already_added + acc_added}/100, Global Added: {total_added})", flush=True)
 
                     # 🧠 وقفه انسانی با نویز تصادفی + استراحت دوره‌ای (ضد بن شدن اکانت‌ها)
-                    if acc_added > 0 and acc_added % random.randint(10, 15) == 0:
+                    if acc_added > 0 and acc_added % random.randint(*ADDS_BEFORE_BREAK) == 0:
                         brk = human_break_seconds(add_mode)
                         print(f"☕ [{phone}] استراحت انسانی {brk}s بعد از {acc_added} اد...", flush=True)
                         try:
@@ -8591,14 +8656,26 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     break
                 except UserAlreadyParticipant:
                     total_skipped += 1
+                    try:
+                        blocked_ids.add(int(uid))
+                    except Exception:
+                        pass
                     mark_user_as_added(dest_gid, "", uid, phone)
                 except (UserPrivacyRestricted, UserNotMutualContact) as e:
                     # 🔒 پروفایل قفل است → جزو آمار ادد حساب نمی‌شود
                     total_skipped += 1
+                    try:
+                        blocked_ids.add(int(uid))
+                    except Exception:
+                        pass
                     never_add_again(uid, "privacy")
                     print(f"🔒 [{phone}] پروفایل قفل {uid} → اسکیپ + حذف از دیتابیس", flush=True)
                 except PeerIdInvalid:
                     total_skipped += 1
+                    try:
+                        blocked_ids.add(int(uid))
+                    except Exception:
+                        pass
                     never_add_again(uid, "invalid")
                     print(f"👻 [{phone}] آیدی نامعتبر {uid} → اسکیپ + حذف از دیتابیس", flush=True)
                 except Exception as e:

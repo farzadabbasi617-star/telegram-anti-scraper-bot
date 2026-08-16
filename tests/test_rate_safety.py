@@ -98,10 +98,19 @@ def test_limited_account_is_retried_after_deadline():
     )
 
 
-def test_speeds_are_user_choice_not_ours():
-    """حالت safe نباید خودسرانه کندتر از مقدار طراحی‌شده باشد."""
-    assert config.DELAY_RANGES["safe"] == (45, 95)
-    assert config.BREAK_RANGES["safe"] == (120, 300)
+def test_speeds_are_reasonable_for_parallel_use():
+    """
+    ⚠️ بازنگری ۱.۷.۰: این تست قبلاً اعداد دقیق را قفل می‌کرد، ولی آن
+    اعداد با ۶ اکانت موازی باعث PEER_FLOOD می‌شدند. حالا معیار،
+    «فاصله‌ی مؤثر روی گروه» است، نه یک عدد ثابت.
+    """
+    for mode in ("ultra", "fast", "safe"):
+        lo, hi = config.DELAY_RANGES[mode]
+        assert lo > 0 and hi > lo, f"{mode}: بازه نامعتبر"
+
+    # safe باید با ۶ اکانت هم واقعاً امن بماند
+    lo, hi = config.DELAY_RANGES["safe"]
+    assert ((lo + hi) / 2) / 6 >= 14
 
 
 # ───────────── واکنش به محدودیت واقعی تلگرام ─────────────

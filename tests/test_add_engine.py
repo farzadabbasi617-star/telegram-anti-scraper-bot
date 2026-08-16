@@ -70,7 +70,7 @@ def test_prefer_addable_members_username_first():
         {"user_id": 3, "username": "", "phone": "+98912"},
     ]
     ordered = add_engine.prefer_addable_members(members)
-    assert [u["user_id"] for u in ordered] == [2, 3, 1]
+    assert [u["user_id"] for u in ordered] == [2, 3]   # فقط-آیدی حذف می‌شود (۱.۷.۰)
 
 
 def test_resolve_add_target_nonzero_gid_wins(monkeypatch):
