@@ -206,3 +206,65 @@ def test_success_resets_global_counter():
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
     i = src.index("total_added += 1")
     assert "_global_consecutive_fails = 0" in src[i:i + 900]
+
+
+# ───────── پیش‌فیلتر باید در هر دو مسیر اجرا شود ─────────
+
+def test_prefilter_runs_inside_core_executor():
+    """
+    🚨 باگی که ۱.۸.۰ را بی‌اثر کرد:
+
+    پیش‌فیلتر در هندلر ربات بود، ولی مینی‌اپ
+    (`web_app.trigger_parallel_add`) مستقیم `_execute_parallel_add` را
+    صدا می‌زند و آن را دور می‌زد. لاگ زنده صفر خط prefilter داشت و
+    همان «۹ دعوت، صفر عضویت» تکرار شد.
+
+    پیش‌فیلتر باید داخل خودِ اجراکننده باشد تا هر دو مسیر پوشش یابند.
+    """
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    lines = src.split("\n")
+    st = next(i for i, l in enumerate(lines)
+              if l.startswith("async def _execute_parallel_add("))
+    en = len(lines)
+    for i, l in enumerate(lines[st + 1:], st + 1):
+        if l and not l[0].isspace():
+            en = i
+            break
+    body = "\n".join(lines[st:en])
+    assert "prefilter_unaddable(" in body, (
+        "پیش‌فیلتر باید داخل _execute_parallel_add باشد، نه فقط در هندلر ربات"
+    )
+
+
+def test_prefilter_not_duplicated():
+    """اجرای دوباره یعنی دو برابر درخواست get_users."""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    calls = src.count("await prefilter_unaddable(")
+    assert calls == 1, f"{calls} فراخوانی پیش‌فیلتر — باید فقط یکی باشد"
+
+
+def test_prefilter_failure_does_not_block_adding():
+    """اگر پیش‌فیلتر شکست خورد، ادد باید ادامه یابد."""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    i = src.index("🎯 پیش‌فیلتر پرایوسی")
+    window = src[i:i + 3000]
+    assert "پیش‌فیلتر انجام نشد" in window, "باید fallback داشته باشد"
+
+
+def test_prefilter_updates_live_total():
+    """بعد از فیلتر، عدد صف در مینی‌اپ باید به‌روز شود."""
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    i = src.index("🎯 پیش‌فیلتر پرایوسی")
+    window = src[i:i + 3000]
+    assert 'atk_state_ref["live_total"]' in window
+
+
+def test_no_dependency_on_bot_message_object():
+    """
+    نسخه‌ی قدیمی به `q.message.edit_text` وابسته بود که در مسیر
+    مینی‌اپ وجود ندارد و کرش می‌کرد.
+    """
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    i = src.index("🎯 پیش‌فیلتر پرایوسی")
+    window = src[i:i + 3000]
+    assert "q.message.edit_text" not in window

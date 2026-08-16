@@ -8300,89 +8300,64 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     invalidate_blocked_cache()
     blocked_ids = get_blocked_ids_cached()
 
-    # 🔍 پیش‌فیلتر: حساب‌های حذف‌شده/ربات/ناموجود را قبل از شروع کنار بگذار.
-    # هر تلاش ناموفق ادد، بودجه نرخ اکانت را می‌سوزاند — حذف این‌ها قبل از
-    # حلقه یعنی اکانت‌ها خیلی دیرتر به FloodWait می‌خورند.
-    prefilter_stats = None
-    try:
-        from add_engine import prefilter_unaddable, format_prefilter_report
-        probe_phone = next(iter(accs.keys())) if hasattr(accs, "keys") else accs[0][0]
-        probe_client = await _open_probe_client(probe_phone)
-        if probe_client:
-            try:
-                await q.message.edit_text(
-                    f"🔍 در حال بررسی {total_members:,} کاربر قبل از شروع ادد...\n"
-                    f"<i>این کار از سوختن بیهوده سهمیه اکانت‌ها جلوگیری می‌کند.</i>"
+    # 🎯 پیش‌فیلتر پرایوسی (۱.۸.۱)
+    #
+    # ⚠️ این‌جا انجام می‌شود، نه در فراخوان‌ها. مسیر مینی‌اپ
+    # (`web_app.trigger_parallel_add`) مستقیم همین تابع را صدا می‌زند و
+    # پیش‌فیلترِ داخل هندلر ربات را دور می‌زد — یعنی فیلتر پرایوسی
+    # عملاً هرگز اجرا نمی‌شد و همان «۹ دعوت، صفر عضویت» تکرار می‌شد.
+    if members and len(accs) > 0:
+        try:
+            from add_engine import prefilter_unaddable, format_prefilter_report
+            _probe_phone = next(iter(accs.keys()))
+            _probe = await _open_probe_client(_probe_phone)
+            if _probe:
+                _need = max(120, len(accs) * 40)
+                _max_scan = min(len(members), 2000)
+                _clean, _checked, _step = [], 0, 300
+                _agg = None
+                while _checked < _max_scan and len(_clean) < _need:
+                    _chunk = members[_checked:_checked + _step]
+                    if not _chunk:
+                        break
+                    _kept, _st = await prefilter_unaddable(
+                        _probe, _chunk,
+                        log=lambda m: print(f"[prefilter] {m}", flush=True),
+                    )
+                    _clean.extend(_kept)
+                    _checked += len(_chunk)
+                    if _agg is None:
+                        _agg = _st
+                    else:
+                        for k in ("checked", "removed", "errors"):
+                            _agg[k] = _agg.get(k, 0) + _st.get(k, 0)
+                        for k, v in (_st.get("reasons") or {}).items():
+                            _agg["reasons"][k] = _agg["reasons"].get(k, 0) + v
+                    if _st.get("aborted"):
+                        _clean.extend(members[_checked:])
+                        _checked = len(members)
+                        break
+                try:
+                    await _probe.stop()
+                except Exception:
+                    pass
+                members = _clean + members[_checked:]
+                total_members = len(members)
+                if atk_state_ref is not None:
+                    atk_state_ref["live_total"] = total_members
+                    atk_state_ref["live_remaining"] = total_members
+                print(
+                    f"🎯 پیش‌فیلتر: {_checked:,} بررسی → {len(_clean):,} کاربر "
+                    f"با شانس واقعی عضویت (صف: {total_members:,})",
+                    flush=True,
                 )
-            except Exception:
-                pass
-            # 🎯 اسکن تا رسیدن به «تعداد کافی کاربرِ سالم» (۱.۸.۰)
-            #
-            # دو محدودیت متضاد را باید هم‌زمان رعایت کنیم:
-            #   ۱) هر دسته‌ی ۱۰۰تایی یک get_users است — نباید ۹۶ تا بزنیم
-            #      (درس ۱.۶.۴: خودِ پیش‌فیلتر سهمیه را می‌سوزاند)
-            #   ۲) ولی حالا پرایوسی‌بسته‌ها هم رد می‌شوند، پس ممکن است از
-            #      ۳۰۰ نفرِ اول فقط ۲۰ نفر سالم دربیاید
-            #
-            # راه‌حل: دسته‌دسته جلو برو و به‌محض رسیدن به هدف بایست.
-            _need = max(120, len(accs) * 40)      # کاربر سالمِ موردنیاز
-            _max_scan = min(len(members), 2000)   # سقف ایمنی (~۲۰ درخواست)
+                if _agg and _agg.get("removed"):
+                    print(format_prefilter_report(_agg), flush=True)
+        except Exception as _e:
+            print(f"⚠️ پیش‌فیلتر انجام نشد ({type(_e).__name__}) — بدون آن ادامه می‌دهیم", flush=True)
 
-            _clean, _checked = [], 0
-            _step = 300
-            prefilter_stats = None
-            while _checked < _max_scan and len(_clean) < _need:
-                _chunk = members[_checked:_checked + _step]
-                if not _chunk:
-                    break
-                _kept, _st = await prefilter_unaddable(
-                    probe_client, _chunk,
-                    log=lambda m: print(f"[prefilter] {m}", flush=True),
-                )
-                _clean.extend(_kept)
-                _checked += len(_chunk)
-
-                if prefilter_stats is None:
-                    prefilter_stats = _st
-                else:
-                    prefilter_stats["checked"] += _st.get("checked", 0)
-                    prefilter_stats["removed"] += _st.get("removed", 0)
-                    prefilter_stats["errors"] += _st.get("errors", 0)
-                    for k, v in (_st.get("reasons") or {}).items():
-                        prefilter_stats["reasons"][k] = prefilter_stats["reasons"].get(k, 0) + v
-
-                # اگر تلگرام محدود کرد، ادامه نده
-                if _st.get("aborted"):
-                    _clean.extend(members[_checked:])
-                    _checked = len(members)
-                    break
-
-            print(
-                f"🎯 پیش‌فیلتر: {_checked:,} نفر بررسی شد → "
-                f"{len(_clean):,} کاربر با شانس واقعی عضویت",
-                flush=True,
-            )
-            # بررسی‌شده‌های سالم + بقیه‌ی صف (که هنوز بررسی نشده)
-            members = _clean + members[_checked:]
-            try:
-                await probe_client.stop()
-            except Exception:
-                pass
-            total_members = len(members)
-            if prefilter_stats and prefilter_stats.get("removed"):
-                print(format_prefilter_report(prefilter_stats), flush=True)
-            if total_members == 0:
-                await q.message.edit_text(
-                    "⚠️ بعد از پیش‌فیلتر هیچ کاربر قابل‌اددی نماند.\n\n"
-                    + (format_prefilter_report(prefilter_stats) or ""),
-                    reply_markup=main_menu(),
-                )
-                return
-            if atk_state_ref is not None:
-                atk_state_ref["live_total"] = total_members
-                atk_state_ref["live_remaining"] = total_members
-    except Exception as e:
-        print(f"⚠️ پیش‌فیلتر انجام نشد ({type(e).__name__}: {e}) — ادامه بدون آن", flush=True)
+    # (پیش‌فیلتر بالاتر انجام شد — نسخه‌ی قدیمی که به q.message وابسته
+    #  بود حذف شد چون در مسیر مینی‌اپ کرش می‌کرد.)
 
     # Shared queue of members to add — یوزرنیم‌دارها اول
     member_queue = asyncio.Queue()
