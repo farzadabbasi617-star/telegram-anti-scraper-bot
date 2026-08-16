@@ -229,7 +229,9 @@ def diagnose_offline(phone, acc_info=None):
         status = "limited"
         mins = int((st.get("remaining_seconds") or 0) / 60)
         reasons.append(f"محدودیت FloodWait فعال است (~{mins} دقیقه)")
-    elif (st.get("added") or 0) >= 100 and status == "healthy":
+    elif (st.get("added") or 0) >= getattr(config, "MAX_ADD_PER_ACCOUNT", 1000) and status == "healthy":
+        # سقف از config می‌آید، نه عدد هاردکد — وگرنه اکانت سالم
+        # بی‌دلیل «پر» نشان داده می‌شود.
         status = "full"
         reasons.append("ظرفیت روزانه ادد پر شده")
 

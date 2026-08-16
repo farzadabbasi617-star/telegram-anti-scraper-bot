@@ -98,3 +98,66 @@ def test_peer_flood_guess_stays_short():
     assert peer_flood_cooldown(99) <= 3600, (
         "PEER_FLOOD مدت ندارد — حدس ما نباید بیش از یک ساعت باشد"
     )
+
+
+# ───────── سایه‌اندازی روی config ─────────
+
+def test_no_local_shadowing_of_config_caps():
+    """
+    🚨 باگی که مالک حس کرد و درست هم بود (۱.۶.۲):
+
+    نسخه ۱.۶.۰ سقف را در `config.py` به ۱۰۰۰ برد، ولی داخل
+    `_execute_parallel_add` این خط بود:
+
+        MODE_DAILY_CAP = {"ultra": 50, "fast": 100, "safe": 100}
+
+    یک متغیر محلی که مقدار ایمپورت‌شده از config را سایه می‌انداخت.
+    نتیجه: سقف ۱۰۰ همچنان اعمال می‌شد و «برداشتن محدودیت» بی‌اثر بود.
+
+    این تست هر انتساب محلی به نام‌های تنظیماتی را ممنوع می‌کند.
+    """
+    import re
+
+    watched = (
+        "MODE_DAILY_CAP", "MAX_ADD_PER_ACCOUNT", "DELAY_RANGES",
+        "BREAK_RANGES", "WARMUP_STAGES", "STAGGER_START",
+    )
+    offenders = []
+    for fname in ("bot.py", "add_engine.py", "web_app.py", "account_doctor.py"):
+        src = (ROOT / fname).read_text(encoding="utf-8")
+        for i, line in enumerate(src.split("\n"), 1):
+            stripped = line.strip()
+            if stripped.startswith("#") or "import" in stripped:
+                continue
+            indent = len(line) - len(line.lstrip())
+            if indent == 0:
+                continue          # تعریف سراسری در خود config مجاز است
+            for name in watched:
+                if re.match(rf"{name}\s*=[^=]", stripped):
+                    offenders.append(f"{fname}:{i} → {stripped[:70]}")
+
+    assert not offenders, (
+        "مقدار config به‌صورت محلی بازنویسی شده — تغییر تنظیمات بی‌اثر می‌شود:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_no_hardcoded_hundred_cap_anywhere():
+    """سقف ۱۰۰ نباید در منطق تصمیم‌گیری هاردکد باشد."""
+    import re
+
+    offenders = []
+    for fname in ("bot.py", "account_doctor.py", "add_engine.py"):
+        src = (ROOT / fname).read_text(encoding="utf-8")
+        for i, line in enumerate(src.split("\n"), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            # مقایسه added با عدد ثابت
+            if re.search(r"added[\"'\]\s\w]*\)?\s*>=\s*100\b", stripped):
+                offenders.append(f"{fname}:{i} → {stripped[:70]}")
+
+    assert not offenders, (
+        "سقف ۱۰۰ هاردکد شده — باید از config.MAX_ADD_PER_ACCOUNT بیاید:\n  "
+        + "\n  ".join(offenders)
+    )

@@ -1330,7 +1330,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
         <section id="tab-accounts" class="tab-content hidden space-y-3">
             <div class="flex items-center justify-between px-1">
                 <h3 class="text-sm font-bold text-white">📊 وضعیت سلامت و ظرفیت اکانت‌ها</h3>
-                <span class="text-xs text-slate-400">ظرفیت روزانه: ۱۰۰ ادد</span>
+                <span class="text-xs text-slate-400">سقف: تا وقتی تلگرام اجازه بدهد</span>
             </div>
             <button id="btn-live-probe" onclick="runLiveProbe()" class="w-full py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-xl shadow-lg active:scale-95">
                 🔬 تست زنده اتصال اکانت‌های صفر-ادد
@@ -1739,6 +1739,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     }
                     document.getElementById('target-label').innerText = m.target_group;
 
+                    if (m.add_cap) { window.__ADD_CAP = m.add_cap; }
                     if (m.is_adding) {
                         // Sticky banner
                         document.getElementById('sticky-add-banner').classList.remove('hidden');
@@ -1938,7 +1939,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                             dotColor = 'bg-amber-400';
                             label = 'تست‌نشده';
                             labelColor = 'text-amber-300';
-                        } else if (acc.added_today >= 100) {
+                        } else if (acc.added_today >= (window.__ADD_CAP || 1000)) {
                             dotColor = 'bg-amber-500';
                             label = 'ظرفیت پر';
                             labelColor = 'text-amber-300';
@@ -1987,7 +1988,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                             statusBadge = '<span class="px-2.5 py-1 bg-rose-500/20 text-rose-300 text-[10px] font-bold rounded-lg border border-rose-500/30">🔴 خراب</span>';
                         } else if (acc.status === 'unchecked' || acc.status === 'unused') {
                             statusBadge = '<span class="px-2.5 py-1 bg-amber-500/20 text-amber-300 text-[10px] font-bold rounded-lg border border-amber-500/30">⏳ تست زنده نشده</span>';
-                        } else if (acc.added_today >= 100) {
+                        } else if (acc.added_today >= (window.__ADD_CAP || 1000)) {
                             statusBadge = '<span class="px-2.5 py-1 bg-amber-500/20 text-amber-300 text-[10px] font-bold rounded-lg border border-amber-500/30">⚠️ ظرفیت پر</span>';
                         }
 
@@ -2369,7 +2370,13 @@ def create_web_app(app_bot=None, atk_state=None):
             return web.Response(text=MINI_APP_HTML, content_type='text/html', charset='utf-8', headers=NO_CACHE)
 
         async def aio_api_dashboard(request):
-            return web.json_response(get_dashboard_dict(), headers=NO_CACHE)
+            d = get_dashboard_dict()
+            try:
+                from config import MAX_ADD_PER_ACCOUNT as _cap
+                d.setdefault("metrics", {})["add_cap"] = _cap
+            except Exception:
+                pass
+            return web.json_response(d, headers=NO_CACHE)
 
         async def aio_api_loopinfo(request):
             """وضعیت حلقه رویداد و کارهای پس‌زمینه — برای عیب‌یابی."""

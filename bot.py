@@ -1107,7 +1107,7 @@ async def _show_ig_follow_menu(q):
     text += "• تاخیر ۴۰-۱۲۰ ثانیه بین هر follow\n"
     text += "• رفتار شبه{انسانی} (بازدید پروفایل)\n"
     text += "• توقف خودکار در action block\n"
-    text += "• سقف روزانه: ۶۰ تا\n\n"
+    text += "• سقف روزانه: بدون محدودیت دستی (تا وقتی تلگرام اجازه بدهد)\n\n"
     text += "<b>منبع کاربران برای follow:</b>\n"
 
     if not ig_chats:
@@ -8344,8 +8344,11 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     total_skipped = 0
 
     # 🧠 تاخیر انسانی هر اکانت مستقل از بقیه است (ریتم رباتی همزمان = پرچم بن)
-    # حد مجاز روزانه در حالت ultra پایین‌تر است تا اکانت‌ها زود بن نشوند
-    MODE_DAILY_CAP = {"ultra": 50, "fast": 100, "safe": 100}
+    #
+    # ⚠️ اینجا قبلاً یک MODE_DAILY_CAP محلی بود که مقدار config را سایه
+    # می‌انداخت: {"ultra": 50, "fast": 100, "safe": 100}. یعنی حتی بعد از
+    # برداشتن سقف در config (۱.۶.۰)، عملاً هنوز سقف ۱۰۰ اعمال می‌شد.
+    # حذف شد تا فقط config حاکم باشد.
 
     target_name = "گروه مقصد"
     try:
