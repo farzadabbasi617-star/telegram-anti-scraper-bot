@@ -8643,9 +8643,16 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                         except asyncio.TimeoutError:
                             pass
                         continue
-                except Exception:
-                    # اگر بررسی نشد، محافظه‌کارانه ادامه بده
-                    pass
+                except Exception as _ce:
+                    # اگر بررسی نشد، محافظه‌کارانه ادامه بده — ولی
+                    # ساکت نباش. یک بار این بلوک بی‌صدا شکست خورد و
+                    # ساعت‌ها فکر کردیم فیلتر کار می‌کند.
+                    if _skips_in_row < 2:
+                        print(
+                            f"⚠️ [{phone}] بررسی پرایوسی نشد "
+                            f"({type(_ce).__name__}: {str(_ce)[:70]})",
+                            flush=True,
+                        )
 
                 try:
                     # 🚫 AddContact حذف شد (۱.۷.۰).
@@ -8657,9 +8664,17 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
 
                     if invite_did_not_join(invite_res, uid) or not await confirm_joined(client, dest_gid, uid):
                         total_skipped += 1
-                        # دوباره تلاش نکن — نتیجه‌اش همین می‌شود
+                        # دوباره تلاش نکن — نتیجه‌اش همین می‌شود.
+                        # ⚠️ باید در دیتابیس هم ثبت شود، نه فقط حافظه:
+                        # وگرنه با هر ری‌استارت فراموش می‌شود و همان
+                        # کاربرها بارها دعوت می‌شوند (در پروداکشن دیده شد:
+                        # 228657240 و 187658540 در سه اجرای پیاپی).
                         try:
                             blocked_ids.add(int(uid))
+                        except Exception:
+                            pass
+                        try:
+                            never_add_again(uid, "privacy")
                         except Exception:
                             pass
                         print(f"⚠️ [{phone}] {uid} invited but not a member — skipped", flush=True)
