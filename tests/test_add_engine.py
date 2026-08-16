@@ -6,14 +6,17 @@ import add_engine
 
 
 def test_human_delay_bounds():
-    for mode, (lo, hi) in {
-        "ultra": (3, 40),
-        "fast": (10, 140),
-        "safe": (35, 320),
-    }.items():
+    """
+    کران‌ها از config مشتق می‌شوند تا با تغییر تنظیمات نشکنند.
+    فرمول human_delay: base∈(lo,hi)، گاهی ×JITTER_FACTOR، سپس ×(0.9,1.15)
+    """
+    import config
+    for mode, (lo, hi) in config.DELAY_RANGES.items():
+        min_possible = lo * 0.9
+        max_possible = hi * config.HUMAN_JITTER_FACTOR[1] * 1.15
         vals = [add_engine.human_delay(mode) for _ in range(500)]
-        assert min(vals) >= lo, f"{mode}: min {min(vals)} < {lo}"
-        assert max(vals) <= hi, f"{mode}: max {max(vals)} > {hi}"
+        assert min(vals) >= min_possible, f"{mode}: min {min(vals)} < {min_possible}"
+        assert max(vals) <= max_possible, f"{mode}: max {max(vals)} > {max_possible}"
 
 
 def test_human_delay_avg_in_range():
@@ -24,11 +27,8 @@ def test_human_delay_avg_in_range():
 
 
 def test_human_break_bounds():
-    for mode, (lo, hi) in {
-        "ultra": (45, 120),
-        "fast": (60, 180),
-        "safe": (120, 300),
-    }.items():
+    import config
+    for mode, (lo, hi) in config.BREAK_RANGES.items():
         for _ in range(50):
             b = add_engine.human_break_seconds(mode)
             assert lo <= b <= hi, f"{mode}: {b}"

@@ -664,6 +664,9 @@ if CURRENT_GROUP_ID:
     defender = AdvancedDefender(app, CURRENT_GROUP_ID, ADMIN_ID)
     defender.MIN_ACCOUNT_AGE_DAYS = 25 if config.get("defense_enabled", True) else 0
 atk_state = {}
+# شمارش PEER_FLOOD پشت سر هم برای هر اکانت (برای بک‌آف تدریجی).
+# بعد از یک ادد موفق صفر می‌شود.
+_peer_flood_strikes = {}
 # 📡 پل استیت زنده مینی‌اپ — web_app.set_app_refs این مقدار را ست می‌کند
 atk_state_ref = None
 
@@ -8332,7 +8335,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
             target_name = target_gid
     except: pass
 
-    async def worker_account(phone, info):
+    async def worker_account(phone, info, _worker_index=0):
         nonlocal total_added, total_failed, total_skipped
         from pyrogram import Client
         from attacker import safe_phone_filename as spfn
@@ -8375,11 +8378,41 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
         acc_limits = load_adder_limits()
         already_added = acc_limits.get(phone, {}).get("added", 0)
         day_cap = MODE_DAILY_CAP.get(add_mode, 100)
-        max_for_this_acc = max(0, min(MAX_ADD_PER_ACCOUNT, day_cap) - already_added)
+
+        # 🔥 گرم کردن اکانت: سقف بر اساس سابقه کل، نه فقط سقف روزانه.
+        # اکانت تازه با سقف ۱۰۰ مستقیم PEER_FLOOD می‌گیرد (درس ۱.۵.۸).
+        from add_engine import warmup_cap as _wcap, stagger_delay as _stag
+        try:
+            historical = db.count_added_by_account(phone)
+        except Exception:
+            historical = already_added
+        warm = _wcap(historical, day_cap)
+        max_for_this_acc = max(0, min(MAX_ADD_PER_ACCOUNT, day_cap, warm) - already_added)
+
+        if warm < day_cap:
+            print(
+                f"🔥 [{phone}] حالت گرم‌کردن: سقف {warm} "
+                f"(سابقه {historical} ادد)",
+                flush=True,
+            )
 
         if max_for_this_acc <= 0:
             print(f"⚠️ [{phone}] ظرفیت روزانه پر شد ({already_added}/{day_cap})", flush=True)
             return
+
+        # ⏳ شروع پلکانی — اگر همه اکانت‌ها هم‌زمان شروع کنند، تلگرام
+        # الگوی هماهنگ می‌بیند و همه را با هم محدود می‌کند.
+        try:
+            _delay = _stag(_worker_index, add_mode)
+            if _delay > 0:
+                print(f"⏳ [{phone}] شروع با {int(_delay)}s تأخیر (ضد الگوی هماهنگ)", flush=True)
+                await asyncio.wait_for(stop_event.wait(), timeout=_delay)
+                print(f"⏹️ [{phone}] توقف در زمان انتظار شروع", flush=True)
+                return
+        except asyncio.TimeoutError:
+            pass
+        except Exception:
+            pass
 
         # 📡 ثبت اکانت فعال در آمار زنده (برای نمایش در مینی‌اپ)
         if atk_state_ref is not None and phone not in atk_state_ref.get("live_active_accounts", []):
@@ -8479,6 +8512,9 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
 
                     acc_added += 1
                     total_added += 1
+                    # ادد موفق یعنی اکانت سالم است — شمارنده صفر شود تا
+                    # جریمه‌های قبلی روی هم انباشته نشوند.
+                    _peer_flood_strikes.pop(phone, None)
                     mark_user_as_added(dest_gid, "", uid, phone)
                     db.set_adder_limit(phone, already_added + acc_added)
 
@@ -8533,15 +8569,30 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     # 🚫 اکانت توسط تلگرام محدود شده — ادامه دادن فقط
                     # وضعیتش را بدتر می‌کند و هیچ اددی انجام نمی‌شود.
                     if "PEER_FLOOD" in err:
-                        print(f"🚫 [{phone}] PEER_FLOOD — اکانت محدود شد، ورکر متوقف می‌شود", flush=True)
+                        # ⚠️ PEER_FLOOD یعنی «فعلاً آهسته‌تر»، نه «اکانت سوخت».
+                        # تلگرام هیچ مدتی اعلام نمی‌کند. نسخه ۱.۵.۵ خودسرانه
+                        # ۲۴ ساعت می‌گذاشت و اکانتی که ۱ ادد کرده بود یک روز
+                        # از دست می‌رفت. حالا بک‌آف تدریجی: ۲۰ دقیقه → ۱ →
+                        # ۳ → ۸ → ۲۴ ساعت، فقط برای تکرارهای پشت سر هم.
+                        from add_engine import peer_flood_cooldown, describe_cooldown
+                        strikes = _peer_flood_strikes.get(phone, 0) + 1
+                        _peer_flood_strikes[phone] = strikes
+                        cooldown = peer_flood_cooldown(strikes)
+                        human = describe_cooldown(cooldown)
+                        print(
+                            f"🚫 [{phone}] PEER_FLOOD (بار {strikes}) — "
+                            f"{human} استراحت. تا اینجا {acc_added} ادد موفق.",
+                            flush=True,
+                        )
                         db.set_adder_limit(
                             phone, already_added + acc_added,
                             limitation_type="PeerFlood",
-                            limitation_until=int(time.time()) + 24 * 3600,
+                            limitation_until=int(time.time()) + cooldown,
                         )
                         if atk_state_ref is not None:
                             atk_state_ref["live_status_text"] = (
-                                f"🚫 اکانت {phone} تا ۲۴ ساعت محدود شد (PEER_FLOOD). "
+                                f"🚫 اکانت {phone} به محدودیت موقت تلگرام خورد — "
+                                f"{human} استراحت می‌کند (اکانت سالم است، بن نشده). "
                                 "بقیه اکانت‌ها ادامه می‌دهند."
                             )
                         member_queue.put_nowait(member)   # کاربر هدر نرود
@@ -8612,7 +8663,10 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     pass
 
     # Launch worker tasks for all healthy accounts concurrently
-    tasks = [asyncio.create_task(worker_account(phone, info)) for phone, info in accs.items()]
+    tasks = [
+        asyncio.create_task(worker_account(phone, info, idx))
+        for idx, (phone, info) in enumerate(accs.items())
+    ]
     await asyncio.gather(*tasks, return_exceptions=True)
 
     if atk_state_ref is not None:

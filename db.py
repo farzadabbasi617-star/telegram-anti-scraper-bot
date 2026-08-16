@@ -783,6 +783,28 @@ def get_added_user_ids(group_id):
         return set()
 
 @db_retry()
+def count_added_by_account(phone):
+    """
+    مجموع اددهای موفق تاریخی یک اکانت (همه گروه‌ها، همه روزها).
+
+    مبنای «گرم کردن» اکانت است: اکانت بدون سابقه نباید روز اول ۱۰۰ نفر
+    اضافه کند — مستقیم PEER_FLOOD می‌گیرد (درس ۱.۵.۸).
+    """
+    try:
+        cur = get_conn().cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM added_history_tbl WHERE account_phone=%s",
+            (str(phone),),
+        )
+        r = cur.fetchone()[0]
+        cur.close()
+        return int(r or 0)
+    except Exception as e:
+        logger.error(f"count_added_by_account err: {e}")
+        return 0
+
+
+@db_retry()
 def count_added(group_id=None):
     try:
         cur = get_conn().cursor()

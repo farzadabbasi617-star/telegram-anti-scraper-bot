@@ -530,3 +530,83 @@ async def get_target_title(client, target_gid, username_hint=None, default="گر
         except Exception:
             continue
     return default
+
+
+# ─────────────────── بک‌آف PEER_FLOOD ───────────────────
+
+# ⚠️ درس گران (نسخه ۱.۵.۸):
+# نسخه ۱.۵.۵ در هر PEER_FLOOD اکانت را ۲۴ ساعت کنار می‌گذاشت. آن عدد
+# را ما هاردکد کرده بودیم — تلگرام هیچ مدتی اعلام نمی‌کند. نتیجه:
+# اکانتی که فقط ۱ نفر ادد کرده بود، ۲۴ ساعت از دست می‌رفت.
+#
+# PEER_FLOOD یعنی «فعلاً آهسته‌تر» نه «اکانت سوخت». معمولاً با چند ده
+# دقیقه استراحت برطرف می‌شود. پس بک‌آف تدریجی بر اساس تعداد دفعات:
+
+_PEER_FLOOD_BACKOFF = (
+    20 * 60,      # بار اول: ۲۰ دقیقه
+    60 * 60,      # بار دوم: ۱ ساعت
+    3 * 3600,     # بار سوم: ۳ ساعت
+    8 * 3600,     # بار چهارم: ۸ ساعت
+)
+_PEER_FLOOD_MAX = 24 * 3600
+
+
+def peer_flood_cooldown(strike_count):
+    """
+    مدت استراحت بعد از PEER_FLOOD بر اساس تعداد دفعات پشت سر هم.
+
+    strike_count از ۱ شروع می‌شود (اولین بار).
+    """
+    try:
+        n = max(1, int(strike_count))
+    except Exception:
+        n = 1
+    if n <= len(_PEER_FLOOD_BACKOFF):
+        return _PEER_FLOOD_BACKOFF[n - 1]
+    return _PEER_FLOOD_MAX
+
+
+def describe_cooldown(seconds):
+    """توضیح فارسی خوانا از مدت استراحت."""
+    s = int(seconds)
+    if s < 3600:
+        return f"{s // 60} دقیقه"
+    h = s / 3600
+    if h < 24:
+        return f"{int(h)} ساعت" if h == int(h) else f"{h:.1f} ساعت"
+    return f"{int(h // 24)} روز"
+
+
+def warmup_cap(historical_added, mode_cap=None):
+    """
+    سقف ادد این اجرا بر اساس سابقه اکانت.
+
+    ⚠️ درس گران (۱.۵.۸): اکانت‌های تازه با سقف ۱۰۰ وارد کار شدند و
+    بعد از ۱ تا ۷ ادد PEER_FLOOD گرفتند. تلگرام به اکانت نو که ناگهان
+    ده‌ها نفر اضافه می‌کند حساس است. سقف باید تدریجی بالا برود.
+    """
+    try:
+        n = max(0, int(historical_added or 0))
+    except Exception:
+        n = 0
+    cap = config.WARMUP_STAGES[0][1]
+    for threshold, allowed in config.WARMUP_STAGES:
+        if n >= threshold:
+            cap = allowed
+    if mode_cap:
+        cap = min(cap, int(mode_cap))
+    return cap
+
+
+def stagger_delay(index, add_mode="safe"):
+    """
+    تأخیر شروع اکانت شماره index تا همه با هم هجوم نبرند.
+
+    اگر ۸ اکانت دقیقاً هم‌زمان شروع کنند، تلگرام الگوی هماهنگ
+    تشخیص می‌دهد.
+    """
+    lo, hi = config.STAGGER_START.get(add_mode, config.STAGGER_START["safe"])
+    if hi <= 0:
+        return 0.0
+    base = index * random.uniform(lo, hi)
+    return base + random.uniform(0, max(1.0, lo))

@@ -42,6 +42,24 @@ def _parallel_worker_body():
     return "\n".join(out)
 
 
+def _handler(code):
+    """
+    بلوک هندلر همان خطا را برمی‌گرداند.
+
+    نمی‌توان از اولین occurrence استفاده کرد — کامنت‌های توضیحی هم شامل
+    همین رشته‌ها هستند. مبنا خودِ شرط `if "CODE" in err:` است.
+    """
+    body = _parallel_worker_body()
+    # هندلر ممکن است شرط مرکب داشته باشد:
+    #   if "CHAT_WRITE_FORBIDDEN" in err or "CHAT_ADMIN_REQUIRED" in err:
+    for marker in (f'if "{code}" in err:', f'if "{code}" in err '):
+        i = body.find(marker)
+        if i != -1:
+            break
+    assert i != -1, f"هندلر {code} پیدا نشد"
+    return body[i:body.index("break", i) + len("break")]
+
+
 @pytest.mark.parametrize("code", ["PEER_FLOOD", "CHAT_WRITE_FORBIDDEN", "USER_CHANNELS_TOO_MUCH"])
 def test_critical_errors_are_handled(code):
     assert code in _parallel_worker_body(), (
@@ -54,17 +72,20 @@ def test_peer_flood_stops_that_worker():
     ادامه دادن بعد از PEER_FLOOD فقط محدودیت را تشدید می‌کند و
     هیچ اددی انجام نمی‌شود.
     """
-    body = _parallel_worker_body()
-    i = body.index("PEER_FLOOD")
-    window = body[i:body.index("break", i) + len("break")]
+    window = _handler("PEER_FLOOD")
     assert "set_adder_limit" in window, "اکانت باید به‌عنوان محدودشده ثبت شود"
+    assert window.rstrip().endswith("break"), "بعد از PEER_FLOOD باید ورکر متوقف شود"
 
 
-def test_peer_flood_records_24h_cooldown():
-    body = _parallel_worker_body()
-    i = body.index("PEER_FLOOD")
-    window = body[i:body.index("break", i) + len("break")]
-    assert "24 * 3600" in window, "محدودیت باید ۲۴ ساعته ثبت شود"
+def test_peer_flood_cooldown_is_progressive_not_fixed():
+    """
+    ⚠️ تصحیح ۱.۵.۸: قبلاً این تست ۲۴ ساعت ثابت را الزام می‌کرد — که
+    خودش باعث شد اکانتی با ۱ ادد یک روز از دست برود. حالا باید از
+    بک‌آف تدریجی استفاده شود.
+    """
+    window = _handler("PEER_FLOOD")
+    assert "peer_flood_cooldown" in window, "باید از بک‌آف تدریجی استفاده کند"
+    assert "24 * 3600" not in window, "جریمه ثابت ۲۴ ساعته نباید هاردکد باشد"
 
 
 def test_write_forbidden_stops_and_explains():
@@ -85,9 +106,7 @@ def test_interrupted_member_is_requeued(code):
     وقتی ورکر به‌خاطر خطای اکانت متوقف می‌شود، کاربری که در دست داشت
     نباید هدر برود — ورکر دیگری باید بتواند اضافه‌اش کند.
     """
-    body = _parallel_worker_body()
-    i = body.index(code)
-    window = body[i:body.index("break", i) + len("break")]
+    window = _handler(code)
     assert "put_nowait(member)" in window, (
         f"بعد از {code} کاربر باید به صف برگردد"
     )
@@ -137,9 +156,7 @@ def test_write_forbidden_is_per_account_not_global():
 
     این تست جلوی برگشتن آن تحلیل غلط را می‌گیرد.
     """
-    body = _parallel_worker_body()
-    i = body.index("CHAT_WRITE_FORBIDDEN")
-    window = body[i:body.index("break", i)]
+    window = _handler("CHAT_WRITE_FORBIDDEN")
 
     # نباید کاربر را به تنظیمات گروه بفرستد — گمراه‌کننده است
     assert "Add Members را برای اعضا فعال" not in window, (
