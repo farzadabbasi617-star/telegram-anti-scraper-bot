@@ -333,6 +333,19 @@ def get_diagnostics_dict():
     except Exception as e:
         out["bg_scan"] = {"error": str(e)}
 
+    # آخرین خطای کار پس‌زمینه (برای عیب‌یابی «ادد اجرا نشد»)
+    try:
+        if atk_state_ref:
+            out["last_add"] = {
+                "in_progress": atk_state_ref.get("add_in_progress"),
+                "status_text": atk_state_ref.get("live_status_text"),
+                "added": atk_state_ref.get("live_added"),
+                "total": atk_state_ref.get("live_total"),
+                "error_trace": atk_state_ref.get("last_error_trace"),
+            }
+    except Exception:
+        pass
+
     # ۲) مقصد ادد — با بررسی زنده دسترسی ربات
     try:
         from add_engine import resolve_add_target
@@ -839,9 +852,12 @@ def trigger_parallel_add(add_mode, add_type):
                     wrapper, target_gid, healthy_accs, filtered, add_type, add_mode
                 )
             except Exception as e:
-                print(f"MiniApp parallel add error: {type(e).__name__}: {e}", flush=True)
+                import traceback
+                tb = traceback.format_exc()
+                print(f"MiniApp parallel add error: {type(e).__name__}: {e}\n{tb}", flush=True)
                 if atk_state_ref:
-                    atk_state_ref["live_status_text"] = f"❌ خطا: {str(e)[:200]}"
+                    atk_state_ref["live_status_text"] = f"❌ خطا: {type(e).__name__}: {str(e)[:200]}"
+                    atk_state_ref["last_error_trace"] = tb[-1500:]
             finally:
                 if atk_state_ref:
                     # زمان نهایی را نگه دار تا بعد از پایان هم در UI دیده شود
