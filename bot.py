@@ -1693,7 +1693,13 @@ async def _execute_direct_add(q, target_gid):
         except FloodWait as fw:
             failed += 1; errors_detail["flood"] += 1
             print(f"⏱ FloodWait {fw.value}s", flush=True)
-            await asyncio.sleep(fw.value + 5)
+            # FloodWait طولانی را درجا نخواب — تا ۲۳ ساعت هم دیده شده.
+            from add_engine import should_wait_inline as _swi
+            if _swi(fw.value):
+                await asyncio.sleep(fw.value + 5)
+            else:
+                print(f"⏭️ FloodWait {fw.value}s طولانی است — رها می‌کنیم", flush=True)
+                break
         except Exception as e:
             failed += 1; es = str(e); es_l = es.lower()
             if not first_error: first_error = es[:200]
@@ -1917,7 +1923,13 @@ async def _execute_parallel_direct_add(q):
                     failed += 1
                     total_global["failed"] += 1
                     total_global["errors"]["flood"] += 1
-                    await asyncio.sleep(fw.value + 5)
+                    # FloodWait طولانی را درجا نخواب — تا ۲۳ ساعت هم دیده شده.
+                    from add_engine import should_wait_inline as _swi
+                    if _swi(fw.value):
+                        await asyncio.sleep(fw.value + 5)
+                    else:
+                        print(f"⏭️ FloodWait {fw.value}s طولانی است — رها می‌کنیم", flush=True)
+                        break
                 except Exception as e:
                     failed += 1
                     total_global["failed"] += 1
@@ -8148,7 +8160,13 @@ async def _do_quick_add(q, gid, gname, uid_list, client, phone):
             await asyncio.sleep(random.randint(5, 10))
         except FloodWait as fw:
             failed += 1; errors["flood"] += 1
-            await asyncio.sleep(fw.value + 3)
+            # FloodWait طولانی را درجا نخواب — تا ۲۳ ساعت هم دیده شده.
+            from add_engine import should_wait_inline as _swi
+            if _swi(fw.value):
+                await asyncio.sleep(fw.value + 3)
+            else:
+                print(f"⏭️ FloodWait {fw.value}s طولانی است — رها می‌کنیم", flush=True)
+                break
         except UserAlreadyParticipant:
             failed += 1; errors["already"] += 1
         except (UserPrivacyRestricted, UserNotMutualContact):
@@ -8632,12 +8650,12 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                             f"ندارد (عضو نیست یا محدود شده) — ورکر متوقف شد",
                             flush=True,
                         )
+                        # ⚠️ هیچ مهلتی ثبت نمی‌کنیم. تلگرام برای این خطا
+                        # مدتی اعلام نکرده، پس هر عددی حدسِ ماست. اکانت
+                        # فقط در همین اجرا کنار می‌رود و اجرای بعدی
+                        # دوباره امتحان می‌شود. (قبلاً ۱ ساعت می‌گذاشتیم.)
                         try:
-                            db.set_adder_limit(
-                                phone, already_added + acc_added,
-                                limitation_type="WriteForbidden",
-                                limitation_until=int(time.time()) + 3600,
-                            )
+                            db.set_adder_limit(phone, already_added + acc_added)
                         except Exception:
                             pass
                         if atk_state_ref is not None:

@@ -629,3 +629,20 @@ def stagger_delay(index, add_mode="safe"):
         return 0.0
     base = index * random.uniform(lo, hi)
     return base + random.uniform(0, max(1.0, lo))
+
+
+# ─────────────── سقف انتظار درجا برای FloodWait ───────────────
+
+# تلگرام گاهی FloodWait چند ساعته می‌دهد (دیده شده: ۸۲۲۱۳ ثانیه ≈ ۲۳ ساعت).
+# خوابیدنِ درجا به آن اندازه یعنی ورکر تا فردا قفل می‌ماند و منابع را
+# نگه می‌دارد. راه درست: انتظارهای کوتاه را همان‌جا صبر کن، انتظارهای
+# طولانی را با ثبت مهلت در دیتابیس رها کن تا اجرای بعدی سراغش برود.
+MAX_INLINE_FLOODWAIT = 300     # ۵ دقیقه
+
+
+def should_wait_inline(seconds):
+    """آیا این FloodWait آن‌قدر کوتاه هست که همان‌جا صبر کنیم؟"""
+    try:
+        return int(seconds) <= MAX_INLINE_FLOODWAIT
+    except Exception:
+        return False
