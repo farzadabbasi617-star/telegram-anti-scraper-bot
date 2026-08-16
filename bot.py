@@ -1657,12 +1657,21 @@ async def _execute_direct_add(q, target_gid):
             except: pass
 
             # InviteToChannel
-            await add_client.app.invoke(
+            invite_res = await add_client.app.invoke(
                 InviteToChannel(channel=target_peer, users=[user_peer])
             )
 
+            # ✅ تأیید واقعی عضویت — API حتی وقتی کاربر به‌خاطر حریم خصوصی
+            # اضافه نشده ممکن است پاسخ موفق بدهد. بدون این چک، آمار دروغ
+            # می‌شود و سهمیه اکانت الکی مصرف می‌گردد.
+            if invite_did_not_join(invite_res, uid) or not await confirm_joined(add_client, target_gid, uid):
+                skipped += 1
+                errors_detail["not_joined"] = errors_detail.get("not_joined", 0) + 1
+                print(f"⚠️ {uid} دعوت شد ولی عضو نشد — اسکیپ (سهمیه مصرف نشد)", flush=True)
+                continue
+
             added += 1
-            mark_user_as_added(target_gid, target_name, uid)
+            mark_user_as_added(target_gid, target_name, uid, phone)
             limits = load_adder_limits()
             limits[phone] = {"added": already_added + added, "last_used": int(time.time())}
             save_adder_limits(limits)
@@ -1710,13 +1719,17 @@ async def _execute_direct_add(q, target_gid):
     text += f"❌ ناموفق: {failed}\n"
     text += f"⏱ زمان: {m:02d}:{s:02d}\n"
     text += f"📊 ظرفیت: {already_added + added}/{MAX_ADD_PER_ACCOUNT}"
-    if failed > 0:
-        text += f"\n{'━'*20}\n📋 جزئیات خطا:\n"
+    if failed > 0 or errors_detail.get("not_joined") or errors_detail.get("privacy"):
+        text += f"\n{'━'*20}\n📋 جزئیات:\n"
+        if errors_detail.get("not_joined"):
+            text += f"👻 دعوت شد ولی عضو نشد: {errors_detail['not_joined']}\n"
         if errors_detail["peer"]: text += f"🔍 Peer Invalid: {errors_detail['peer']}\n"
-        if errors_detail["privacy"]: text += f"🔒 Privacy: {errors_detail['privacy']}\n"
+        if errors_detail["privacy"]: text += f"🔒 پروفایل قفل: {errors_detail['privacy']}\n"
         if errors_detail["already"]: text += f"👥 قبلاً عضو: {errors_detail['already']}\n"
-        if errors_detail["flood"]: text += f" Flood: {errors_detail['flood']}\n"
+        if errors_detail["flood"]: text += f"⏱ Flood: {errors_detail['flood']}\n"
         if errors_detail["other"]: text += f"❓ سایر: {errors_detail['other']}\n"
+        if errors_detail.get("not_joined") or errors_detail.get("privacy"):
+            text += "\n💡 این‌ها سهمیه اکانت را مصرف نکردند."
         if first_error: text += f"\n💬 اولین خطا: {first_error[:200]}"
 
     atk_state["add_in_progress"] = False
@@ -1876,10 +1889,18 @@ async def _execute_parallel_direct_add(q):
                         await sc.app.invoke(AddContact(id=user_peer, first_name=str(uid)[:30], last_name="", phone="", add_phone_privacy_exception=False))
                         await asyncio.sleep(0.3)
                     except: pass
-                    await sc.app.invoke(InviteToChannel(channel=sc._target_peer, users=[user_peer]))
+                    invite_res = await sc.app.invoke(InviteToChannel(channel=sc._target_peer, users=[user_peer]))
+
+                    # ✅ تأیید واقعی عضویت — بدون این، پرایوسی‌بسته‌ها
+                    # «ادد موفق» شمرده می‌شوند و سهمیه اکانت را می‌سوزانند
+                    if invite_did_not_join(invite_res, uid) or not await confirm_joined(sc, target_gid, uid):
+                        total_global["errors"]["privacy"] = total_global["errors"].get("privacy", 0) + 1
+                        print(f"⚠️ [{phone}] {uid} دعوت شد ولی عضو نشد — اسکیپ", flush=True)
+                        continue
+
                     added += 1
                     total_global["added"] += 1
-                    mark_user_as_added(target_gid, target_name, uid)
+                    mark_user_as_added(target_gid, target_name, uid, phone)
                     limits[phone] = {"added": already + added, "last_used": int(time.time())}
                     save_adder_limits(limits)
                     await asyncio.sleep(_rnd.randint(8, 15))
@@ -7529,6 +7550,7 @@ async def _steps_impl(c, m):
             user_ids = raw_user_ids
             added = 0
             errors = 0
+            not_joined = 0          # دعوت شد ولی عضو نشد (سهمیه مصرف نمی‌کند)
             skipped_due_to_limit = 0
             remaining_slots = MAX_ADD_PER_ACCOUNT - already
             start_msg = f"شروع اضافه کردن...\n"
@@ -7573,12 +7595,20 @@ async def _steps_impl(c, m):
                             await add_client.app.invoke(AddContact(id=user_peer, first_name=str(uid), last_name="", phone="", add_phone_privacy_exception=False))
                             await asyncio.sleep(0.3)
                         except: pass
-                        await add_client.app.invoke(InviteToChannel(channel=_target_peer_ch, users=[user_peer]))
+                        invite_res = await add_client.app.invoke(InviteToChannel(channel=_target_peer_ch, users=[user_peer]))
                     except PeerIdInvalid:
                         raise PeerIdInvalid
+
+                    # ✅ تأیید واقعی عضویت — پرایوسی‌بسته‌ها نباید «موفق»
+                    # شمرده شوند و سهمیه اکانت را بسوزانند
+                    if invite_did_not_join(invite_res, uid) or not await confirm_joined(add_client, target_gid, uid):
+                        not_joined += 1
+                        print(f"⚠️ {uid} دعوت شد ولی عضو نشد — اسکیپ (سهمیه مصرف نشد)", flush=True)
+                        continue
+
                     added += 1
                     # ثبت در تاریخچه تکراری ها
-                    mark_user_as_added(target_gid, target_title, uid)
+                    mark_user_as_added(target_gid, target_title, uid, phone)
                     # ذخیره آمار اکانت
                     limits = load_adder_limits()
                     limits[phone] = {"added": already + added, "last_used": int(time.time())}
@@ -7605,14 +7635,21 @@ async def _steps_impl(c, m):
                         mark_user_as_added(target_gid, target_title, uid)
                     await asyncio.sleep(wait_time)
             else:
-                await prog.edit_text(
+                _txt = (
                     f"✅ عملیات اضافه کردن به پایان رسید!\n\n"
                     f"👥 گروه: {target_title}\n"
-                    f"✅ جدیدا با موفقیت ادد شد: {added} نفر\n"
-                    f"❌ ناموفق (ارور/بن/خصوصی): {errors} نفر\n"
+                    f"✅ واقعاً عضو شد: {added} نفر\n"
+                )
+                if not_joined:
+                    _txt += f"👻 دعوت شد ولی عضو نشد: {not_joined} نفر\n"
+                _txt += (
+                    f"❌ ناموفق (ارور/بن): {errors} نفر\n"
                     f"🔁 تکراری (قبلا در گروه بود): {already_skipped} نفر\n"
                     f"📊 کل ادد شده با این اکانت: {already+added}/{MAX_ADD_PER_ACCOUNT}"
                 )
+                if not_joined:
+                    _txt += "\n\n💡 «عضو نشد»ها سهمیه اکانت را مصرف نکردند."
+                await prog.edit_text(_txt)
                 await disconnect_later()
         except Exception as e:
             await st.edit_text(f"❌ خطا در اضافه کردن: {str(e)}")

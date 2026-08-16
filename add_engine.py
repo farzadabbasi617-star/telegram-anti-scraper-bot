@@ -199,15 +199,59 @@ def invite_did_not_join(updates, uid):
     return False
 
 
+# وضعیت‌هایی که یعنی کاربر واقعاً داخل گروه است
+_JOINED_STATUSES = frozenset({
+    "member", "administrator", "creator", "owner", "admin", "restricted",
+})
+
+# وضعیت‌هایی که یعنی کاربر داخل گروه نیست — حتی اگر API ادد «موفق» گفته باشد
+_NOT_JOINED_STATUSES = frozenset({
+    "left", "banned", "kicked", "restricted_banned",
+})
+
+
+def _normalize_member_status(mem):
+    """
+    استخراج نام وضعیت به‌صورت یک توکن تمیز.
+
+    ⚠️ باگی که این تابع رفع می‌کند (نسخه ۱.۴.۲):
+    Pyrogram وضعیت را به‌صورت enum برمی‌گرداند و str() آن می‌شود
+    'ChatMemberStatus.LEFT'. کد قبلی چک می‌کرد آیا زیررشته 'member'
+    در آن هست — و رشته 'ChatMemberStatus.LEFT' شامل 'MEMBER' است!
+    نتیجه: کاربرانی که گروه را ترک کرده یا بن شده بودند «عضو» شمرده
+    می‌شدند و آمار ادد کاملاً غیرواقعی می‌شد.
+    """
+    st = getattr(mem, "status", None)
+    if st is None:
+        return ""
+    # enum پایتون: از .value یا .name استفاده کن، نه str(enum)
+    raw = getattr(st, "value", None)
+    if raw is None:
+        raw = getattr(st, "name", None)
+    if raw is None:
+        raw = str(st)
+        # 'ChatMemberStatus.LEFT' → 'LEFT'
+        if "." in raw:
+            raw = raw.rsplit(".", 1)[-1]
+    return str(raw).strip().lower()
+
+
 async def confirm_joined(client, chat_id, uid, retries=2, pause=1.1):
-    """فقط وقتی True که کاربر واقعاً عضو گروه/کانال باشد — نه اینکه API ادد «موفق» برگرداند."""
+    """
+    فقط وقتی True که کاربر واقعاً عضو گروه/کانال باشد.
+
+    API تلگرام حتی وقتی کاربر به‌خاطر تنظیمات حریم خصوصی اضافه نشده
+    ممکن است پاسخ موفق بدهد. تنها راه مطمئن، پرسیدن وضعیت عضویت است.
+    """
     import asyncio
     app = getattr(client, "app", client)
     for i in range(max(1, retries)):
         try:
             mem = await app.get_chat_member(chat_id, int(uid))
-            st = str(getattr(mem, "status", "")).lower()
-            if any(tok in st for tok in ("member", "administrator", "creator", "admin", "owner", "restricted")):
+            st = _normalize_member_status(mem)
+            if st in _NOT_JOINED_STATUSES:
+                return False          # قطعاً داخل گروه نیست — تلاش دوباره بی‌فایده
+            if st in _JOINED_STATUSES:
                 return True
         except Exception:
             pass
