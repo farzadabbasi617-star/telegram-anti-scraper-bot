@@ -2298,6 +2298,49 @@ def create_web_app(app_bot=None, atk_state=None):
         async def aio_api_dashboard(request):
             return web.json_response(get_dashboard_dict(), headers=NO_CACHE)
 
+        async def aio_api_loopinfo(request):
+            """وضعیت حلقه رویداد و کارهای پس‌زمینه — برای عیب‌یابی."""
+            import threading
+            info = {"ok": True}
+            try:
+                running = asyncio.get_running_loop()
+                info["handler_loop"] = str(id(running))
+                info["handler_loop_running"] = running.is_running()
+            except Exception as e:
+                info["handler_loop_error"] = str(e)
+
+            mel = main_event_loop
+            info["registered_loop"] = str(id(mel)) if mel else None
+            info["registered_running"] = bool(mel and mel.is_running())
+
+            bl = getattr(bot_app, "loop", None)
+            info["bot_app_present"] = bot_app is not None
+            info["bot_loop"] = str(id(bl)) if bl else None
+            info["bot_loop_running"] = bool(bl and bl.is_running())
+
+            import sys as _s
+            bm = _s.modules.get("bot")
+            cl = getattr(getattr(bm, "app", None), "loop", None) if bm else None
+            info["bot_module_loaded"] = bm is not None
+            info["bot_module_loop"] = str(id(cl)) if cl else None
+            info["bot_module_loop_running"] = bool(cl and cl.is_running())
+
+            resolved = _resolve_bot_loop()
+            info["resolved_loop"] = str(id(resolved)) if resolved else None
+            info["threads"] = [t.name for t in threading.enumerate()][:12]
+
+            # تست واقعی: یک کوروتین ساده زمان‌بندی کن و ببین اجرا می‌شود
+            marker = {"ran": False}
+
+            async def _probe():
+                marker["ran"] = True
+
+            _schedule_coro(_probe())
+            await asyncio.sleep(1.2)
+            info["probe_executed"] = marker["ran"]
+
+            return web.json_response(info, headers=NO_CACHE)
+
         async def aio_api_diagnose(request):
             """چرا یک اکانت کار نمی‌کند؟ — گزارش دقیق به‌جای حدس زدن."""
             return web.json_response(get_diagnostics_dict(), headers=NO_CACHE)
@@ -2447,6 +2490,7 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_get('/app', aio_serve_mini_app)
         app.router.add_get('/api/dashboard', aio_api_dashboard)
         app.router.add_get('/api/diagnose', aio_api_diagnose)
+        app.router.add_get('/api/loopinfo', aio_api_loopinfo)
         app.router.add_get('/api/accounts', aio_api_accounts)
         app.router.add_get('/api/members/stats', aio_api_members_stats)
         app.router.add_get('/api/leads/stats', aio_api_leads_stats)
