@@ -7818,7 +7818,7 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
     total = min(len(members), remaining)
     
     # 📡 آمار زنده برای مینی‌اپ
-    if atk_state_ref:
+    if atk_state_ref is not None:
         atk_state_ref["add_in_progress"] = True
         atk_state_ref["live_total"] = total
         atk_state_ref["live_remaining"] = total
@@ -7973,7 +7973,7 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
             un = member.get("username", "").strip()
             display_user = f"{full_n} (@{un.lstrip('@')})" if un else full_n
 
-            if atk_state_ref:
+            if atk_state_ref is not None:
                 atk_state_ref["live_last_user"] = display_user
                 atk_state_ref["live_added"] = added
                 atk_state_ref["live_failed"] = failed
@@ -8057,7 +8057,7 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
             await upd()
     
     # 📡 پایان عملیات در مینی‌اپ
-    if atk_state_ref:
+    if atk_state_ref is not None:
         atk_state_ref["add_in_progress"] = False
         atk_state_ref["live_remaining"] = max(0, total - added - failed - skipped)
         atk_state_ref["live_current_account"] = ""
@@ -8264,7 +8264,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
         return
 
     # 📡 آمار زنده برای مینی‌اپ
-    if atk_state_ref:
+    if atk_state_ref is not None:
         atk_state_ref["add_in_progress"] = True
         atk_state_ref["live_total"] = total_members
         atk_state_ref["live_remaining"] = total_members
@@ -8309,7 +8309,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     reply_markup=main_menu(),
                 )
                 return
-            if atk_state_ref:
+            if atk_state_ref is not None:
                 atk_state_ref["live_total"] = total_members
                 atk_state_ref["live_remaining"] = total_members
     except Exception as e:
@@ -8384,7 +8384,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
             return
 
         # 📡 ثبت اکانت فعال در آمار زنده (برای نمایش در مینی‌اپ)
-        if atk_state_ref and phone not in atk_state_ref.get("live_active_accounts", []):
+        if atk_state_ref is not None and phone not in atk_state_ref.get("live_active_accounts", []):
             atk_state_ref["live_active_accounts"].append(phone)
 
         try:
@@ -8476,7 +8476,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     mark_user_as_added(dest_gid, "", uid, phone)
                     db.set_adder_limit(phone, already_added + acc_added)
 
-                    if atk_state_ref:
+                    if atk_state_ref is not None:
                         atk_state_ref["live_last_user"] = display_user
                         atk_state_ref["live_added"] = total_added
                         atk_state_ref["live_failed"] = total_failed
@@ -8538,7 +8538,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 try: shutil.rmtree(temp_dir)
                 except: pass
             # 📡 حذف اکانت از لیست فعال‌های زنده
-            if atk_state_ref:
+            if atk_state_ref is not None:
                 try:
                     if phone in atk_state_ref.get("live_active_accounts", []):
                         atk_state_ref["live_active_accounts"].remove(phone)
@@ -8549,7 +8549,7 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     tasks = [asyncio.create_task(worker_account(phone, info)) for phone, info in accs.items()]
     await asyncio.gather(*tasks, return_exceptions=True)
 
-    if atk_state_ref:
+    if atk_state_ref is not None:
         atk_state_ref["add_in_progress"] = False
         atk_state_ref["live_active_accounts"] = []
         atk_state_ref["live_current_account"] = ""

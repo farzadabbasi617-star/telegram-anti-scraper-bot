@@ -144,7 +144,7 @@ class _MiniAppMsgWrapper:
         self.message = self
 
     async def edit_text(self, text, reply_markup=None, disable_web_page_preview=None, **kw):
-        if atk_state_ref:
+        if atk_state_ref is not None:
             atk_state_ref["live_status_text"] = text
             m_added = re.search(r"✅ (\d+)", text)
             m_failed = re.search(r"❌ (\d+)", text)
@@ -166,7 +166,7 @@ _CACHE_TTL = 2.0
 
 def get_dashboard_dict():
     try:
-        is_adding = bool(atk_state_ref and atk_state_ref.get("add_in_progress"))
+        is_adding = bool(atk_state_ref is not None and atk_state_ref.get("add_in_progress"))
         now = time.time()
         # حین عملیات زنده: همیشه تازه. در حالت بیکار: کش ۲ ثانیه‌ای (جلوگیری از بمباران دیتابیس)
         if not is_adding and _DASH_CACHE["data"] is not None and (now - _DASH_CACHE["ts"]) < _CACHE_TTL:
@@ -196,7 +196,7 @@ def get_dashboard_dict():
         
         is_running = False
         add_progress = {}
-        if atk_state_ref:
+        if atk_state_ref is not None:
             is_running = atk_state_ref.get("add_in_progress", False)
             start_t = atk_state_ref.get("live_start_time", time.time())
             # زمان سپری‌شده: حین اجرا زنده، بعد از پایان روی مقدار نهایی
@@ -241,7 +241,9 @@ def get_dashboard_dict():
                 "add_progress": add_progress
             }
         }
-        if not is_adding:
+        # نتیجه پایان‌یافته را کش نکن — کاربر باید خلاصه آخرین عملیات را
+        # ببیند و کش ۲ ثانیه‌ای باعث می‌شد لحظه شروع/پایان جا بیفتد.
+        if not is_adding and not (add_progress or {}).get("finished"):
             _DASH_CACHE["data"] = result
             _DASH_CACHE["ts"] = time.time()
         return result
@@ -335,7 +337,7 @@ def get_diagnostics_dict():
 
     # آخرین خطای کار پس‌زمینه (برای عیب‌یابی «ادد اجرا نشد»)
     try:
-        if atk_state_ref:
+        if atk_state_ref is not None:
             out["last_add"] = {
                 "in_progress": atk_state_ref.get("add_in_progress"),
                 "status_text": atk_state_ref.get("live_status_text"),
@@ -592,7 +594,7 @@ def trigger_scrape_group(chat_target):
             return False, f"هیچ اکانت آزادی برای استخراج پیدا نشد. ({skipped})"
         acc_info = acc_info or accs.get(phone, {})
 
-        if atk_state_ref:
+        if atk_state_ref is not None:
             atk_state_ref["add_in_progress"] = True
             atk_state_ref["live_start_time"] = time.time()
             atk_state_ref["live_added"] = 0
@@ -605,7 +607,7 @@ def trigger_scrape_group(chat_target):
         async def run_scrape_job():
             ok_b, owner = account_state.mark_busy(phone, "اسکرپ مینی‌اپ")
             if not ok_b:
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     atk_state_ref["live_last_user"] = f"اکانت مشغول است ({owner})"
                     atk_state_ref["add_in_progress"] = False
                 return
@@ -621,19 +623,19 @@ def trigger_scrape_group(chat_target):
                 )
                 await client.connect()
                 scraped = await client.run_full_scrape(chat_target)
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     count_got = len(scraped.get("found_users", {})) if isinstance(scraped, dict) else len(scraped or [])
                     atk_state_ref["live_last_user"] = f"✅ {count_got} ممبر جدید ذخیره شد!"
                 account_state.set_last_error(phone, "")
             except Exception as e:
                 print(f"Scrape job error: {e}", flush=True)
                 account_state.set_last_error(phone, str(e)[:200])
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     atk_state_ref["live_last_user"] = f"❌ خطا: {str(e)[:80]}"
             finally:
                 account_state.release(phone)
                 account_state.mark_used(phone)
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     atk_state_ref["add_in_progress"] = False
 
         _schedule_coro(run_scrape_job())
@@ -682,7 +684,7 @@ def trigger_single_add(phone, add_type):
         if not filtered:
             return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
 
-        if atk_state_ref:
+        if atk_state_ref is not None:
             if atk_state_ref.get("add_in_progress"):
                 return False, "یک عملیات ادد در حال اجراست. اول آن را متوقف کن."
             atk_state_ref["add_in_progress"] = True
@@ -721,10 +723,10 @@ def trigger_single_add(phone, add_type):
                 await _execute_simple_add(wrapper, target_gid, client, phone, filtered, "دیتابیس مینی‌اپ")
             except Exception as e:
                 print(f"MiniApp single add error: {type(e).__name__}: {e}", flush=True)
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     atk_state_ref["live_status_text"] = f"❌ خطا: {str(e)[:200]}"
             finally:
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     # زمان نهایی را نگه دار تا بعد از پایان هم در UI دیده شود
                     st = atk_state_ref.get("live_start_time")
                     if st:
@@ -782,7 +784,7 @@ def trigger_parallel_add(add_mode, add_type):
         # داخل هندلر HTTP اجرا شود، درخواست تا پایانش بلاک می‌ماند و مینی‌اپ
         # تایم‌اوت می‌خورد — دکمه «کار نمی‌کند» به نظر می‌رسد.
         # پس همه‌اش را به پس‌زمینه می‌بریم و فوراً به کاربر جواب می‌دهیم.
-        if atk_state_ref:
+        if atk_state_ref is not None:
             if atk_state_ref.get("add_in_progress"):
                 return False, "یک عملیات ادد در حال اجراست. اول آن را متوقف کن."
             atk_state_ref["add_in_progress"] = True
@@ -809,7 +811,7 @@ def trigger_parallel_add(add_mode, add_type):
                 if not healthy_accs:
                     msg = f"هیچ اکانت آماده‌ای یافت نشد! ({skipped})"
                     print(f"⚠️ parallel add: {msg}", flush=True)
-                    if atk_state_ref:
+                    if atk_state_ref is not None:
                         atk_state_ref["live_status_text"] = f"⚠️ {msg}"
                         atk_state_ref["live_last_user"] = "—"
                     return
@@ -835,14 +837,14 @@ def trigger_parallel_add(add_mode, add_type):
                                 hint = " — این گروه وجود ندارد؛ مقصد را در تنظیمات اصلاح کن."
                             msg = f"❌ گروه مقصد در دسترس نیست: {desc}{hint}"
                             print(msg, flush=True)
-                            if atk_state_ref:
+                            if atk_state_ref is not None:
                                 atk_state_ref["live_status_text"] = msg
                                 atk_state_ref["live_last_user"] = "—"
                             return
                 except Exception as e:
                     print(f"⚠️ بررسی مقصد ناموفق ({e}) — ادامه می‌دهیم", flush=True)
 
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     atk_state_ref["live_last_user"] = "در حال توزیع بین اکانت‌ها..."
                     atk_state_ref["live_status_text"] = (
                         f"🚀 ادد موازی با {len(healthy_accs)} اکانت شروع شد."
@@ -855,11 +857,11 @@ def trigger_parallel_add(add_mode, add_type):
                 import traceback
                 tb = traceback.format_exc()
                 print(f"MiniApp parallel add error: {type(e).__name__}: {e}\n{tb}", flush=True)
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     atk_state_ref["live_status_text"] = f"❌ خطا: {type(e).__name__}: {str(e)[:200]}"
                     atk_state_ref["last_error_trace"] = tb[-1500:]
             finally:
-                if atk_state_ref:
+                if atk_state_ref is not None:
                     # زمان نهایی را نگه دار تا بعد از پایان هم در UI دیده شود
                     st = atk_state_ref.get("live_start_time")
                     if st:
@@ -2506,7 +2508,7 @@ def create_web_app(app_bot=None, atk_state=None):
                 from bot import request_stop_all
                 request_stop_all()
             except: pass
-            if atk_state_ref:
+            if atk_state_ref is not None:
                 atk_state_ref["_stop_requested"] = True
                 atk_state_ref["stop_parallel_add"] = True
                 atk_state_ref["add_in_progress"] = False
