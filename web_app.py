@@ -1388,7 +1388,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                                 </div>
 
                                 <div class="flex items-center justify-between pt-1 border-t border-slate-700/40">
-                                    <button onclick="copyInviteMsg('${lead.title.replace(/'/g, "")}', '${lead.category}')" class="px-2.5 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-[10px] font-bold rounded-lg shadow">
+                                    <button data-inv-title="${escAttr(lead.title)}" data-inv-cat="${escAttr(lead.category)}" class="btn-copy-inv px-2.5 py-1 bg-gradient-to-r from-purple-600 to-indigo-600 text-white text-[10px] font-bold rounded-lg shadow">
                                         📋 کپی پیام دعوت
                                     </button>
                                     <select onchange="updateLeadStatus(${lead.id}, this.value)" class="bg-slate-900 border border-slate-700 text-[10px] text-slate-200 rounded-lg px-2 py-1 outline-none">
@@ -1757,6 +1757,11 @@ MINI_APP_HTML = """<!DOCTYPE html>
                         }
 
                         const pct = Math.min(100, Math.round((acc.added_today / 100) * 100));
+                        // نام اکانت را برای درج امن در HTML فرار می‌دهیم.
+                        // نسخه قبل onclick را با رشته درون‌یابی می‌ساخت و یک
+                        // کوتیشن داخل آن، ویژگی onclick را زودتر می‌بست و کل
+                        // صفحه را خراب می‌کرد (مینی‌اپ فریز می‌شد).
+                        const accName = escAttr(acc.name || acc.phone);
 
                         list.innerHTML += `
                             <div class="glass-card p-3.5 space-y-2.5">
@@ -1777,8 +1782,8 @@ MINI_APP_HTML = """<!DOCTYPE html>
                                         <div class="bg-gradient-to-r from-blue-500 to-emerald-400 h-full rounded-full transition-all duration-300" style="width: ${pct}%"></div>
                                     </div>
                                 </div>
-                                <button onclick="deleteAccount('${acc.phone}', '${(acc.name||'').replace(/'/g, "\\'")}')"
-                                        class="w-full py-2 bg-rose-600/15 hover:bg-rose-600/30 text-rose-300 text-[11px] font-bold rounded-xl border border-rose-500/30 transition">
+                                <button data-del-phone="${acc.phone}" data-del-name="${accName}"
+                                        class="btn-del-acc w-full py-2 bg-rose-600/15 hover:bg-rose-600/30 text-rose-300 text-[11px] font-bold rounded-xl border border-rose-500/30 transition">
                                     🗑️ حذف این اکانت
                                 </button>
                             </div>
@@ -1787,6 +1792,30 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 }
             } catch (e) { console.error(e); }
         }
+
+        // فرار دادن مقدار برای درج امن داخل ویژگی HTML.
+        function escAttr(v) {
+            return String(v == null ? '' : v)
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+
+        // اتصال هندلر با event delegation به‌جای onclick درون‌خطی.
+        // این‌طوری نام اکانت هرچه باشد (کوتیشن، براکت و…) HTML نمی‌شکند.
+        document.addEventListener('click', function (ev) {
+            const btn = ev.target.closest && ev.target.closest('.btn-del-acc');
+            if (!btn) return;
+            deleteAccount(btn.dataset.delPhone, btn.dataset.delName);
+        });
+
+        document.addEventListener('click', function (ev) {
+            const b = ev.target.closest && ev.target.closest('.btn-copy-inv');
+            if (!b) return;
+            copyInviteMsg(b.dataset.invTitle, b.dataset.invCat);
+        });
 
         async function deleteAccount(phone, name) {
             if (!confirm(`اکانت «${name}» (${phone}) حذف شود؟\n\nرکورد دیتابیس و فایل سشن پاک می‌شوند. برای برگرداندن باید دوباره با کد تلگرام لاگین کنی.`)) return;
