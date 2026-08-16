@@ -243,15 +243,49 @@ def get_diagnostics_dict():
     except Exception as e:
         out["bg_scan"] = {"error": str(e)}
 
-    # ۲) مقصد ادد
+    # ۲) مقصد ادد — با بررسی زنده دسترسی ربات
     try:
         from add_engine import resolve_add_target
         cfg = db.get_config() or {}
-        out["target"] = {
+        resolved = resolve_add_target(cfg)
+        target = {
             "config_group_id": cfg.get("group_id"),
             "config_group_name": cfg.get("group_name"),
-            "resolved": str(resolve_add_target(cfg)),
+            "resolved": str(resolved),
         }
+
+        # ⚠️ رایج‌ترین علت «ادد شروع شد ولی هیچ‌کس اضافه نشد»:
+        # ربات از گروه مقصد اخراج شده یا دیگر ادمین نیست.
+        # بدون این بررسی، عملیات بی‌صدا با صفر نتیجه تمام می‌شود.
+        try:
+            import requests as _rq
+            from config import BOT_TOKEN as _BT
+            if _BT:
+                r = _rq.get(
+                    f"https://api.telegram.org/bot{_BT}/getChat",
+                    params={"chat_id": resolved}, timeout=12,
+                ).json()
+                if r.get("ok"):
+                    info = r.get("result") or {}
+                    target["reachable"] = True
+                    target["live_title"] = info.get("title")
+                    target["live_type"] = info.get("type")
+                else:
+                    target["reachable"] = False
+                    target["error"] = r.get("description")
+                    desc = (r.get("description") or "").lower()
+                    if "kick" in desc or "forbidden" in desc:
+                        target["hint"] = (
+                            "ربات از گروه مقصد اخراج شده است. دوباره اضافه‌اش کن "
+                            "و ادمین با دسترسی «افزودن کاربر» بده."
+                        )
+                    elif "not found" in desc:
+                        target["hint"] = "این گروه وجود ندارد یا آیدی اشتباه است."
+        except Exception as e:
+            target["reachable"] = None
+            target["probe_error"] = str(e)[:120]
+
+        out["target"] = target
     except Exception as e:
         out["target"] = {"error": str(e)}
 
@@ -672,6 +706,34 @@ def trigger_parallel_add(add_mode, add_type):
                         atk_state_ref["live_status_text"] = f"⚠️ {msg}"
                         atk_state_ref["live_last_user"] = "—"
                     return
+
+                # ⚠️ بررسی دسترسی به گروه مقصد قبل از شروع.
+                # اگر ربات اخراج شده باشد، عملیات بی‌صدا با صفر نتیجه تمام
+                # می‌شود و کاربر فکر می‌کند دکمه کار نمی‌کند.
+                try:
+                    import requests as _rq
+                    from config import BOT_TOKEN as _BT
+                    if _BT:
+                        chk = _rq.get(
+                            f"https://api.telegram.org/bot{_BT}/getChat",
+                            params={"chat_id": target_gid}, timeout=12,
+                        ).json()
+                        if not chk.get("ok"):
+                            desc = chk.get("description") or "دسترسی ندارد"
+                            hint = ""
+                            low = desc.lower()
+                            if "kick" in low or "forbidden" in low:
+                                hint = " — ربات را دوباره به گروه اضافه کن و ادمین با دسترسی «افزودن کاربر» بده."
+                            elif "not found" in low:
+                                hint = " — این گروه وجود ندارد؛ مقصد را در تنظیمات اصلاح کن."
+                            msg = f"❌ گروه مقصد در دسترس نیست: {desc}{hint}"
+                            print(msg, flush=True)
+                            if atk_state_ref:
+                                atk_state_ref["live_status_text"] = msg
+                                atk_state_ref["live_last_user"] = "—"
+                            return
+                except Exception as e:
+                    print(f"⚠️ بررسی مقصد ناموفق ({e}) — ادامه می‌دهیم", flush=True)
 
                 if atk_state_ref:
                     atk_state_ref["live_last_user"] = "در حال توزیع بین اکانت‌ها..."

@@ -227,3 +227,31 @@ def test_bulk_lookup_returns_a_set():
     body = m.group(1)
     assert "{int(r[0])" in body or "set(" in body, "باید set بسازد"
     assert "return set()" in body, "در خطا باید set خالی بدهد نه None"
+
+
+# ───────────────────── دسترسی به گروه مقصد ─────────────────────
+
+def test_parallel_add_verifies_target_before_starting():
+    """
+    اگر ربات از گروه مقصد اخراج شده باشد، عملیات بی‌صدا با صفر نتیجه
+    تمام می‌شود و کاربر فکر می‌کند دکمه کار نمی‌کند.
+
+    این دقیقاً چیزی بود که در تست زنده دیدیم:
+      getChat → "Forbidden: bot was kicked from the supergroup chat"
+    """
+    body = _function_body("trigger_parallel_add")
+    job = re.search(r"async def run_parallel_job\(\):(.*?)(?=\n        _schedule_coro)", body, re.S)
+    assert job, "کوروتین پس‌زمینه پیدا نشد"
+    text = job.group(1)
+
+    assert "getChat" in text, "قبل از شروع باید دسترسی به گروه مقصد بررسی شود"
+    assert "live_status_text" in text, "نتیجه بررسی باید به UI برسد"
+    assert "kick" in text.lower(), "پیام اخراج شدن باید تشخیص داده شود"
+
+
+def test_diagnose_reports_target_reachability():
+    """endpoint تشخیص باید بگوید گروه مقصد در دسترس هست یا نه."""
+    body = _function_body("get_diagnostics_dict")
+    assert "reachable" in body
+    assert "getChat" in body
+    assert "hint" in body, "باید راهنمای رفع مشکل بدهد، نه فقط کد خطا"
