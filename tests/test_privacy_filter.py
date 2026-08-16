@@ -268,3 +268,67 @@ def test_no_dependency_on_bot_message_object():
     i = src.index("🎯 پیش‌فیلتر پرایوسی")
     window = src[i:i + 3000]
     assert "q.message.edit_text" not in window
+
+
+# ───────── فیلتر درون‌خطی (مستقل از probe) ─────────
+
+def _worker_loop():
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    lines = src.split("\n")
+    st = next(i for i, l in enumerate(lines)
+              if l.startswith("async def _execute_parallel_add("))
+    en = len(lines)
+    for i, l in enumerate(lines[st + 1:], st + 1):
+        if l and not l[0].isspace():
+            en = i
+            break
+    body = "\n".join(lines[st:en])
+    return body[body.index("while not member_queue.empty()"):]
+
+
+def test_inline_privacy_check_exists():
+    """
+    🚨 پیش‌فیلتر دسته‌ای به اتصال جداگانه (probe) نیاز دارد که در
+    پروداکشن باز نشد — لاگ پر از «socket.send() raised exception» بود
+    و صفر خط prefilter داشتیم.
+
+    پس ورکر باید فیلتر مستقل خودش را داشته باشد.
+    """
+    loop = _worker_loop()
+    assert "_is_unaddable_user" in loop, (
+        "ورکر باید مستقل از probe هم پرایوسی را بررسی کند"
+    )
+    assert "await client.get_users(" in loop
+
+
+def test_inline_check_runs_before_invite():
+    """بررسی باید قبل از دعوت باشد، وگرنه فایده‌ای ندارد."""
+    loop = _worker_loop()
+    check = loop.index("_is_unaddable_user")
+    invite = loop.index("InviteToChannel(")
+    assert check < invite, "بررسی پرایوسی باید قبل از InviteToChannel باشد"
+
+
+def test_inline_check_blocks_future_retries():
+    loop = _worker_loop()
+    i = loop.index("_is_unaddable_user")
+    window = loop[i:i + 1400]
+    assert "blocked_ids.add(" in window
+    assert "never_add_again(" in window
+
+
+def test_inline_check_failure_is_non_fatal():
+    """اگر get_users شکست خورد، نباید ادد را متوقف کند."""
+    loop = _worker_loop()
+    i = loop.index("_is_unaddable_user")
+    window = loop[i:i + 1800]
+    assert "except Exception:" in window
+
+
+def test_probe_failure_is_logged():
+    """
+    قبلاً probe بی‌صدا None برمی‌گرداند و ساعت‌ها نفهمیدیم پیش‌فیلتر
+    اجرا نمی‌شود.
+    """
+    src = (ROOT / "bot.py").read_text(encoding="utf-8")
+    assert "probe برای" in src, "شکست probe باید لاگ شود"

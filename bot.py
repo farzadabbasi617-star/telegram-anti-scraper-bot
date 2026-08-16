@@ -8311,6 +8311,12 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
             from add_engine import prefilter_unaddable, format_prefilter_report
             _probe_phone = next(iter(accs.keys()))
             _probe = await _open_probe_client(_probe_phone)
+            if not _probe:
+                print(
+                    f"⚠️ probe برای {_probe_phone} باز نشد — پیش‌فیلتر جداگانه "
+                    "انجام نمی‌شود؛ فیلتر داخل خود ورکر عمل می‌کند.",
+                    flush=True,
+                )
             if _probe:
                 _need = max(120, len(accs) * 40)
                 _max_scan = min(len(members), 2000)
@@ -8598,6 +8604,48 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     total_skipped += 1
                     member_queue.task_done()
                     continue
+
+                # 🎯 فیلتر پرایوسی درون‌خطی (۱.۸.۲)
+                #
+                # پیش‌فیلتر دسته‌ای به یک اتصال جداگانه (probe) نیاز دارد
+                # که ممکن است باز نشود. این لایه به آن وابسته نیست: خودِ
+                # ورکر که already وصل است، با یک get_users سبک وضعیت
+                # کاربر را می‌گیرد و اگر پرایوسی‌بسته بود، **بدون
+                # فرستادن دعوت** ردش می‌کند.
+                #
+                # چرا مهم است: هر دعوتِ بی‌نتیجه اکانت را به PEER_FLOOD
+                # نزدیک‌تر می‌کند. get_users بسیار ارزان‌تر از
+                # InviteToChannel است.
+                try:
+                    from add_engine import _is_unaddable_user as _iu
+                    _u = await client.get_users(user_peer)
+                    _bad, _why = _iu(_u)
+                    if _bad:
+                        total_skipped += 1
+                        try:
+                            blocked_ids.add(int(uid))
+                        except Exception:
+                            pass
+                        reason = "privacy" if "پرایوسی" in _why else (
+                            "stale" if "رهاشده" in _why else "invalid"
+                        )
+                        try:
+                            never_add_again(uid, reason)
+                        except Exception:
+                            pass
+                        print(f"🎯 [{phone}] {uid} رد شد: {_why}", flush=True)
+                        member_queue.task_done()
+                        # get_users هم یک درخواست است ولی خیلی سبک‌تر از
+                        # دعوت — تأخیر کوتاه‌تری کافی است.
+                        try:
+                            await asyncio.wait_for(stop_event.wait(), timeout=3.0)
+                            break
+                        except asyncio.TimeoutError:
+                            pass
+                        continue
+                except Exception:
+                    # اگر بررسی نشد، محافظه‌کارانه ادامه بده
+                    pass
 
                 try:
                     # 🚫 AddContact حذف شد (۱.۷.۰).
