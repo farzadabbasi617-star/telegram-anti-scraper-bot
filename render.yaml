@@ -51,17 +51,21 @@ services:
 
       # --- دیتابیس ---
       - key: DB_POOL_SIZE
-        value: '6'
+        value: '10'
 
       # --- موتور ادد (ضد بن) ---
       - key: MAX_ADD_PER_ACCOUNT
-        value: '100'
+        value: '1000'
+      - key: CAP_MAX
+        value: '100000'
       - key: CAP_ULTRA
-        value: '50'
+        value: '1000'
       - key: CAP_FAST
-        value: '100'
+        value: '1000'
       - key: CAP_SAFE
-        value: '100'
+        value: '1000'
+      - key: GLOBAL_THROTTLE_ENABLED
+        value: 'true'
       - key: DEFAULT_TARGET_USERNAME
         sync: false
 

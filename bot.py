@@ -560,6 +560,7 @@ from add_engine import (
     get_blocked_ids_cached, invalidate_blocked_cache,
     never_add_again, mark_added_local,
     confirm_joined, prefer_addable_members, invite_did_not_join,
+    global_throttle,
 )
 
 def load_accounts():
@@ -8639,6 +8640,17 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                 # قطعی و رایگان است — نه حدس ما.
 
                 try:
+                    # 🌐 Global target throttle — حداقل فاصله بین هر دو دعوت
+                    # به یک گروه، صرف‌نظر از اکانت. بدون این، ۸ اکانت
+                    # می‌توانند هم‌زمان هجوم ببرند و همه PEER_FLOOD بگیرند.
+                    try:
+                        await global_throttle(add_mode)
+                        if stop_event.is_set() or atk_state.get("_stop_requested"):
+                            member_queue.put_nowait(member)
+                            member_queue.task_done()
+                            break
+                    except Exception:
+                        pass
                     # 🚫 AddContact حذف شد (۱.۷.۰).
                     # این فراخوانی یکی از شدیدترین rate-limit های تلگرام را
                     # دارد و عملاً به موفقیت ادد کمکی نمی‌کرد: کاربری که

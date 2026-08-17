@@ -56,7 +56,7 @@ HEALTH_CHECK_INTERVAL = _int("HEALTH_CHECK_INTERVAL", 3600)
 # Database
 # -----------------------------------------------------------------
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
-DB_POOL_SIZE = _int("DB_POOL_SIZE", 6)
+DB_POOL_SIZE = _int("DB_POOL_SIZE", 10)
 SESSION_ENCRYPTION_KEY = os.environ.get("SESSION_ENCRYPTION_KEY", "")
 
 # -----------------------------------------------------------------
@@ -134,6 +134,21 @@ HUMAN_JITTER_CHANCE = 0.15     # احتمال تاخیر طولانی‌تر ش�
 HUMAN_JITTER_FACTOR = (1.6, 2.8)
 
 # -----------------------------------------------------------------
+# 🌐 Global Target Throttle — ضد الگوی هماهنگ روی گروه مقصد
+# -----------------------------------------------------------------
+# ⚠️ درس پرهزینه (۱.۹.۵): با ۸ اکانت و DELAY 1-3s، میانگین ۲s ÷ ۸ =
+# ۰.۲۵s بین دو دعوت به *یک* گروه → تلگرام آن را هجوم هماهنگ می‌بیند و
+# همه را PEER_FLOOD می‌کند. تأخیر per-account کافی نیست؛ باید یک
+# throttle سراسری روی خودِ گروه باشد تا دعوت‌ها پخش شوند.
+GLOBAL_THROTTLE_INTERVAL = {
+    "max": (0.9, 1.6),
+    "ultra": (1.6, 2.4),
+    "fast": (2.8, 4.0),
+    "safe": (4.5, 6.5),
+}
+GLOBAL_THROTTLE_ENABLED = _bool("GLOBAL_THROTTLE_ENABLED", True)
+
+# -----------------------------------------------------------------
 # Target group (پیش‌فرض)
 # -----------------------------------------------------------------
 DEFAULT_TARGET_USERNAME = os.environ.get("DEFAULT_TARGET_USERNAME", "gament_super_gp")
@@ -150,7 +165,7 @@ LOG_BACKUP_COUNT = _int("LOG_BACKUP_COUNT", 5)
 # -----------------------------------------------------------------
 # App meta
 # -----------------------------------------------------------------
-APP_VERSION = "1.9.5"
+APP_VERSION = "1.9.6"
 APP_NAME = "Telegram Anti-Scraper Bot (@HaghBaKieBot)"
 
 

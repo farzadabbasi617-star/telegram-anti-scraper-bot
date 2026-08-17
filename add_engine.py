@@ -47,6 +47,51 @@ def human_break_seconds(add_mode="fast"):
 
 
 # -----------------------------------------------------------------
+# 🌐 Global Target Throttle — حداقل فاصله بین هر دو دعوت به یک گروه
+# -----------------------------------------------------------------
+import asyncio as _asyncio
+
+_global_throttle_lock = _asyncio.Lock()
+_global_last_invite_ts = 0.0
+
+
+async def global_throttle(add_mode="fast"):
+    """
+    حداقل فاصله بین هر دو InviteToChannel به گروه مقصد،
+    صرف‌نظر از اینکه کدام اکانت می‌فرستد.
+
+    بدون این، با ۸ اکانت و تأخیر ۱-۳s، هر ۰.۲۵s یک دعوت به یک گروه
+    می‌رود — تلگرام آن را هجوم هماهنگ می‌بیند و PEER_FLOOD می‌دهد.
+    """
+    if not getattr(config, "GLOBAL_THROTTLE_ENABLED", True):
+        return
+    lo, hi = getattr(config, "GLOBAL_THROTTLE_INTERVAL", {}).get(add_mode, (1.0, 1.0))
+    # در حالت تست (بدون حلقه رویداد) ممکن است Lock ناسازگار باشد؛ امن بمان.
+    try:
+        interval = random.uniform(lo, hi)
+    except Exception:
+        interval = 1.0
+    global _global_last_invite_ts
+    # تلاش برای قفل — اگر حلقه اجرا نمی‌شود، فقط sleep ساده
+    try:
+        async with _global_throttle_lock:
+            now = time.monotonic()
+            wait = (_global_last_invite_ts + interval) - now
+            if wait > 0:
+                await _asyncio.sleep(wait)
+            _global_last_invite_ts = time.monotonic()
+    except RuntimeError:
+        # خارج از حلقه async (مثلاً در تست همگام) — نادیده بگیر
+        pass
+
+
+def reset_global_throttle_for_tests():
+    """فقط برای تست‌ها — ریست تایمر سراسری"""
+    global _global_last_invite_ts
+    _global_last_invite_ts = 0.0
+
+
+# -----------------------------------------------------------------
 # 🚫 Do-Not-Add cache (لیست ممنوعه در حافظه)
 # -----------------------------------------------------------------
 
