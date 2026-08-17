@@ -624,9 +624,53 @@ def get_leads_list_dict(category=None, status=None):
         return {"ok": False, "error": str(e)}
 
 
+def normalize_group_ref(raw):
+    """
+    ورودی کاربر را به مرجع قابل‌استفاده تلگرام تبدیل می‌کند.
+
+    می‌پذیرد:
+      https://t.me/joinchat/XXX  ·  https://t.me/+XXX  ·  t.me/group
+      @group  ·  group  ·  -1001234567890
+    """
+    import re as _re
+    v = str(raw or "").strip()
+    if not v:
+        return None
+    v = v.translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789"))
+
+    # آیدی عددی
+    if _re.fullmatch(r"-?\d{5,}", v):
+        return int(v)
+
+    v = _re.sub(r"^(https?://)?(www\.)?(telegram\.me|t\.me)/", "", v, flags=_re.I)
+    v = v.strip("/")
+
+    # لینک دعوت خصوصی — باید دست‌نخورده بماند
+    if v.startswith("+") or v.lower().startswith("joinchat/"):
+        return f"https://t.me/{v}"
+
+    v = v.lstrip("@").split("?")[0].split("/")[0]
+    if not v:
+        return None
+    if _re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{3,31}", v):
+        return f"@{v}"
+    return None
+
+
 def trigger_scrape_group(chat_target):
     """Trigger live member scraping from discovered Telegram group into DB"""
     try:
+        ref = normalize_group_ref(chat_target)
+        if ref is None:
+            return False, (
+                "آدرس گروه نامعتبر است. نمونه‌های درست:\n"
+                "https://t.me/groupname  یا  @groupname  یا  -1001234567890"
+            )
+        chat_target = ref
+
+        if atk_state_ref is not None and atk_state_ref.get("add_in_progress"):
+            return False, "یک عملیات دیگر در حال اجراست. اول آن را متوقف کن."
+
         accs = db.load_accounts()
         if not accs:
             return False, "هیچ اکانت متصلی برای اسکرپ وجود ندارد."
@@ -645,6 +689,10 @@ def trigger_scrape_group(chat_target):
             atk_state_ref["live_failed"] = 0
             atk_state_ref["live_skipped"] = 0
             atk_state_ref["live_mode"] = "اسکرپ گروه"
+            # بدون live_total، پرچم finished در داشبورد هرگز True نمی‌شود
+            # و خلاصه‌ی پایان اسکرپ نمایش داده نمی‌ماند.
+            atk_state_ref["live_total"] = 1
+            atk_state_ref["live_status_text"] = f"🔄 اتصال به {chat_target}..."
             atk_state_ref["live_last_user"] = f"در حال استخراج از {chat_target}..."
             atk_state_ref["live_current_account"] = phone
 
@@ -666,16 +714,62 @@ def trigger_scrape_group(chat_target):
                     device_fp=acc_info.get("device_fp")
                 )
                 await client.connect()
-                scraped = await client.run_full_scrape(chat_target)
+
+                # 📡 پیشرفت زنده به مینی‌اپ.
+                # بدون این، کاربر فقط «در حال استخراج...» می‌بیند و
+                # نمی‌داند کار پیش می‌رود یا گیر کرده است.
+                # ⚠️ هر دو callback در attacker.py با await صدا زده
+                # می‌شوند، پس حتماً باید async باشند. نسخه‌ی sync استثنا
+                # می‌داد و بی‌صدا در except بلعیده می‌شد — همان تله‌ای که
+                # قبلاً ساعت‌ها وقت گرفت.
+                async def _on_progress(text=None, **kw):
+                    if atk_state_ref is None:
+                        return
+                    try:
+                        found = len(getattr(client, "found_users", {}) or {})
+                        atk_state_ref["live_added"] = found
+                        stage = getattr(client, "_stage", "") or (text or "")
+                        if stage:
+                            atk_state_ref["live_status_text"] = str(stage)[:180]
+                        atk_state_ref["live_last_user"] = f"📥 {found:,} ممبر تا اینجا"
+                    except Exception:
+                        pass
+
+                async def _on_save(users=None, **kw):
+                    await _on_progress()
+
+                scraped = await client.run_full_scrape(
+                    chat_target,
+                    progress_cb=_on_progress,
+                    incremental_save_cb=_on_save,
+                )
                 if atk_state_ref is not None:
                     count_got = len(scraped.get("found_users", {})) if isinstance(scraped, dict) else len(scraped or [])
-                    atk_state_ref["live_last_user"] = f"✅ {count_got} ممبر جدید ذخیره شد!"
+                    atk_state_ref["live_added"] = count_got
+                    atk_state_ref["live_last_user"] = f"✅ {count_got:,} ممبر جدید ذخیره شد!"
+                    atk_state_ref["live_status_text"] = (
+                        f"✅ استخراج تمام شد — {count_got:,} ممبر جدید از {chat_target}"
+                    )
+                    st = atk_state_ref.get("live_start_time")
+                    if st:
+                        atk_state_ref["live_elapsed_final"] = int(time.time() - st)
                 account_state.set_last_error(phone, "")
             except Exception as e:
-                print(f"Scrape job error: {e}", flush=True)
+                import traceback
+                print(f"Scrape job error: {type(e).__name__}: {e}\n{traceback.format_exc()}", flush=True)
                 account_state.set_last_error(phone, str(e)[:200])
                 if atk_state_ref is not None:
-                    atk_state_ref["live_last_user"] = f"❌ خطا: {str(e)[:80]}"
+                    err = str(e)
+                    hint = ""
+                    low = err.lower()
+                    if "username_not_occupied" in low or "not found" in low:
+                        hint = " — این گروه وجود ندارد یا آدرسش اشتباه است."
+                    elif "private" in low or "invite" in low or "forbidden" in low:
+                        hint = " — گروه خصوصی است؛ اول اکانت را عضو کن."
+                    elif "flood" in low:
+                        hint = " — تلگرام محدودیت گذاشته، کمی بعد امتحان کن."
+                    atk_state_ref["live_last_user"] = f"❌ {type(e).__name__}"
+                    atk_state_ref["live_status_text"] = f"❌ خطا: {err[:120]}{hint}"
             finally:
                 account_state.release(phone)
                 account_state.mark_used(phone)
@@ -1277,6 +1371,49 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
         <!-- TAB 3: GAME LEAD FINDER -->
         <section id="tab-leadfinder" class="tab-content hidden space-y-4">
+
+            <!-- 📥 اسکرپ مستقیم گروه -->
+            <div class="glass-card p-4 space-y-3 border border-emerald-500/25">
+                <h3 class="text-sm font-extrabold text-emerald-400 flex items-center gap-2">
+                    <span>📥 استخراج ممبر از گروه</span>
+                </h3>
+                <p class="text-[11px] text-slate-300 leading-5">
+                    لینک یا آیدی گروه را وارد کن تا اعضایش به دیتابیس اضافه شوند.
+                    بعد از آن می‌توانی از تب «ادد» شروع کنی.
+                </p>
+
+                <input type="text" id="scrape-input" dir="ltr" placeholder="https://t.me/groupname"
+                       class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl px-3 py-2.5 outline-none focus:border-emerald-500 text-left">
+
+                <div class="text-[10px] text-slate-500 leading-5">
+                    قبول می‌شود: <span dir="ltr">https://t.me/name</span> · <span dir="ltr">@name</span> ·
+                    <span dir="ltr">-1001234567890</span> · لینک دعوت خصوصی
+                </div>
+
+                <button onclick="startGroupScrape()" id="btn-scrape"
+                        class="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs font-black rounded-xl shadow-lg active:scale-95 transition">
+                    📥 شروع استخراج ممبر
+                </button>
+
+                <div id="scrape-msg" class="text-[11px] leading-5 hidden"></div>
+
+                <!-- پیشرفت زنده -->
+                <div id="scrape-live" class="hidden space-y-2 pt-1">
+                    <div class="flex items-center justify-between text-[11px]">
+                        <span class="text-emerald-300 font-bold">در حال استخراج...</span>
+                        <span id="scrape-count" class="text-white font-black">0</span>
+                    </div>
+                    <div class="w-full bg-slate-800 rounded-full h-1.5 overflow-hidden">
+                        <div class="h-full bg-gradient-to-r from-emerald-500 to-teal-400 animate-pulse" style="width:100%"></div>
+                    </div>
+                    <div id="scrape-stage" class="text-[10px] text-slate-400 leading-5"></div>
+                    <button onclick="stopAddOperation()"
+                            class="w-full py-2 bg-slate-800 hover:bg-slate-700 text-rose-300 text-[11px] font-bold rounded-xl border border-slate-700">
+                        ⏹️ توقف
+                    </button>
+                </div>
+            </div>
+
             <div class="glass-card p-4 space-y-3">
                 <h3 class="text-sm font-extrabold text-cyan-400 flex items-center gap-2">
                     <span>🎮 شکارچی گروه‌های تلگرامی و لیدها</span>
@@ -1532,6 +1669,68 @@ MINI_APP_HTML = """<!DOCTYPE html>
             }
         }
 
+        // ── استخراج مستقیم گروه ──────────────────────────────
+        function scrapeMsg(text, kind) {
+            const el = document.getElementById('scrape-msg');
+            el.textContent = text;
+            el.classList.remove('hidden');
+            el.className = 'text-[11px] leading-5 ' + (
+                kind === 'ok' ? 'text-emerald-300' :
+                kind === 'err' ? 'text-rose-300' : 'text-slate-300'
+            );
+        }
+
+        async function startGroupScrape() {
+            const raw = document.getElementById('scrape-input').value.trim();
+            if (!raw) { scrapeMsg('آدرس گروه را وارد کن.', 'err'); return; }
+
+            const btn = document.getElementById('btn-scrape');
+            btn.disabled = true;
+            btn.innerHTML = '⏳ در حال شروع...';
+            scrapeMsg('در حال اتصال به تلگرام...', 'info');
+
+            try {
+                const res = await fetch('/api/scrape/group', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target: raw })
+                });
+                const d = await res.json();
+                scrapeMsg(d.message || d.error || '', d.ok ? 'ok' : 'err');
+                if (d.ok) {
+                    document.getElementById('scrape-live').classList.remove('hidden');
+                    if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+                }
+            } catch (e) {
+                scrapeMsg('خطای ارتباط: ' + e, 'err');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '📥 شروع استخراج ممبر';
+            }
+        }
+
+        // پیشرفت زنده اسکرپ — از همان پول داشبورد تغذیه می‌شود
+        function updateScrapeProgress(m) {
+            const box = document.getElementById('scrape-live');
+            if (!box) return;
+            const p = m.add_progress || {};
+            const isScrape = (p.mode || '').indexOf('اسکرپ') !== -1;
+
+            if (m.is_adding && isScrape) {
+                box.classList.remove('hidden');
+                document.getElementById('scrape-count').innerText =
+                    (p.added || 0).toLocaleString('fa-IR') + ' ممبر';
+                document.getElementById('scrape-stage').innerText =
+                    p.status_text || p.last_user || '';
+            } else if (!m.is_adding && isScrape && p.finished) {
+                document.getElementById('scrape-count').innerText =
+                    (p.added || 0).toLocaleString('fa-IR') + ' ممبر';
+                document.getElementById('scrape-stage').innerText = p.status_text || '';
+                const btn = box.querySelector('button');
+                if (btn) btn.classList.add('hidden');
+            }
+        }
+
         async function scrapeDiscoveredGroup(target) {
             if (!target) return;
             if (!confirm(`آیا از شروع استخراج ممبر از ${target} به دیتابیس مطمئن هستید؟`)) return;
@@ -1740,6 +1939,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     document.getElementById('target-label').innerText = m.target_group;
 
                     if (m.add_cap) { window.__ADD_CAP = m.add_cap; }
+                    updateScrapeProgress(m);
                     if (m.is_adding) {
                         // Sticky banner
                         document.getElementById('sticky-add-banner').classList.remove('hidden');
