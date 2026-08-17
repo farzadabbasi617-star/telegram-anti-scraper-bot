@@ -877,8 +877,12 @@ def trigger_single_add(phone, add_type):
         return False, str(e)
 
 
-def trigger_parallel_add(add_mode, add_type):
-    """Trigger parallel multi-account add from DB members to target group"""
+def trigger_parallel_add(add_mode, add_type, phones=None):
+    """Trigger parallel multi-account add from DB members to target group.
+
+    phones: لیست شماره‌های انتخاب‌شده توسط کاربر. اگر None یا خالی باشد،
+    همه‌ی اکانت‌های آماده استفاده می‌شوند (رفتار قبلی، سازگار به عقب).
+    """
     try:
         raw_users = db.get_users_by_source(limit=10000)
         if not raw_users:
@@ -917,6 +921,10 @@ def trigger_parallel_add(add_mode, add_type):
         if not filtered:
             return False, "هیچ کاربری با این فیلتر در دیتابیس یافت نشد."
 
+        # 📱 اکانت‌های انتخاب‌شده. مقایسه روی رشته‌ی trim‌شده انجام می‌شود چون
+        # شماره از فرم HTML می‌آید و ممکن است فاصله‌ی اضافه داشته باشد.
+        wanted = {str(p).strip() for p in (phones or []) if str(p).strip()}
+
         # ⚠️ collect_ready_accounts() برای هر اکانت سشن را از دیتابیس بازیابی
         # و بازرسی می‌کند. با ۸ اکانت این ده‌ها عملیات دیسک/DB است و اگر
         # داخل هندلر HTTP اجرا شود، درخواست تا پایانش بلاک می‌ماند و مینی‌اپ
@@ -945,6 +953,27 @@ def trigger_parallel_add(add_mode, add_type):
                 # کار سنگین اینجا انجام می‌شود، نه در مسیر درخواست
                 from account_doctor import collect_ready_accounts
                 healthy_accs, skipped = await asyncio.to_thread(collect_ready_accounts)
+
+                # 📱 اگر کاربر اکانت خاصی انتخاب کرده، بقیه کنار گذاشته می‌شوند.
+                # این کار بعد از collect انجام می‌شود نه قبلش، تا وضعیت واقعی
+                # (محدود/بدون سشن) هم برای اکانت‌های انتخابی گزارش شود.
+                if wanted:
+                    chosen = {ph: inf for ph, inf in healthy_accs.items()
+                              if str(ph).strip() in wanted}
+                    missing = wanted - {str(ph).strip() for ph in chosen}
+                    if not chosen:
+                        why = "، ".join(f"{ph}: {rsn}" for ph, rsn in skipped
+                                        if str(ph).strip() in wanted) or "آماده نبودند"
+                        msg = f"هیچ‌کدام از اکانت‌های انتخابی قابل استفاده نیست ({why})"
+                        print(f"⚠️ parallel add: {msg}", flush=True)
+                        if atk_state_ref is not None:
+                            atk_state_ref["live_status_text"] = f"⚠️ {msg}"
+                            atk_state_ref["live_last_user"] = "—"
+                        return
+                    if missing:
+                        print(f"ℹ️ اکانت‌های انتخابی که آماده نبودند: {sorted(missing)}",
+                              flush=True)
+                    healthy_accs = chosen
 
                 if not healthy_accs:
                     msg = f"هیچ اکانت آماده‌ای یافت نشد! ({skipped})"
@@ -1007,7 +1036,11 @@ def trigger_parallel_add(add_mode, add_type):
                     atk_state_ref["add_in_progress"] = False
 
         _schedule_coro(run_parallel_job())
-        return True, f"عملیات ادد موازی شروع شد ({len(filtered):,} کاربر در صف). پیشرفت را در همین صفحه ببین."
+        _who = f"{len(wanted)} اکانت انتخابی" if wanted else "همه اکانت‌های آماده"
+        return True, (
+            f"عملیات ادد موازی با {_who} شروع شد "
+            f"({len(filtered):,} کاربر در صف). پیشرفت را در همین صفحه ببین."
+        )
     except Exception as e:
         return False, str(e)
 
@@ -1348,6 +1381,27 @@ MINI_APP_HTML = """<!DOCTYPE html>
                             ⚡⚡⚡ Ultra
                         </button>
                     </div>
+                </div>
+
+                <div>
+                    <div class="flex items-center justify-between mb-1.5">
+                        <label class="block text-xs text-slate-300">اکانت‌های ادد کننده:</label>
+                        <div class="flex gap-1.5">
+                            <button onclick="parallelAccAll(true)" type="button"
+                                    class="px-2 py-1 bg-slate-800 border border-slate-700 text-[10px] text-slate-300 rounded-lg active:scale-95">
+                                همه
+                            </button>
+                            <button onclick="parallelAccAll(false)" type="button"
+                                    class="px-2 py-1 bg-slate-800 border border-slate-700 text-[10px] text-slate-300 rounded-lg active:scale-95">
+                                هیچ‌کدام
+                            </button>
+                        </div>
+                    </div>
+                    <div id="parallel-acc-list"
+                         class="bg-slate-900 border border-slate-700 rounded-xl p-2 space-y-1 max-h-52 overflow-y-auto">
+                        <div class="text-[11px] text-slate-500 text-center py-2">در حال بارگذاری اکانت‌ها...</div>
+                    </div>
+                    <div id="parallel-acc-summary" class="text-[10px] text-slate-500 mt-1.5"></div>
                 </div>
 
                 <div>
@@ -1877,22 +1931,39 @@ MINI_APP_HTML = """<!DOCTYPE html>
         }
 
         async function startParallelAddFromAccounts() {
-            if (!confirm('ادد موازی با همه اکانت‌های سالم (حتی آن‌هایی که هنوز 0/100 هستند) شروع شود؟')) return;
             selectedParallelSpeed = selectedParallelSpeed || 'fast';
+            // ⚠️ این میان‌بر از تب «اکانت‌ها» صدا زده می‌شود، جایی که ممکن است
+            // فهرست چک‌باکس‌های تب ادد هنوز رندر نشده باشد. بدون این فراخوانی
+            // currentParallelPhones() خالی برمی‌گردد و کاربر پیام گمراه‌کننده
+            // «حداقل یک اکانت انتخاب کن» می‌گیرد در حالی که چیزی برای انتخاب ندیده.
+            if (!document.querySelectorAll('.parallel-acc-cb').length) {
+                await loadAttackAccounts();
+            }
+            parallelAccAll(true);
             await startParallelAdd();
         }
 
         async function startParallelAdd() {
             const addType = document.getElementById('select-parallel-type').value;
+            const phones = currentParallelPhones();
 
-            if (!confirm(`آیا از شروع ادد موازی با تمام اکانت‌ها در مود ${selectedParallelSpeed.toUpperCase()} مطمئن هستید؟`)) return;
+            if (!phones.length) {
+                alert('حداقل یک اکانت انتخاب کن.');
+                return;
+            }
+
+            const total = document.querySelectorAll('.parallel-acc-cb:not(:disabled)').length;
+            const who = phones.length === total
+                ? `تمام ${total} اکانت`
+                : `${phones.length} اکانت انتخابی`;
+            if (!confirm(`شروع ادد موازی با ${who} در مود ${selectedParallelSpeed.toUpperCase()}؟`)) return;
             if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
 
             try {
                 const res = await fetch('/api/add/parallel', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ mode: selectedParallelSpeed, add_type: addType })
+                    body: JSON.stringify({ mode: selectedParallelSpeed, add_type: addType, phones: phones })
                 });
                 const data = await res.json();
                 alert(data.message || (data.ok ? 'عملیات ادد موازی شروع شد' : data.error));
@@ -2382,8 +2453,95 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     data.accounts.forEach(acc => {
                         sel.innerHTML += `<option value="${acc.phone}">${acc.name} (${acc.phone}) — ${acc.added_today}/100 ادد</option>`;
                     });
+                    renderParallelAccounts(data.accounts || []);
                 }
             } catch (e) { console.error(e); }
+        }
+
+        // 📱 فهرست انتخاب اکانت برای ادد موازی.
+        // اکانت‌های غیرآماده نمایش داده می‌شوند ولی غیرفعال‌اند تا کاربر
+        // بفهمد چرا در عملیات شرکت نمی‌کنند (به‌جای اینکه بی‌صدا غیب شوند).
+        function renderParallelAccounts(accs) {
+            const box = document.getElementById('parallel-acc-list');
+            if (!box) return;
+            if (!accs.length) {
+                box.innerHTML = '<div class="text-[11px] text-slate-500 text-center py-2">هنوز اکانتی ثبت نشده.</div>';
+                updateParallelAccSummary();
+                return;
+            }
+            const prev = new Set(currentParallelPhones());
+            const hadPrev = prev.size > 0;
+            box.innerHTML = '';
+            accs.forEach(acc => {
+                const usable = (acc.status === 'healthy' || acc.status === 'unchecked' || acc.status === 'unused');
+                let note = '';
+                if (acc.status === 'limited') {
+                    const m = acc.remaining_seconds > 0 ? Math.ceil(acc.remaining_seconds / 60) + ' دقیقه دیگر' : 'محدود';
+                    note = '⛔ ' + m;
+                } else if (acc.status === 'busy') {
+                    note = '🔄 مشغول';
+                } else if (acc.status === 'dead') {
+                    note = '❌ نیاز به لاگین';
+                } else if (acc.status === 'no_session') {
+                    note = '❌ بدون سشن';
+                } else if (acc.status === 'unchecked' || acc.status === 'unused') {
+                    note = '⚠️ تست‌نشده';
+                } else {
+                    note = '✅ سالم';
+                }
+                // انتخاب قبلی کاربر حفظ می‌شود؛ بار اول همه سالم‌ها تیک می‌خورند
+                const checked = usable && (hadPrev ? prev.has(String(acc.phone)) : true);
+                const div = document.createElement('label');
+                div.className = 'flex items-center gap-2 p-2 rounded-lg ' +
+                    (usable ? 'bg-slate-800/40 active:bg-slate-800' : 'bg-slate-900/40 opacity-50');
+                const cb = document.createElement('input');
+                cb.type = 'checkbox';
+                cb.className = 'parallel-acc-cb w-4 h-4 accent-emerald-500 shrink-0';
+                cb.value = String(acc.phone);
+                cb.checked = checked;
+                cb.disabled = !usable;
+                cb.addEventListener('change', updateParallelAccSummary);
+                const info = document.createElement('div');
+                info.className = 'min-w-0 flex-1';
+                const nm = document.createElement('div');
+                nm.className = 'text-[11px] font-bold text-white truncate';
+                nm.textContent = acc.name || 'اکانت';
+                const ph = document.createElement('div');
+                ph.className = 'text-[9px] font-mono text-slate-500 truncate';
+                ph.setAttribute('dir', 'ltr');
+                ph.textContent = acc.phone + '  ·  ' + acc.added_today + ' ادد';
+                info.appendChild(nm); info.appendChild(ph);
+                const st = document.createElement('span');
+                st.className = 'text-[9px] shrink-0 ' + (usable ? 'text-emerald-300' : 'text-rose-300');
+                st.textContent = note;
+                div.appendChild(cb); div.appendChild(info); div.appendChild(st);
+                box.appendChild(div);
+            });
+            updateParallelAccSummary();
+        }
+
+        function currentParallelPhones() {
+            return Array.from(document.querySelectorAll('.parallel-acc-cb'))
+                .filter(cb => cb.checked && !cb.disabled)
+                .map(cb => cb.value);
+        }
+
+        function parallelAccAll(on) {
+            document.querySelectorAll('.parallel-acc-cb').forEach(cb => {
+                if (!cb.disabled) cb.checked = on;
+            });
+            updateParallelAccSummary();
+        }
+
+        function updateParallelAccSummary() {
+            const el = document.getElementById('parallel-acc-summary');
+            if (!el) return;
+            const n = currentParallelPhones().length;
+            const total = document.querySelectorAll('.parallel-acc-cb:not(:disabled)').length;
+            el.textContent = n === 0
+                ? 'هیچ اکانتی انتخاب نشده — دکمه شروع کار نمی‌کند.'
+                : `${n} از ${total} اکانت قابل استفاده انتخاب شده.`;
+            el.className = 'text-[10px] mt-1.5 ' + (n === 0 ? 'text-rose-400' : 'text-slate-500');
         }
 
         async function reset24hLimits() {
@@ -2501,7 +2659,8 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
             elif path == '/api/add/parallel':
                 add_mode = post_data.get("mode", "ultra")
                 add_type = post_data.get("add_type", "all")
-                ok, msg = trigger_parallel_add(add_mode, add_type)
+                phones = post_data.get("phones") or None
+                ok, msg = trigger_parallel_add(add_mode, add_type, phones)
                 body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
             elif path == '/api/scrape/group':
                 target = post_data.get("target", "")
@@ -2682,7 +2841,8 @@ def create_web_app(app_bot=None, atk_state=None):
                 data = await request.json()
                 add_mode = data.get("mode", "ultra")
                 add_type = data.get("add_type", "all")
-                ok, msg = trigger_parallel_add(add_mode, add_type)
+                phones = data.get("phones") or None
+                ok, msg = trigger_parallel_add(add_mode, add_type, phones)
                 return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
             except Exception as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
