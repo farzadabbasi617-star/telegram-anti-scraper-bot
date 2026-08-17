@@ -136,14 +136,25 @@ def test_success_still_requires_membership_confirmation():
     مهم‌ترین تضمین: «۱۰۰ نوشت ولی ۱۰ تا شد» نباید برگردد.
     فقط بعد از confirm_joined باید موفق شمرده شود.
     """
+    # ⚠️ لنگر عوض شد (۱.۹.۴): confirm_joined از ورکر موازی حذف شد چون
+    # تا ۲ get_chat_member اضافه به ازای هر دعوت می‌زد و بازدهی را
+    # چهار برابر پایین آورد. تضمین سر جایش است ولی حالا از
+    # missing_invitees خوانده می‌شود که خود تلگرام رایگان برمی‌گرداند.
+    # پنجره‌ی ۳۰۰ کاراکتری هم شکننده بود؛ به لنگر نحوی تغییر کرد.
     body = _parallel_worker_body()
-    confirm = body.index("confirm_joined")
-    added = body.index("total_added += 1")
-    assert confirm < added, "تأیید عضویت باید قبل از شمردن موفقیت باشد"
+    code = "\n".join(
+        l for l in body.split("\n") if not l.lstrip().startswith("#")
+    )
+    checked = code.index("invite_did_not_join(invite_res, uid)")
+    added = code.index("total_added += 1")
+    assert checked < added, "نتیجه دعوت باید قبل از شمردن موفقیت بررسی شود"
 
-    window = body[confirm:confirm + 300]
-    assert "total_skipped += 1" in window, (
+    block = code[checked:code.index("continue", checked)]
+    assert "total_skipped += 1" in block, (
         "کاربر تأییدنشده باید در «رد شده» برود، نه «موفق»"
+    )
+    assert "never_add_again" in block, (
+        "کاربری که عضو نشد باید دائمی ثبت شود تا دوباره دعوت نشود"
     )
 
 

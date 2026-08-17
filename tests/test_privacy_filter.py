@@ -244,11 +244,23 @@ def test_prefilter_not_duplicated():
 
 
 def test_prefilter_failure_does_not_block_adding():
-    """اگر پیش‌فیلتر شکست خورد، ادد باید ادامه یابد."""
+    """اگر پیش‌فیلتر شکست خورد، ادد باید ادامه یابد.
+
+    ⚠️ پنجره‌ی ۳۰۰۰ کاراکتری شکننده بود: با بلندتر شدن کامنت توضیح در
+    ۱.۹.۴ لنگر از پنجره بیرون افتاد و تست بی‌دلیل قرمز شد. حالا کل
+    تابع بررسی می‌شود.
+    """
+    import ast
     src = (ROOT / "bot.py").read_text(encoding="utf-8")
-    i = src.index("🎯 پیش‌فیلتر پرایوسی")
-    window = src[i:i + 3000]
-    assert "پیش‌فیلتر انجام نشد" in window, "باید fallback داشته باشد"
+    fn = None
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and \
+                node.name == "_execute_parallel_add":
+            fn = ast.get_source_segment(src, node)
+    assert fn, "_execute_parallel_add پیدا نشد"
+    assert "پیش‌فیلتر انجام نشد" in fn, (
+        "شکست پیش‌فیلتر باید fallback داشته باشد و ادد را متوقف نکند"
+    )
 
 
 def test_prefilter_updates_live_total():
