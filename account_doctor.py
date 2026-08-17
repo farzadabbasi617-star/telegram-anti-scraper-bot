@@ -136,6 +136,23 @@ def save_probe_result(phone, res):
     _db.kv_set("account_probe_results", allr)
 
 
+def clear_probe_result(phone):
+    """حذف نتیجه‌ی تست یک اکانت.
+
+    ⚠️ بعد از لاگین موفق حتماً باید صدا زده شود. وگرنه نتیجه‌ی «خراب» که
+    مربوط به *قبل* از لاگین است باقی می‌ماند و get_accounts_dict اکانت
+    تازه و سالم را «خراب» نشان می‌دهد. دقیقاً همین اتفاق برای
+    +989924237228 افتاد: probe در 10:57 گفت «سشن نیست» (درست بود)، سشن
+    در 11:09 ذخیره شد، ولی نتیجه‌ی کهنه پاک نشد.
+    """
+    allr = load_probe_results()
+    if str(phone) in allr:
+        allr.pop(str(phone), None)
+        _db.kv_set("account_probe_results", allr)
+        return True
+    return False
+
+
 def session_login_complete(phone):
     ins = inspect_session(phone)
     return bool(ins.get("ok") and ins.get("user_id"))

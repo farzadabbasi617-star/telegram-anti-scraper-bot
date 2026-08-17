@@ -313,6 +313,18 @@ async def _persist(phone):
         except Exception as e:
             print(f"⚠️ بکاپ سشن {phone}: {e}", flush=True)
 
+        # 🧹 نتیجه‌ی تستِ قبل از لاگین را پاک کن.
+        #
+        # ⚠️ بدون این، اکانتِ تازه و سالم «خراب» نشان داده می‌شود.
+        # get_accounts_dict وضعیت را از همین نتیجه‌ی ذخیره‌شده می‌خواند و
+        # اگر probe قبلاً (وقتی هنوز سشنی نبود) شکست خورده باشد، آن خطا
+        # تا اجرای بعدیِ probe باقی می‌ماند.
+        try:
+            from account_doctor import clear_probe_result
+            clear_probe_result(phone)
+        except Exception as e:
+            print(f"⚠️ پاک کردن نتیجه‌ی تست {phone}: {type(e).__name__}: {e}", flush=True)
+
         async with _lock:
             _pending.pop(phone, None)
 

@@ -536,8 +536,27 @@ def get_accounts_dict():
                 status = "healthy"
                 reason = ""
             elif pr.get("ok") is False:
-                status = "dead"
-                reason = pr.get("error") or "تست زنده شکست خورد — باید دوباره لاگین شود"
+                # ⚠️ نتیجه‌ی تست ممکن است کهنه باشد. اگر تست *قبل از*
+                # ذخیره‌ی سشن اجرا شده باشد، حکم «خراب» می‌دهد و تا اجرای
+                # بعدی probe می‌ماند — حتی وقتی سشن حالا سالم روی دیسک است.
+                # پس اگر سشن جدیدتر از تست باشد، حکم کهنه را نادیده بگیر.
+                _stale = False
+                try:
+                    import os as _os
+                    from attacker import SESSIONS_DIR as _SD, safe_phone_filename as _sf
+                    _sp = _os.path.join(_SD, f"acc_{_sf(phone)}.session")
+                    if _os.path.exists(_sp) and _os.path.getsize(_sp) > 100:
+                        _pts = int(pr.get("ts") or 0)
+                        if _os.path.getmtime(_sp) > _pts:
+                            _stale = True
+                except Exception:
+                    _stale = False
+                if _stale:
+                    status = "unchecked"
+                    reason = "سشن بعد از آخرین تست ذخیره شده — «تست زنده» را بزن"
+                else:
+                    status = "dead"
+                    reason = pr.get("error") or "تست زنده شکست خورد — باید دوباره لاگین شود"
             elif pr.get("ok") is None:
                 status = "unchecked"
                 reason = pr.get("note") or "سشن فایل موجود است؛ تست زنده اتصال هنوز انجام نشده"
