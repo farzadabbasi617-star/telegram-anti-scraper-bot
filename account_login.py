@@ -248,34 +248,76 @@ async def _persist(phone):
 
         db.save_account(phone, name, username, entry.get("device_fp") or {})
 
-        # سشن را به نام دائمی منتقل و در دیتابیس بکاپ کن
+        # 💾 انتقال سشن به نام دائمی.
+        #
+        # ⚠️ اینجا قبلاً باگ داشت: کد دستی دنبال `entry["tmp_name"] + ".session"`
+        # می‌گشت، ولی AdvancedScraper با force_fresh=True نام فایل را خودش
+        # عوض می‌کند (`_newtmp_<phone>_<ts>_<rand>`) و tmp_name را نادیده
+        # می‌گیرد. پس os.path.exists(src) همیشه False بود:
+        #   • فایل سشن هرگز به acc_<phone>.session منتقل نمی‌شد
+        #   • save_session_blob هرگز اجرا نمی‌شد ⇒ سشن در دیتابیس نبود
+        #   • اکانت ذخیره می‌شد ولی بدون سشن ⇒ در مینی‌اپ «خراب» دیده می‌شد
+        # حالا از persist_to_permanent() خود کلاینت استفاده می‌کنیم که نام
+        # واقعی فایل را می‌داند و .wal/.shm را هم منتقل می‌کند.
         from attacker import SESSIONS_DIR, safe_phone_filename
         final_base = os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}")
+        dst = final_base + ".session"
+
+        moved = False
+        try:
+            if hasattr(client, "persist_to_permanent") and getattr(client, "_perm_session_path", None):
+                await client.persist_to_permanent()
+                moved = os.path.exists(dst)
+        except Exception as e:
+            print(f"⚠️ persist_to_permanent {phone}: {type(e).__name__}: {e}", flush=True)
 
         await _disconnect(client.app)
         await asyncio.sleep(0.4)   # مهلت به SQLite برای بستن فایل
 
-        src = entry["tmp_name"] + ".session"
-        dst = final_base + ".session"
-        if os.path.exists(src):
-            try:
-                if os.path.exists(dst):
-                    os.remove(dst)
-                os.replace(src, dst)
-            except Exception as e:
-                print(f"⚠️ انتقال سشن {phone}: {e}", flush=True)
+        # مسیر جایگزین: اگر persist_to_permanent در دسترس نبود یا کار نکرد،
+        # نام واقعی فایل را از خود کلاینت بخوان (نه از tmp_name).
+        if not moved:
+            candidates = []
+            real_name = getattr(getattr(client, "app", None), "name", None)
+            if real_name:
+                candidates.append(real_name + ".session")
+            candidates.append(entry["tmp_name"] + ".session")
+            for src in candidates:
+                if src and os.path.exists(src):
+                    try:
+                        if os.path.exists(dst):
+                            os.remove(dst)
+                        os.replace(src, dst)
+                        moved = True
+                        break
+                    except Exception as e:
+                        print(f"⚠️ انتقال سشن {phone}: {e}", flush=True)
 
-        if os.path.exists(dst):
+        if not os.path.exists(dst):
+            # ⚠️ بی‌صدا موفق اعلام نکن. قبلاً همین باعث می‌شد کاربر پیام
+            # «با موفقیت اضافه شد» ببیند و بعد اکانت «خراب» باشد.
+            await _finish(phone, success=False)
             try:
-                with open(dst, "rb") as fh:
-                    db.save_session_blob(phone, fh.read())
-            except Exception as e:
-                print(f"⚠️ بکاپ سشن {phone}: {e}", flush=True)
+                db.delete_account(phone)
+            except Exception:
+                pass
+            print(f"❌ سشن {phone} ذخیره نشد — اکانت اضافه نشد", flush=True)
+            return False, (
+                "ورود به تلگرام موفق بود ولی فایل سشن ذخیره نشد. "
+                "لطفاً دوباره تلاش کن."
+            ), None
+
+        try:
+            with open(dst, "rb") as fh:
+                db.save_session_blob(phone, fh.read())
+        except Exception as e:
+            print(f"⚠️ بکاپ سشن {phone}: {e}", flush=True)
 
         async with _lock:
             _pending.pop(phone, None)
 
-        print(f"✅ اکانت {phone} ({name}) از مینی‌اپ اضافه شد", flush=True)
+        print(f"✅ اکانت {phone} ({name}) از مینی‌اپ اضافه شد "
+              f"(سشن: {os.path.getsize(dst)} بایت)", flush=True)
         return True, f"اکانت «{name}» ({phone}) با موفقیت اضافه شد.", None
 
     except Exception as e:
