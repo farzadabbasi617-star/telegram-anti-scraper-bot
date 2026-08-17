@@ -8614,60 +8614,29 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     member_queue.task_done()
                     continue
 
-                # 🎯 فیلتر پرایوسی درون‌خطی (۱.۸.۲)
+                # 🚫 فیلتر پرایوسی درون‌خطی حذف شد (۱.۹.۵)
                 #
-                # پیش‌فیلتر دسته‌ای به یک اتصال جداگانه (probe) نیاز دارد
-                # که ممکن است باز نشود. این لایه به آن وابسته نیست: خودِ
-                # ورکر که already وصل است، با یک get_users سبک وضعیت
-                # کاربر را می‌گیرد و اگر پرایوسی‌بسته بود، **بدون
-                # فرستادن دعوت** ردش می‌کند.
+                # مالک: «هرچی فیلتر، هرچی اضافه‌کاری، هرچی محدودیت هست
+                # رو بردار و تمرکز رو روی ادد حداکثری بذار.»
                 #
-                # چرا مهم است: هر دعوتِ بی‌نتیجه اکانت را به PEER_FLOOD
-                # نزدیک‌تر می‌کند. get_users بسیار ارزان‌تر از
-                # InviteToChannel است.
-                try:
-                    from add_engine import _is_unaddable_user as _iu
-                    # ⚠️ get_users آی‌دی/یوزرنیم می‌خواهد، نه آبجکت peer.
-                    # پاس دادن user_peer → TypeError: not iterable
-                    # (در پروداکشن دیده شد و فیلتر را کامل بی‌اثر کرد).
-                    _u = await client.get_users(int(uid))
-                    _bad, _why = _iu(_u)
-                    if _bad:
-                        total_skipped += 1
-                        try:
-                            blocked_ids.add(int(uid))
-                        except Exception:
-                            pass
-                        reason = "privacy" if "پرایوسی" in _why else (
-                            "stale" if "رهاشده" in _why else "invalid"
-                        )
-                        try:
-                            never_add_again(uid, reason)
-                        except Exception:
-                            pass
-                        print(f"🎯 [{phone}] {uid} رد شد: {_why}", flush=True)
-                        member_queue.task_done()
-                        # ⚡ بدون تأخیر.
-                        #
-                        # قبلاً اینجا ۳ ثانیه صبر می‌شد. با صفی که ~۹۷٪ آن
-                        # پرایوسی‌بسته است یعنی ساعت‌ها خواب محض: ۹۷۰۰ کاربرِ
-                        # ردشدنی × ۳ ثانیه ≈ ۸ ساعت فقط انتظار، بدون حتی یک
-                        # ادد. get_users هم سبک است و هم PEER_FLOOD نمی‌آورد
-                        # (آن مخصوص دعوت است)، پس رد کردن باید فوری باشد.
-                        # اگر توقف خواسته شده، همان‌جا خارج شو.
-                        if stop_event.is_set():
-                            break
-                        continue
-                except Exception as _ce:
-                    # اگر بررسی نشد، محافظه‌کارانه ادامه بده — ولی
-                    # ساکت نباش. یک بار این بلوک بی‌صدا شکست خورد و
-                    # ساعت‌ها فکر کردیم فیلتر کار می‌کند.
-                    if _skips_in_row < 2:
-                        print(
-                            f"⚠️ [{phone}] بررسی پرایوسی نشد "
-                            f"({type(_ce).__name__}: {str(_ce)[:70]})",
-                            flush=True,
-                        )
+                # داده‌ی پروداکشن حق را به او داد — در یک ساعت با ۸ اکانت:
+                #     ۱۳۹ رد پرایوسی  در برابر  ۹ ادد موفق
+                #
+                # ⚠️ چرا این فیلتر اساساً غلط بود: بر اساس `user.status`
+                # تصمیم می‌گرفت، یعنی «آخرین بازدید مخفی است». ولی در
+                # تلگرام «Last Seen & Online» و «Who can add me to groups»
+                # دو تنظیم کاملاً جدا هستند. میلیون‌ها نفر آخرین بازدید را
+                # مخفی می‌کنند و همچنان به‌راحتی به گروه اضافه می‌شوند.
+                # ما داشتیم بر اساس یک حدسِ نامرتبط ۹۴٪ صف را دور
+                # می‌ریختیم — و بدتر: با never_add_again(uid,"privacy")
+                # آن‌ها را *برای همیشه* از صف بیرون می‌انداختیم
+                # (۳۵۵ نفر تا این لحظه).
+                #
+                # مقایسه: ۱۰ آگوست بدون هیچ فیلتری ۷۰۵ ادد در روز.
+                #
+                # حالا تنها داورِ «قابل ادد بودن»، خودِ تلگرام است: دعوت
+                # را می‌فرستیم و اگر UserPrivacyRestricted داد، همان پاسخ
+                # قطعی و رایگان است — نه حدس ما.
 
                 try:
                     # 🚫 AddContact حذف شد (۱.۷.۰).
@@ -8802,7 +8771,14 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     print(f"✅ [{phone}] Invited {display_user}! (Acc Total: {already_added + acc_added}/100, Global Added: {total_added})", flush=True)
 
                     # 🧠 وقفه انسانی با نویز تصادفی + استراحت دوره‌ای (ضد بن شدن اکانت‌ها)
-                    if acc_added > 0 and acc_added % random.randint(*ADDS_BEFORE_BREAK) == 0:
+                    # ⚠️ در حالت max استراحت دوره‌ای اعمال نمی‌شود — تنها
+                    # ترمز، خودِ تلگرام است.
+                    import config as _cfg
+                    _periodic_break_on = add_mode not in getattr(
+                        _cfg, "NO_PERIODIC_BREAK_MODES", frozenset()
+                    )
+                    if _periodic_break_on and acc_added > 0 and \
+                            acc_added % random.randint(*ADDS_BEFORE_BREAK) == 0:
                         brk = human_break_seconds(add_mode)
                         print(f"☕ [{phone}] استراحت انسانی {brk}s بعد از {acc_added} اد...", flush=True)
                         try:

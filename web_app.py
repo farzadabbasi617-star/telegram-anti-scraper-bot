@@ -1389,6 +1389,10 @@ MINI_APP_HTML = """<!DOCTYPE html>
 
                 <div>
                     <label class="block text-xs text-slate-300 mb-1.5">انتخاب سرعت و مود ادد:</label>
+                    <button onclick="setParallelSpeed('max')" id="speed-max"
+                            class="w-full mb-2 p-2.5 bg-rose-600/30 border border-rose-500 text-rose-200 text-xs font-black rounded-xl text-center">
+                        🔥 حداکثری — بدون فیلتر، بدون استراحت
+                    </button>
                     <div class="grid grid-cols-3 gap-2">
                         <button onclick="setParallelSpeed('safe')" id="speed-safe" class="p-2 bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold rounded-xl text-center hover:border-blue-500">
                             🐌 Safe
@@ -1624,7 +1628,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
             tg.expand();
         }
 
-        let selectedParallelSpeed = 'ultra';
+        let selectedParallelSpeed = 'max';
         let activeTab = 'dashboard';
         let currentCrmStatus = 'all';
 
@@ -1670,12 +1674,19 @@ MINI_APP_HTML = """<!DOCTYPE html>
             selectedParallelSpeed = speed;
             ['safe', 'fast', 'ultra'].forEach(s => {
                 const btn = document.getElementById('speed-' + s);
+                if (!btn) return;
                 if (s === speed) {
                     btn.className = "p-2 bg-emerald-600/30 border border-emerald-500 text-emerald-300 text-xs font-bold rounded-xl text-center";
                 } else {
                     btn.className = "p-2 bg-slate-800 border border-slate-700 text-slate-300 text-xs font-bold rounded-xl text-center hover:border-blue-500";
                 }
             });
+            const mx = document.getElementById('speed-max');
+            if (mx) {
+                mx.className = (speed === 'max')
+                    ? "w-full mb-2 p-2.5 bg-rose-600/30 border border-rose-500 text-rose-200 text-xs font-black rounded-xl text-center"
+                    : "w-full mb-2 p-2.5 bg-slate-800 border border-slate-700 text-slate-300 text-xs font-black rounded-xl text-center hover:border-rose-500";
+            }
         }
 
         function setLeadPreset(query) {

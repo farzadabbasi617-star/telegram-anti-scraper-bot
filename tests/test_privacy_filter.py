@@ -298,43 +298,10 @@ def _worker_loop():
     return body[body.index("while not member_queue.empty()"):]
 
 
-def test_inline_privacy_check_exists():
-    """
-    🚨 پیش‌فیلتر دسته‌ای به اتصال جداگانه (probe) نیاز دارد که در
-    پروداکشن باز نشد — لاگ پر از «socket.send() raised exception» بود
-    و صفر خط prefilter داشتیم.
-
-    پس ورکر باید فیلتر مستقل خودش را داشته باشد.
-    """
-    loop = _worker_loop()
-    assert "_is_unaddable_user" in loop, (
-        "ورکر باید مستقل از probe هم پرایوسی را بررسی کند"
-    )
-    assert "await client.get_users(" in loop
 
 
-def test_inline_check_runs_before_invite():
-    """بررسی باید قبل از دعوت باشد، وگرنه فایده‌ای ندارد."""
-    loop = _worker_loop()
-    check = loop.index("_is_unaddable_user")
-    invite = loop.index("InviteToChannel(")
-    assert check < invite, "بررسی پرایوسی باید قبل از InviteToChannel باشد"
 
 
-def test_inline_check_blocks_future_retries():
-    loop = _worker_loop()
-    i = loop.index("_is_unaddable_user")
-    window = loop[i:i + 1400]
-    assert "blocked_ids.add(" in window
-    assert "never_add_again(" in window
-
-
-def test_inline_check_failure_is_non_fatal():
-    """اگر get_users شکست خورد، نباید ادد را متوقف کند."""
-    loop = _worker_loop()
-    i = loop.index("_is_unaddable_user")
-    window = loop[i:i + 1800]
-    assert "except Exception:" in window
 
 
 def test_probe_failure_is_logged():
@@ -346,18 +313,26 @@ def test_probe_failure_is_logged():
     assert "probe برای" in src, "شکست probe باید لاگ شود"
 
 
-def test_inline_check_passes_user_id_not_peer():
-    """
-    🚨 باگ پروداکشن: `get_users(user_peer)` می‌داد و همیشه
-    `TypeError: 'InputPeerUser' object is not iterable` می‌گرفت —
-    فیلتر کاملاً بی‌اثر بود و بی‌صدا رد می‌شد.
+def test_inline_privacy_filter_removed():
+    """🔄 قرارداد معکوس شد (۱.۹.۵).
 
-    get_users آی‌دی یا یوزرنیم می‌خواهد، نه آبجکت peer.
+    این فایل قبلاً ۵ تست داشت که *وجود* فیلتر پرایوسی درون‌خطی را
+    الزامی می‌کردند. آن فیلتر حذف شد و این تست جایشان را گرفت.
+
+    چرا: لاگ پروداکشن، یک ساعت با ۸ اکانت ⇒ ۱۳۹ رد پرایوسی، ۹ ادد.
+    فیلتر بر اساس `user.status` («آخرین بازدید مخفی») حدس می‌زد، ولی
+    در تلگرام «Last Seen» و «Who can add me to groups» دو تنظیم جدا
+    هستند. ۹۴٪ صف بر اساس سیگنالی نامرتبط دور ریخته می‌شد — و با
+    never_add_again برای همیشه (۳۵۵ نفر).
+
+    مالک: «هرچی فیلتر، هرچی اضافه‌کاری، هرچی محدودیت هست رو بردار.»
+
+    حالا تنها داور، پاسخ خود تلگرام به دعوت است.
     """
     loop = _worker_loop()
-    i = loop.index("_is_unaddable_user")
-    window = loop[max(0, i - 600):i + 400]
-    assert "get_users(user_peer)" not in window, (
-        "get_users نباید آبجکت peer بگیرد — TypeError می‌دهد"
+    assert "_is_unaddable_user" not in loop, (
+        "فیلتر حدسی نباید برگردد — تلگرام خودش داوری می‌کند"
     )
-    assert "get_users(int(uid))" in window
+    assert "await client.get_users(" not in loop, (
+        "get_users یک درخواست است که به ادد تبدیل نمی‌شود"
+    )

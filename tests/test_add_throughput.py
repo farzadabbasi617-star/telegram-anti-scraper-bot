@@ -65,10 +65,14 @@ def test_invite_result_still_checked():
     )
 
 
-def test_single_get_users_per_member():
-    """فیلتر درون‌خطی باید دقیقاً یک بار صدا زده شود."""
+def test_no_get_users_per_member():
+    """🔄 به‌روزشده (۱.۹.۵): فیلتر درون‌خطی کلاً حذف شد.
+
+    قبلاً «دقیقاً ۱ بار» الزام بود. حالا صفر است چون فیلتر بر اساس
+    last-seen حدس می‌زد و ۹۴٪ صف را دور می‌ریخت.
+    """
     n = len(re.findall(r"await client\.get_users\(", WORKER_CODE))
-    assert n == 1, f"انتظار ۱ فراخوانی get_users، یافت شد {n}"
+    assert n == 0, f"انتظار ۰ فراخوانی get_users، یافت شد {n}"
 
 
 def test_single_invite_call_per_member():
@@ -81,7 +85,7 @@ def test_no_add_contact():
     assert "AddContact(" not in WORKER_CODE
 
 
-def test_total_budget_per_addable_user_is_two():
+def test_total_budget_per_addable_user_is_one():
     """قرارداد صریح: کاربر قابل‌ادد حداکثر ۲ درخواست."""
     budget = (
         len(re.findall(r"await client\.get_users\(", WORKER_CODE))
@@ -89,9 +93,10 @@ def test_total_budget_per_addable_user_is_two():
         + len(re.findall(r"await confirm_joined\(", WORKER_CODE))
         + len(re.findall(r"AddContact\(", WORKER_CODE))
     )
-    assert budget <= 2, (
-        f"بودجه‌ی هر کاربر {budget} درخواست است. سقف ۲ است — هر افزایشی "
-        "مستقیماً نرخ ادد را پایین و احتمال PEER_FLOOD را بالا می‌برد."
+    assert budget <= 1, (
+        f"بودجه‌ی هر کاربر {budget} درخواست است. سقف ۱ است — همان چیزی که "
+        "در ۱۰ آگوست ۷۰۵ ادد داد. هر افزایشی مستقیماً نرخ ادد را پایین و "
+        "احتمال PEER_FLOOD را بالا می‌برد."
     )
 
 
@@ -109,14 +114,14 @@ def test_no_fixed_delay_after_privacy_skip():
     )
 
 
-def test_skip_path_still_honors_stop():
-    """حذف تأخیر نباید دکمه‌ی توقف را بی‌اثر کند."""
-    m = re.search(
-        r'never_add_again\(uid, reason\).*?continue', WORKER_CODE, re.S
-    )
-    assert m, "مسیر رد پرایوسی پیدا نشد"
-    assert "stop_event.is_set()" in m.group(0), (
-        "مسیر رد باید توقف کاربر را بررسی کند"
+def test_stop_button_still_works():
+    """🔄 به‌روزشده (۱.۹.۵): مسیر رد پرایوسی دیگر وجود ندارد.
+
+    ولی دکمه‌ی توقف باید در مسیرهای باقی‌مانده محترم بماند.
+    """
+    assert "stop_event" in WORKER_CODE, "ورکر باید به رویداد توقف گوش بدهد"
+    assert re.search(r"wait_for\(\s*stop_event\.wait\(\)", WORKER_CODE), (
+        "توقف باید حین انتظار هم اثر کند"
     )
 
 

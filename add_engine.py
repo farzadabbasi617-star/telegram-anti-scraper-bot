@@ -22,9 +22,16 @@ logger = logging.getLogger("antiscraper.add_engine")
 # -----------------------------------------------------------------
 
 def human_delay(add_mode="fast"):
-    """تاخیر شبیه‌سازی‌شده به رفتار انسان — با نویز تصادفی و مکث‌های گاه‌به‌گاه."""
+    """تاخیر شبیه‌سازی‌شده به رفتار انسان — با نویز تصادفی و مکث‌های گاه‌به‌گاه.
+
+    ⚠️ در حالت «max» هیچ jitter اعمال نمی‌شود. jitter می‌توانست تأخیر را
+    تا ۲.۸ برابر کند (۸ ثانیه ⇒ ۲۲ ثانیه) که با هدف «ادد حداکثری»
+    در تضاد است.
+    """
     lo, hi = config.DELAY_RANGES.get(add_mode, config.DELAY_RANGES["fast"])
     base = random.uniform(lo, hi)
+    if add_mode in getattr(config, "NO_JITTER_MODES", frozenset()):
+        return base
     # بعضی وقت‌ها مثل یک انسان واقعی بیشتر صبر می‌کند (چک کردن گوشی، حرف زدن و...)
     if random.random() < config.HUMAN_JITTER_CHANCE:
         base *= random.uniform(*config.HUMAN_JITTER_FACTOR)

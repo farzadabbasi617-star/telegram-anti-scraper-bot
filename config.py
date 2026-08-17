@@ -69,6 +69,9 @@ SESSION_ENCRYPTION_KEY = os.environ.get("SESSION_ENCRYPTION_KEY", "")
 # نشود؛ عملاً تلگرام خیلی زودتر جلو را می‌گیرد.
 MAX_ADD_PER_ACCOUNT = _int("MAX_ADD_PER_ACCOUNT", 1000)
 MODE_DAILY_CAP = {
+    # ⚠️ اگر کلید حالت اینجا نباشد، bot.py به پیش‌فرض ۱۰۰ می‌افتد و
+    # حالت «حداکثری» عملاً روی ۱۰۰ ادد قفل می‌شود — دقیقاً برعکس هدف.
+    "max": _int("CAP_MAX", 100000),
     "ultra": _int("CAP_ULTRA", 1000),
     "fast": _int("CAP_FAST", 1000),
     "safe": _int("CAP_SAFE", 1000),
@@ -87,6 +90,7 @@ WARMUP_ENABLED = _bool("WARMUP_ENABLED", False)
 # این تنها «کندسازی» باقی‌مانده است و خیلی کم نگه داشته شده — فقط
 # برای اینکه ۸ اکانت در یک میلی‌ثانیه به یک گروه هجوم نبرند.
 STAGGER_START = {
+    "max": (0, 0),      # همه اکانت‌ها هم‌زمان شروع کنند
     "ultra": (0, 2),
     "fast": (0, 4),
     "safe": (0, 8),
@@ -103,18 +107,28 @@ STAGGER_START = {
 # fast : تعادل
 # safe : برای اکانت‌های نو یا وقتی مکرر PEER_FLOOD می‌گیریم
 DELAY_RANGES = {
+    # 🔥 حداکثری — مالک: «فشرده و سرعتی با تمام ظرفیت. ما که محدودیت
+    # می‌خوریم، حداقل بن نشیم.» تأخیر تقریباً صفر؛ تنها ترمز، خودِ
+    # تلگرام است (PEER_FLOOD / FloodWait) که همچنان محترم شمرده می‌شود.
+    "max": (1, 3),
     "ultra": (8, 18),
     "fast": (25, 60),
     "safe": (60, 140),
 }
 # بازه استراحت انسانی بین دسته‌های ادد (ثانیه)
 BREAK_RANGES = {
+    "max": (5, 12),
     "ultra": (60, 150),
     "fast": (120, 300),
     "safe": (240, 600),
 }
 # بعد از هر چند ادد، استراحت کن (بازه تصادفی)
 ADDS_BEFORE_BREAK = (6, 10)
+
+# ⚠️ در حالت max هیچ jitter و استراحت دوره‌ای اعمال نمی‌شود.
+# jitter می‌توانست تأخیر را تا ۲.۸ برابر کند — در حالت حداکثری بی‌معناست.
+NO_JITTER_MODES = frozenset({"max"})
+NO_PERIODIC_BREAK_MODES = frozenset({"max"})
 
 HUMAN_JITTER_CHANCE = 0.15     # احتمال تاخیر طولانی‌تر شبیه انسان واقعی
 HUMAN_JITTER_FACTOR = (1.6, 2.8)
@@ -136,7 +150,7 @@ LOG_BACKUP_COUNT = _int("LOG_BACKUP_COUNT", 5)
 # -----------------------------------------------------------------
 # App meta
 # -----------------------------------------------------------------
-APP_VERSION = "1.9.4"
+APP_VERSION = "1.9.5"
 APP_NAME = "Telegram Anti-Scraper Bot (@HaghBaKieBot)"
 
 
