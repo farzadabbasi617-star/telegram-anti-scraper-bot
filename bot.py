@@ -8300,13 +8300,22 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     invalidate_blocked_cache()
     blocked_ids = get_blocked_ids_cached()
 
-    # 🎯 پیش‌فیلتر پرایوسی (۱.۸.۱)
+    # 🎯 پیش‌فیلتر پرایوسی (۱.۸.۱) — غیرفعال به‌صورت پیش‌فرض (۱.۹.۴)
     #
     # ⚠️ این‌جا انجام می‌شود، نه در فراخوان‌ها. مسیر مینی‌اپ
     # (`web_app.trigger_parallel_add`) مستقیم همین تابع را صدا می‌زند و
     # پیش‌فیلترِ داخل هندلر ربات را دور می‌زد — یعنی فیلتر پرایوسی
     # عملاً هرگز اجرا نمی‌شد و همان «۹ دعوت، صفر عضویت» تکرار می‌شد.
-    if members and len(accs) > 0:
+    #
+    # 🔻 چرا حالا خاموش است: این لایه با فیلتر درون‌خطیِ داخل ورکر
+    # هم‌پوشانی کامل دارد — هر دو `get_users` می‌زنند و همان کاربرها را
+    # رد می‌کنند. اجرای هر دو یعنی دو برابر درخواست برای یک نتیجه.
+    # در اجرای ۱۶ آگوست، ۲۲ دسته پیش‌فیلتر پیش از اولین ادد سوخت و
+    # اکانت‌ها با صفر ادد به PEER_FLOOD رسیدند. فیلتر درون‌خطی همان کار
+    # را انجام می‌دهد ولی فقط برای کاربری که واقعاً نوبتش شده.
+    # با PREFILTER_ENABLED=1 می‌توان دوباره روشنش کرد.
+    _prefilter_on = str(os.environ.get("PREFILTER_ENABLED", "0")).strip().lower() in ("1", "true", "yes")
+    if _prefilter_on and members and len(accs) > 0:
         try:
             from add_engine import prefilter_unaddable, format_prefilter_report
             _probe_phone = next(iter(accs.keys()))
@@ -8638,13 +8647,16 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                             pass
                         print(f"🎯 [{phone}] {uid} رد شد: {_why}", flush=True)
                         member_queue.task_done()
-                        # get_users هم یک درخواست است ولی خیلی سبک‌تر از
-                        # دعوت — تأخیر کوتاه‌تری کافی است.
-                        try:
-                            await asyncio.wait_for(stop_event.wait(), timeout=3.0)
+                        # ⚡ بدون تأخیر.
+                        #
+                        # قبلاً اینجا ۳ ثانیه صبر می‌شد. با صفی که ~۹۷٪ آن
+                        # پرایوسی‌بسته است یعنی ساعت‌ها خواب محض: ۹۷۰۰ کاربرِ
+                        # ردشدنی × ۳ ثانیه ≈ ۸ ساعت فقط انتظار، بدون حتی یک
+                        # ادد. get_users هم سبک است و هم PEER_FLOOD نمی‌آورد
+                        # (آن مخصوص دعوت است)، پس رد کردن باید فوری باشد.
+                        # اگر توقف خواسته شده، همان‌جا خارج شو.
+                        if stop_event.is_set():
                             break
-                        except asyncio.TimeoutError:
-                            pass
                         continue
                 except Exception as _ce:
                     # اگر بررسی نشد، محافظه‌کارانه ادامه بده — ولی
@@ -8665,7 +8677,19 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
                     # حذفش یعنی ۳۳٪ درخواست کمتر به ازای هر کاربر.
                     invite_res = await client.invoke(InviteToChannel(channel=target_peer, users=[user_peer]))
 
-                    if invite_did_not_join(invite_res, uid) or not await confirm_joined(client, dest_gid, uid):
+                    # ⚡ تأیید عضویت فقط از پاسخ خودِ دعوت خوانده می‌شود.
+                    #
+                    # قبلاً بعد از هر دعوت، confirm_joined() تا ۲ فراخوانی
+                    # get_chat_member اضافه می‌زد. با فیلتر درون‌خطی که
+                    # پیش‌تر get_users را هم صدا می‌زند، هزینه‌ی هر کاربر
+                    # به ۴ درخواست رسید — چهار برابر ۱۰ آگوست که ۷۰۵ ادد
+                    # موفق داشتیم. بودجه‌ی نرخ تلگرام ثابت است، پس چهار
+                    # برابر شدن هزینه یعنی چهار برابر کمتر ادد و رسیدن
+                    # سریع‌تر به PEER_FLOOD.
+                    #
+                    # missing_invitees که خود تلگرام در پاسخ InviteToChannel
+                    # برمی‌گرداند برای تشخیص «اضافه نشد» کافی است و رایگان.
+                    if invite_did_not_join(invite_res, uid):
                         total_skipped += 1
                         # دوباره تلاش نکن — نتیجه‌اش همین می‌شود.
                         # ⚠️ باید در دیتابیس هم ثبت شود، نه فقط حافظه:
