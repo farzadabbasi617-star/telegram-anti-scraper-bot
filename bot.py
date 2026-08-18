@@ -8376,8 +8376,26 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
     #  بود حذف شد چون در مسیر مینی‌اپ کرش می‌کرد.)
 
     # Shared queue of members to add — یوزرنیم‌دارها اول
+    # 🔀 شافل برای max: هر استارت ۸ نفر تکراری نیاد — کیفیت + سرعت
+    # prefer_addable سورت می‌کند (یوزرنیم اول) ولی ترتیب ثابت می‌ماند
+    # و هر بار همون ۸ نفر بدِ اول صف تکرار می‌شدند.
+    members_sorted = prefer_addable_members(members)
+    # فقط یوزرنیم/شماره‌دارها (ID-only از قبل حذف شده) — کیفیت بالا
+    # برای max به صورت رندوم از کل مخزن نمونه‌برداری تا کاربر تازه بیاید
+    if add_mode == "max" and len(members_sorted) > 800:
+        import random as _rnd2
+        # ۸۰۰ نفر برتر را شافل کن تا هم کیفیت بماند هم تنوع
+        _head = members_sorted[:800]
+        _rnd2.shuffle(_head)
+        # بقیه هم شافل جدا تا صف یکنواخت نباشد
+        _tail = members_sorted[800:]
+        _rnd2.shuffle(_tail)
+        members_sorted = _head + _tail
+    elif add_mode == "max":
+        import random as _rnd2
+        _rnd2.shuffle(members_sorted)
     member_queue = asyncio.Queue()
-    for m in prefer_addable_members(members):
+    for m in members_sorted:
         member_queue.put_nowait(m)
 
     total_added = 0

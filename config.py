@@ -141,10 +141,10 @@ HUMAN_JITTER_FACTOR = (1.6, 2.8)
 # همه را PEER_FLOOD می‌کند. تأخیر per-account کافی نیست؛ باید یک
 # throttle سراسری روی خودِ گروه باشد تا دعوت‌ها پخش شوند.
 GLOBAL_THROTTLE_INTERVAL = {
-    "max": (0.9, 1.6),
-    "ultra": (1.6, 2.4),
-    "fast": (2.8, 4.0),
-    "safe": (4.5, 6.5),
+    "max": (0.6, 1.0),
+    "ultra": (1.4, 2.2),
+    "fast": (2.5, 3.8),
+    "safe": (4.0, 6.0),
 }
 GLOBAL_THROTTLE_ENABLED = _bool("GLOBAL_THROTTLE_ENABLED", True)
 
@@ -165,7 +165,7 @@ LOG_BACKUP_COUNT = _int("LOG_BACKUP_COUNT", 5)
 # -----------------------------------------------------------------
 # App meta
 # -----------------------------------------------------------------
-APP_VERSION = "1.9.6"
+APP_VERSION = "1.9.7"
 APP_NAME = "Telegram Anti-Scraper Bot (@HaghBaKieBot)"
 
 

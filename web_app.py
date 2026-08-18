@@ -178,14 +178,41 @@ def get_dashboard_dict():
         healthy_count = 0
         limited_count = 0
         today_total_adds = 0
-        
+        # 🟢 یکدست‌سازی با تب اکانت‌ها — فقط محدودیت واقعی تلگرام + سشن + بیزی
+        # قبلاً داشبورد فقط db.status را می‌شمرد و probe/busy را نادیده می‌گرفت → عدد قاطی
+        try:
+            import account_state as _as
+            from account_doctor import load_probe_results as _lpr
+            _probes = _lpr()
+        except Exception:
+            _as = None
+            _probes = {}
         for phone in accounts:
             st = db.get_account_status(phone)
-            status_str = st.get("status", "healthy")
             today_total_adds += st.get("added", 0)
-            if status_str == "limited":
+            # busy → نه سالم نه محدود
+            if _as and _as.busy_label(phone):
+                continue
+            if st.get("status") == "limited":
                 limited_count += 1
-            elif status_str == "healthy":
+                continue
+            # probe قدیمی/خراب → سالم نیست
+            pr = (_probes or {}).get(phone) or {}
+            if pr.get("ok") is False:
+                # اگر سشن جدیدتر از probe است، نادیده بگیر (مثل get_accounts_dict)
+                try:
+                    import os as _os
+                    from attacker import SESSIONS_DIR as _SD, safe_phone_filename as _sf
+                    _sp = _os.path.join(_SD, f"acc_{_sf(phone)}.session")
+                    if _os.path.exists(_sp) and _os.path.getsize(_sp) > 100:
+                        _pts = int(pr.get("ts") or 0)
+                        if _os.path.getmtime(_sp) > _pts:
+                            healthy_count += 1
+                            continue
+                except Exception:
+                    pass
+                continue
+            if st.get("status") == "healthy":
                 healthy_count += 1
                 
         cfg = db.get_config()
