@@ -937,18 +937,25 @@ def trigger_single_live_add(phone, source_ref, add_mode="max", scrape_phone=None
         accs = db.load_accounts()
         if phone not in accs:
             return False, "اکانت ادد پیدا نشد"
-        scrape_phone = (scrape_phone or "989913928426").strip().replace("+","")
-        # normalize scrape_phone to full format
-        if not scrape_phone.startswith("989"):
-            # try to find by phone
-            for p in accs:
-                if scrape_phone in p:
-                    scrape_phone = p
+        # normalize phones to +989... format
+        def _norm(p):
+            p = str(p or "").strip().replace(" ","").replace("-","")
+            if p.startswith("989") and not p.startswith("+"):
+                p = "+"+p
+            if p.startswith("00989"):
+                p = "+"+p[2:]
+            return p
+        scrape_phone = _norm(scrape_phone or "989913928426")
+        phone = _norm(phone)
+        if scrape_phone not in accs:
+            # try without + 
+            alt = scrape_phone.lstrip("+")
+            for k in accs:
+                if k.lstrip("+") == alt:
+                    scrape_phone = k
                     break
         if scrape_phone not in accs:
-            # fallback to phone if scrape not found
             scrape_phone = phone
-        # ensure scrape account exists
         if scrape_phone not in accs:
             return False, f"اکانت اسکرپ {scrape_phone} پیدا نشد"
         if atk_state_ref is not None:
@@ -972,9 +979,20 @@ def trigger_single_live_add(phone, source_ref, add_mode="max", scrape_phone=None
             ok_b, owner = _as.mark_busy(phone, "اسکرپ زنده+ادد تک")
             if not ok_b:
                 if atk_state_ref is not None:
-                    atk_state_ref["live_status_text"] = f"اکانت مشغول است ({owner})"
+                    atk_state_ref["live_status_text"] = f"اکانت ادد مشغول است ({owner})"
                     atk_state_ref["add_in_progress"] = False
                 return
+            # also lock scrape account if different
+            scrape_busy = False
+            if scrape_phone != phone:
+                ok_s, owner_s = _as.mark_busy(scrape_phone, "اسکرپ زنده")
+                if not ok_s:
+                    _as.release(phone)
+                    if atk_state_ref is not None:
+                        atk_state_ref["live_status_text"] = f"اکانت اسکرپ مشغول است ({owner_s})"
+                        atk_state_ref["add_in_progress"] = False
+                    return
+                scrape_busy = True
             scrape_client = None
             add_client = None
             client = None
