@@ -7772,7 +7772,8 @@ class _MsgWrapper:
 
 async def _execute_simple_add(q, target_gid, client, phone, members, source_name, add_mode="safe"):
     """Execute simple add flow with all advanced features"""
-    ok_b, owner = account_state.mark_busy(phone, "ادد تک")
+    # قفل نکن
+    ok_b = True
     if not ok_b:
         try:
             await q.message.edit_text(
@@ -7815,7 +7816,8 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
     
     limits = load_adder_limits()
     already_added = limits.get(phone, {}).get("added", 0)
-    remaining = MAX_ADD_PER_ACCOUNT - already_added
+    # فقط تاخیر — بدون سقف روزانه (طبق درخواست: محدودیت نذار)
+    remaining = len(members)  # تا ته ظرفیت لیست، نه سقف مصنوعی
     
     # Get target name
     try:
@@ -8408,15 +8410,14 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
         from pyrogram import Client
         from attacker import safe_phone_filename as spfn
 
-        ok_b, owner = account_state.mark_busy(phone, "ادد موازی")
-        if not ok_b:
-            print(f"⚠️ [{phone}] مشغول است ({owner}) — از ادد موازی کنار گذاشته شد", flush=True)
-            return
+        # فقط تاخیر — قفل نکن (طبق درخواست)
         try:
             await _worker_account_inner(phone, info)
         finally:
-            account_state.release(phone)
-            account_state.mark_used(phone)
+            try:
+                import account_state as _as2
+                _as2.mark_used(phone)
+            except: pass
 
     async def _worker_account_inner(phone, info):
         # ⚠️ _global_consecutive_fails بین همه ورکرها مشترک است. بدون
@@ -8450,28 +8451,8 @@ async def _execute_parallel_add(q, target_gid, accs, members, add_type, add_mode
         _skips_in_row = 0
         acc_limits = load_adder_limits()
         already_added = acc_limits.get(phone, {}).get("added", 0)
-        day_cap = MODE_DAILY_CAP.get(add_mode, 100)
-
-        # 🔥 گرم کردن اکانت: سقف بر اساس سابقه کل، نه فقط سقف روزانه.
-        # اکانت تازه با سقف ۱۰۰ مستقیم PEER_FLOOD می‌گیرد (درس ۱.۵.۸).
-        from add_engine import warmup_cap as _wcap, stagger_delay as _stag
-        try:
-            historical = db.count_added_by_account(phone)
-        except Exception:
-            historical = already_added
-        warm = _wcap(historical, day_cap)
-        max_for_this_acc = max(0, min(MAX_ADD_PER_ACCOUNT, day_cap, warm) - already_added)
-
-        if warm < day_cap:
-            print(
-                f"🔥 [{phone}] حالت گرم‌کردن: سقف {warm} "
-                f"(سابقه {historical} ادد)",
-                flush=True,
-            )
-
-        if max_for_this_acc <= 0:
-            print(f"⚠️ [{phone}] ظرفیت روزانه پر شد ({already_added}/{day_cap})", flush=True)
-            return
+        # فقط تاخیر — بدون سقف و بدون warmup (طبق درخواست)
+        max_for_this_acc = 100000  # عملاً نامحدود — تا ته لیست
 
         # ⏳ شروع پلکانی — اگر همه اکانت‌ها هم‌زمان شروع کنند، تلگرام
         # الگوی هماهنگ می‌بیند و همه را با هم محدود می‌کند.
