@@ -828,7 +828,7 @@ def trigger_scrape_group(chat_target):
         return False, str(e)
 
 
-def trigger_single_add(phone, add_type):
+def trigger_single_add(phone, add_type, add_mode="max"):
     """Trigger single account add from DB members to target group"""
     try:
         raw_users = db.get_users_by_source(limit=5000)
@@ -877,7 +877,7 @@ def trigger_single_add(phone, add_type):
             atk_state_ref["live_failed"] = 0
             atk_state_ref["live_skipped"] = 0
             atk_state_ref["live_total"] = len(filtered)
-            atk_state_ref["live_mode"] = "تک اکانت"
+            atk_state_ref["live_mode"] = f"تک ({add_mode})"
             atk_state_ref["live_last_user"] = "در حال اتصال به اکانت..."
             atk_state_ref["live_status_text"] = "🔄 در حال اتصال به اکانت..."
             atk_state_ref["_stop_requested"] = False
@@ -904,7 +904,7 @@ def trigger_single_add(phone, add_type):
                     device_fp=acc_info.get("device_fp")
                 )
                 await client.connect()
-                await _execute_simple_add(wrapper, target_gid, client, phone, filtered, "دیتابیس مینی‌اپ")
+                await _execute_simple_add(wrapper, target_gid, client, phone, filtered, "دیتابیس مینی‌اپ", add_mode)
             except Exception as e:
                 print(f"MiniApp single add error: {type(e).__name__}: {e}", flush=True)
                 if atk_state_ref is not None:
@@ -1394,9 +1394,20 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 </div>
 
                 <div>
+                    <label class="block text-xs text-slate-300 mb-1.5">سرعت ادد تک:</label>
+                    <div class="grid grid-cols-4 gap-1.5">
+                        <button onclick="setSingleSpeed('max')" id="single-speed-max" class="p-2 bg-rose-600/30 border border-rose-500 text-rose-200 text-[10px] font-black rounded-xl text-center">🔥 max</button>
+                        <button onclick="setSingleSpeed('ultra')" id="single-speed-ultra" class="p-2 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold rounded-xl text-center">ultra</button>
+                        <button onclick="setSingleSpeed('fast')" id="single-speed-fast" class="p-2 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold rounded-xl text-center">fast</button>
+                        <button onclick="setSingleSpeed('safe')" id="single-speed-safe" class="p-2 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold rounded-xl text-center">safe</button>
+                    </div>
+                    <div class="text-[10px] text-slate-500 mt-1">مثل موازی: max تا آخرین ظرفیت، بدون توقف اضافی</div>
+                </div>
+
+                <div>
                     <label class="block text-xs text-slate-300 mb-1.5">نوع مخاطبین دیتابیس:</label>
                     <select id="select-single-type" class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl p-2.5 outline-none">
-                        <option value="all">🌐 همه مخاطبین دیتابیس</option>
+                        <option value="all">🌐 همه (فقط یوزرنیم/شماره‌دار — ID خالی حذف میشه)</option>
                         <option value="phone">📱 فقط شماره‌دارها</option>
                         <option value="username">🏷️ فقط آیدی‌دارها (Username)</option>
                         <option value="id">🆔 فقط ID عددی</option>
@@ -1656,6 +1667,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
         }
 
         let selectedParallelSpeed = 'max';
+        let selectedSingleSpeed = 'max';
         let activeTab = 'dashboard';
         let currentCrmStatus = 'all';
 
@@ -1714,6 +1726,20 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     ? "w-full mb-2 p-2.5 bg-rose-600/30 border border-rose-500 text-rose-200 text-xs font-black rounded-xl text-center"
                     : "w-full mb-2 p-2.5 bg-slate-800 border border-slate-700 text-slate-300 text-xs font-black rounded-xl text-center hover:border-rose-500";
             }
+        }
+
+        function setSingleSpeed(speed) {
+            if (tg?.HapticFeedback) tg.HapticFeedback.selectionChanged();
+            selectedSingleSpeed = speed;
+            ['max','ultra','fast','safe'].forEach(s => {
+                const btn = document.getElementById('single-speed-'+s);
+                if (!btn) return;
+                if (s === speed) {
+                    btn.className = "p-2 bg-rose-600/30 border border-rose-500 text-rose-200 text-[10px] font-black rounded-xl text-center";
+                } else {
+                    btn.className = "p-2 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold rounded-xl text-center";
+                }
+            });
         }
 
         function setLeadPreset(query) {
@@ -1949,6 +1975,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
         async function startSingleAdd() {
             const account = document.getElementById('select-single-account').value;
             const addType = document.getElementById('select-single-type').value;
+            const addMode = selectedSingleSpeed || 'max';
 
             if (!account) {
                 alert('لطفاً یک اکانت انتخاب کنید.');
@@ -1962,7 +1989,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 const res = await fetch('/api/add/single', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ phone: account, add_type: addType })
+                    body: JSON.stringify({ phone: account, add_type: addType, mode: addMode })
                 });
                 const data = await res.json();
                 alert(data.message || (data.ok ? 'عملیات شروع شد' : data.error));
@@ -2711,7 +2738,8 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
             if path == '/api/add/single':
                 phone = post_data.get("phone", "")
                 add_type = post_data.get("add_type", "all")
-                ok, msg = trigger_single_add(phone, add_type)
+                add_mode = post_data.get("mode", "max")
+                ok, msg = trigger_single_add(phone, add_type, add_mode)
                 body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
             elif path == '/api/add/parallel':
                 add_mode = post_data.get("mode", "ultra")
@@ -2888,7 +2916,8 @@ def create_web_app(app_bot=None, atk_state=None):
                 data = await request.json()
                 phone = data.get("phone", "")
                 add_type = data.get("add_type", "all")
-                ok, msg = trigger_single_add(phone, add_type)
+                add_mode = data.get("mode", "max")
+                ok, msg = trigger_single_add(phone, add_type, add_mode)
                 return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
             except Exception as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)

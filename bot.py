@@ -1866,6 +1866,7 @@ async def _execute_parallel_direct_add(q):
     from pyrogram.errors import PeerIdInvalid
     
     async def add_worker(phone, user_ids):
+        nonlocal target_gid
         if not user_ids:
             return
         already = limits.get(phone, {}).get("added", 0)
@@ -7769,7 +7770,7 @@ class _MsgWrapper:
 
 
 
-async def _execute_simple_add(q, target_gid, client, phone, members, source_name):
+async def _execute_simple_add(q, target_gid, client, phone, members, source_name, add_mode="max"):
     """Execute simple add flow with all advanced features"""
     ok_b, owner = account_state.mark_busy(phone, "ادد تک")
     if not ok_b:
@@ -7781,13 +7782,13 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
             pass
         return
     try:
-        await _execute_simple_add_inner(q, target_gid, client, phone, members, source_name)
+        await _execute_simple_add_inner(q, target_gid, client, phone, members, source_name, add_mode)
     finally:
         account_state.release(phone)
         account_state.mark_used(phone)
 
 
-async def _execute_simple_add_inner(q, target_gid, client, phone, members, source_name):
+async def _execute_simple_add_inner(q, target_gid, client, phone, members, source_name, add_mode="max"):
     """بدنه واقعی ادد تک — قفل اشغال در لایه بیرونی گرفته می‌شود"""
     from pyrogram.raw.functions.channels import InviteToChannel
     from pyrogram.raw.functions.contacts import AddContact
@@ -7802,6 +7803,10 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
     skipped = 0
     errors_detail = {"peer": 0, "privacy": 0, "already": 0, "flood": 0, "channels": 0, "not_joined": 0, "other": 0}
     members = prefer_addable_members(members)
+    # 🔀 شافل برای max: مثل موازی، هر استارت کاربر تازه
+    if add_mode == "max":
+        import random as _rnd_single
+        _rnd_single.shuffle(members)
     first_error = ""
     account_limited = False
     account_banned = False
@@ -7816,12 +7821,6 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
     try:
         from add_engine import get_target_title as _gtt4, target_username_hint as _tuh4
         target_name = await _gtt4(client, target_gid, _tuh4(), "گروه مقصد")
-        if getattr(tgt, "id", None):
-            target_gid = tgt.id
-            try:
-                db.set_config(int(tgt.id), target_name or str(tgt.id), True)
-            except Exception:
-                pass
     except:
         target_name = "گروه مقصد"
     
@@ -7930,35 +7929,16 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
                 if not first_error: first_error = f"Can't resolve {uid} (no username)"
                 continue
             
-            # Add contact first (helps with adding) - only for first 3
-            if added < 3:
-                try:
-                    from pyrogram.raw.functions.contacts import AddContact
-                    try:
-                        await client.invoke(
-                            AddContact(
-                                id=user_peer,
-                                first_name=str(uid)[:30],
-                                last_name="",
-                                phone="",
-                                add_phone_privacy_exception=False
-                            )
-                        )
-                    except AttributeError:
-                        await client.app.invoke(
-                            AddContact(
-                                id=user_peer,
-                                first_name=str(uid)[:30],
-                                last_name="",
-                                phone="",
-                                add_phone_privacy_exception=False
-                            )
-                        )
-                    await asyncio.sleep(0.5)
-                except Exception:
-                    pass  # Contact might already exist
+            # 🌐 Global throttle — مثل موازی
+            try:
+                from add_engine import global_throttle as _gt_single
+                await _gt_single(add_mode)
+                if atk_state.get("_stop_requested"):
+                    break
+            except Exception:
+                pass
             
-            # InviteToChannel
+            # InviteToChannel (بدون AddContact — مثل موازی، ۱ درخواست)
             try:
                 invite_res = await client.invoke(
                     InviteToChannel(channel=target_peer, users=[user_peer])
@@ -7972,13 +7952,12 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
                 skipped += 1
                 errors_detail["not_joined"] += 1
                 print(f"⚠️ Invite missing_invitees: {uid} — counted as skipped", flush=True)
-                continue
-
-            actually_in = await confirm_joined(client, target_gid, uid)
-            if not actually_in:
-                skipped += 1
-                errors_detail["not_joined"] += 1
-                print(f"⚠️ Invite returned OK but {uid} is not a member — not counted as added", flush=True)
+                # مثل موازی: این هم یک درخواست کامل است → تأخیر لازم
+                try:
+                    from add_engine import global_throttle as _gt2
+                    await _gt2(add_mode)
+                except: pass
+                await asyncio.sleep(0.5)
                 continue
             
             added += 1
@@ -8002,10 +7981,10 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
                 atk_state_ref["live_current_account"] = phone
             
             # 🧠 وقفه انسانی با نویز تصادفی (ضد بن شدن اکانت)
-            delay = human_delay("fast")
+            delay = human_delay(add_mode)
             # هر چند اد یک استراحت انسانی کوتاه (شبیه رفتار کاربر واقعی)
             if added > 0 and added % random.randint(8, 12) == 0:
-                brk = human_break_seconds("fast")
+                brk = human_break_seconds(add_mode)
                 print(f"☕ استراحت انسانی {brk}s بعد از {added} اد...", flush=True)
                 try:
                     await prog.edit_text(f"☕ استراحت انسانی کوتاه ({brk} ثانیه)...\n✅ {added} | ⏭ {skipped} | ❌ {failed}")
