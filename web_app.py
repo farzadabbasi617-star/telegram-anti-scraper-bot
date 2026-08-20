@@ -923,7 +923,7 @@ def trigger_single_add(phone, add_type, add_mode="max"):
         return False, str(e)
 
 
-def trigger_single_live_add(phone, source_ref, add_mode="max"):
+def trigger_single_live_add(phone, source_ref, add_mode="max", scrape_phone=None):
     """اسکرپ زنده از یک گروه و ادد مستقیم تک‌اکانت تا ته ظرفیت — با تضمین never_add_again"""
     try:
         from add_engine import resolve_add_target
@@ -936,7 +936,21 @@ def trigger_single_live_add(phone, source_ref, add_mode="max"):
             return False, "یک عملیات دیگر در حال اجراست"
         accs = db.load_accounts()
         if phone not in accs:
-            return False, "اکانت انتخابی پیدا نشد"
+            return False, "اکانت ادد پیدا نشد"
+        scrape_phone = (scrape_phone or "989913928426").strip().replace("+","")
+        # normalize scrape_phone to full format
+        if not scrape_phone.startswith("989"):
+            # try to find by phone
+            for p in accs:
+                if scrape_phone in p:
+                    scrape_phone = p
+                    break
+        if scrape_phone not in accs:
+            # fallback to phone if scrape not found
+            scrape_phone = phone
+        # ensure scrape account exists
+        if scrape_phone not in accs:
+            return False, f"اکانت اسکرپ {scrape_phone} پیدا نشد"
         if atk_state_ref is not None:
             atk_state_ref["add_in_progress"] = True
             atk_state_ref["live_start_time"] = time.time()
@@ -961,20 +975,33 @@ def trigger_single_live_add(phone, source_ref, add_mode="max"):
                     atk_state_ref["live_status_text"] = f"اکانت مشغول است ({owner})"
                     atk_state_ref["add_in_progress"] = False
                 return
+            scrape_client = None
+            add_client = None
             client = None
             try:
-                acc_info = accs.get(phone, {})
+                scrape_info = accs.get(scrape_phone, {})
+                add_info = accs.get(phone, {})
                 try:
                     from account_doctor import ensure_session
-                    ensure_session(phone)
+                    ensure_session(scrape_phone)
+                    if phone != scrape_phone:
+                        ensure_session(phone)
                 except: pass
-                client = AdvancedScraper(session_name=os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}"), api_id=API_ID, api_hash=API_HASH, phone=phone, device_fp=acc_info.get("device_fp"))
-                await client.connect()
+                scrape_client = AdvancedScraper(session_name=os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(scrape_phone)}"), api_id=API_ID, api_hash=API_HASH, phone=scrape_phone, device_fp=scrape_info.get("device_fp"))
+                if phone == scrape_phone:
+                    add_client = scrape_client
+                    client = scrape_client
+                else:
+                    add_client = AdvancedScraper(session_name=os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}"), api_id=API_ID, api_hash=API_HASH, phone=phone, device_fp=add_info.get("device_fp"))
+                    client = add_client
+                await scrape_client.connect()
+                if add_client is not scrape_client:
+                    await add_client.connect()
                 # resolve source and target
                 from add_engine import resolve_target_for_account, target_username_hint
                 # source
                 try:
-                    src_chat = await client.app.get_chat(source)
+                    src_chat = await scrape_client.app.get_chat(source)
                     src_gid = src_chat.id
                     src_title = src_chat.title or str(source)
                 except Exception as e:
@@ -983,7 +1010,7 @@ def trigger_single_live_add(phone, source_ref, add_mode="max"):
                     return
                 # target
                 try:
-                    tgt_gid, tgt_peer, tgt_title = await resolve_target_for_account(client, target_gid, target_username_hint())
+                    tgt_gid, tgt_peer, tgt_title = await resolve_target_for_account(add_client, target_gid, target_username_hint())
                 except Exception as e:
                     if atk_state_ref is not None:
                         atk_state_ref["live_status_text"] = f"❌ گروه مقصد پیدا نشد: {e}"
@@ -1008,7 +1035,7 @@ def trigger_single_live_add(phone, source_ref, add_mode="max"):
                 if atk_state_ref is not None:
                     atk_state_ref["live_status_text"] = f"🔍 اسکرپ از {src_title} — تا {remaining} نفر"
                 # live scrape loop
-                async for member in client.app.get_chat_members(src_gid, limit=10000):
+                async for member in scrape_client.app.get_chat_members(src_gid, limit=10000):
                     if atk_state_ref is not None and atk_state_ref.get("_stop_requested"):
                         break
                     if added >= remaining:
@@ -1038,15 +1065,15 @@ def trigger_single_live_add(phone, source_ref, add_mode="max"):
                     except: pass
                     # resolve peer
                     try:
-                        peer = await client.app.resolve_peer(uid if not un else un.lstrip("@"))
+                        peer = await add_client.app.resolve_peer(uid if not un else un.lstrip("@"))
                     except:
-                        try: peer = await client.app.resolve_peer(uid)
+                        try: peer = await add_client.app.resolve_peer(uid)
                         except: 
                             skipped += 1
                             continue
                     # invite
                     try:
-                        inv = await client.app.invoke(InviteToChannel(channel=tgt_peer, users=[peer]))
+                        inv = await add_client.app.invoke(InviteToChannel(channel=tgt_peer, users=[peer]))
                         if invite_did_not_join(inv, uid):
                             skipped += 1
                             try: blocked.add(uid)
@@ -1114,9 +1141,17 @@ def trigger_single_live_add(phone, source_ref, add_mode="max"):
                 if atk_state_ref is not None:
                     atk_state_ref["live_status_text"] = f"❌ {type(e).__name__}: {str(e)[:120]}"
             finally:
-                try: await client.disconnect()
+                try:
+                    if scrape_client:
+                        await scrape_client.disconnect()
+                except: pass
+                try:
+                    if add_client and add_client is not scrape_client:
+                        await add_client.disconnect()
                 except: pass
                 _as.release(phone)
+                if scrape_phone != phone:
+                    _as.release(scrape_phone)
                 _as.mark_used(phone)
                 if atk_state_ref is not None:
                     st = atk_state_ref.get("live_start_time")
@@ -1631,6 +1666,15 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     <label class="block text-xs text-cyan-300 mb-1.5">📥 اسکرپ زنده و ادد مستقیم (بدون ذخیره در دیتابیس):</label>
                     <input type="text" id="single-live-source" dir="ltr" placeholder="https://t.me/source_group" class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl px-3 py-2.5 outline-none text-left">
                     <div class="text-[10px] text-slate-500 mt-1 leading-5">منبع: گروهی که همین الان می‌خوای ازش بکشی — مستقیم به گروه خودمون ادد میشه</div>
+                    <label class="block text-xs text-cyan-300 mt-2">اکانت اسکرپ (ثابت):</label>
+                    <select id="single-live-scrape-account" class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl p-2.5 outline-none">
+                        <option value="989913928426">در حال بارگذاری...</option>
+                    </select>
+                    <div class="text-[10px] text-slate-500">فقط با 09913928426 اسکرپ می‌زنه (طبق درخواستت)</div>
+                    <label class="block text-xs text-cyan-300 mt-2">اکانت ادد کننده (سالم):</label>
+                    <select id="single-live-add-account" class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl p-2.5 outline-none">
+                        <option value="">از بالا انتخاب کن...</option>
+                    </select>
                     <button onclick="startSingleLiveAdd()" id="btn-single-live" class="w-full mt-2.5 py-3 bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-xs font-black rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
                         📥 اسکرپ زنده + ادد مستقیم (تا ته ظرفیت)
                     </button>
@@ -2221,18 +2265,20 @@ MINI_APP_HTML = """<!DOCTYPE html>
         }
 
         async function startSingleLiveAdd() {
-            const account = document.getElementById('select-single-account').value;
+            const addAccount = document.getElementById('single-live-add-account').value || document.getElementById('select-single-account').value;
+            const scrapeAccount = document.getElementById('single-live-scrape-account').value || '989913928426';
             const source = document.getElementById('single-live-source').value.trim();
             const addMode = selectedSingleSpeed || 'max';
-            if (!account) { alert('اول اکانت رو انتخاب کن'); return; }
+            if (!addAccount) { alert('اول اکانت ادد کننده رو انتخاب کن'); return; }
+            if (!scrapeAccount) { alert('اکانت اسکرپ رو انتخاب کن'); return; }
             if (!source) { alert('لینک گروه مبدا رو وارد کن (https://t.me/...)'); return; }
-            if (!confirm(`اسکرپ زنده از \\n${source}\\nبا اکانت ${account} و ادد مستقیم تا ته ظرفیت (مود ${addMode})؟\\nکسایی که قبلاً ادد/لفت/پرایوسی بودن هرگز دوباره ادد نمی‌شن.`)) return;
+            if (!confirm(`اسکرپ زنده از \\n${source}\\nاسکرپ با ${scrapeAccount} → ادد با ${addAccount} (مود ${addMode})؟\\nکسایی که قبلاً ادد/لفت/پرایوسی بودن هرگز دوباره ادد نمی‌شن.`)) return;
             if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
             try {
                 const res = await fetch('/api/add/single/live', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ phone: account, source: source, mode: addMode })
+                    body: JSON.stringify({ phone: addAccount, scrape_phone: scrapeAccount, source: source, mode: addMode })
                 });
                 const data = await res.json();
                 alert(data.message || (data.ok ? 'شروع شد' : data.error));
@@ -2772,10 +2818,32 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 const data = await res.json();
                 if (data.ok) {
                     const sel = document.getElementById('select-single-account');
+                    const selLiveScrape = document.getElementById('single-live-scrape-account');
+                    const selLiveAdd = document.getElementById('single-live-add-account');
+                    const cap = window.__ADD_CAP || 1000;
                     sel.innerHTML = '';
+                    if (selLiveScrape) selLiveScrape.innerHTML = '';
+                    if (selLiveAdd) selLiveAdd.innerHTML = '<option value="">انتخاب اکانت ادد...</option>';
                     data.accounts.forEach(acc => {
-                        sel.innerHTML += `<option value="${acc.phone}">${acc.name} (${acc.phone}) — ${acc.added_today}/100 ادد</option>`;
+                        const label = `${acc.name} (${acc.phone}) — ${acc.added_today}/${cap}`;
+                        sel.innerHTML += `<option value="${acc.phone}">${label}</option>`;
+                        if (selLiveScrape) {
+                            const selOpt = `<option value="${acc.phone}" ${acc.phone.includes('989913928426') ? 'selected' : ''}>${label}${acc.phone.includes('989913928426') ? ' ⭐ اسکرپ ثابت' : ''}</option>`;
+                            selLiveScrape.innerHTML += selOpt;
+                        }
+                        if (selLiveAdd) {
+                            // فقط سالم‌ها برای ادد
+                            if (acc.status === 'healthy' || acc.status === 'unchecked' || acc.status === 'unused') {
+                                selLiveAdd.innerHTML += `<option value="${acc.phone}">${label} — ✅ سالم</option>`;
+                            } else {
+                                selLiveAdd.innerHTML += `<option value="${acc.phone}" disabled>${label} — ⛔ ${acc.status}</option>`;
+                            }
+                        }
                     });
+                    // اگر 09913928426 پیدا نشد، دستی اضافه کن
+                    if (selLiveScrape && !selLiveScrape.innerHTML.includes('989913928426')) {
+                        selLiveScrape.innerHTML = `<option value="989913928426" selected>Farzad (+989913928426) — 0/${cap} ⭐ اسکرپ ثابت</option>` + selLiveScrape.innerHTML;
+                    }
                     renderParallelAccounts(data.accounts || []);
                 }
             } catch (e) { console.error(e); }
@@ -2982,9 +3050,10 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
                 body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
             elif path == '/api/add/single/live':
                 phone = post_data.get("phone", "")
+                scrape_phone = post_data.get("scrape_phone", "989913928426")
                 source = post_data.get("source", "")
                 add_mode = post_data.get("mode", "max")
-                ok, msg = trigger_single_live_add(phone, source, add_mode)
+                ok, msg = trigger_single_live_add(phone, source, add_mode, scrape_phone)
                 body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
             elif path == '/api/add/parallel':
                 add_mode = post_data.get("mode", "ultra")
@@ -3171,9 +3240,10 @@ def create_web_app(app_bot=None, atk_state=None):
             try:
                 data = await request.json()
                 phone = data.get("phone", "")
+                scrape_phone = data.get("scrape_phone", "989913928426")
                 source = data.get("source", "")
                 add_mode = data.get("mode", "max")
-                ok, msg = trigger_single_live_add(phone, source, add_mode)
+                ok, msg = trigger_single_live_add(phone, source, add_mode, scrape_phone)
                 return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
             except Exception as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
