@@ -923,6 +923,213 @@ def trigger_single_add(phone, add_type, add_mode="max"):
         return False, str(e)
 
 
+def trigger_single_live_add(phone, source_ref, add_mode="max"):
+    """اسکرپ زنده از یک گروه و ادد مستقیم تک‌اکانت تا ته ظرفیت — با تضمین never_add_again"""
+    try:
+        from add_engine import resolve_add_target
+        cfg = db.get_config()
+        target_gid = resolve_add_target(cfg)
+        source = normalize_group_ref(source_ref)
+        if not source:
+            return False, "لینک گروه مبدا نامعتبره"
+        if atk_state_ref is not None and atk_state_ref.get("add_in_progress"):
+            return False, "یک عملیات دیگر در حال اجراست"
+        accs = db.load_accounts()
+        if phone not in accs:
+            return False, "اکانت انتخابی پیدا نشد"
+        if atk_state_ref is not None:
+            atk_state_ref["add_in_progress"] = True
+            atk_state_ref["live_start_time"] = time.time()
+            atk_state_ref["live_added"] = 0
+            atk_state_ref["live_failed"] = 0
+            atk_state_ref["live_skipped"] = 0
+            atk_state_ref["live_total"] = 0
+            atk_state_ref["live_mode"] = f"زنده تک ({add_mode})"
+            atk_state_ref["live_last_user"] = f"در حال اسکرپ از {source}..."
+            atk_state_ref["live_status_text"] = f"🔄 اتصال به {source}..."
+            atk_state_ref["_stop_requested"] = False
+            atk_state_ref["live_current_account"] = phone
+        async def run_live_job():
+            import account_state as _as
+            from attacker import AdvancedScraper, SESSIONS_DIR, safe_phone_filename
+            from config import API_ID, API_HASH
+            from add_engine import get_blocked_ids_cached, never_add_again, invite_did_not_join, global_throttle, human_delay
+            from pyrogram.raw.functions.channels import InviteToChannel
+            ok_b, owner = _as.mark_busy(phone, "اسکرپ زنده+ادد تک")
+            if not ok_b:
+                if atk_state_ref is not None:
+                    atk_state_ref["live_status_text"] = f"اکانت مشغول است ({owner})"
+                    atk_state_ref["add_in_progress"] = False
+                return
+            client = None
+            try:
+                acc_info = accs.get(phone, {})
+                try:
+                    from account_doctor import ensure_session
+                    ensure_session(phone)
+                except: pass
+                client = AdvancedScraper(session_name=os.path.join(SESSIONS_DIR, f"acc_{safe_phone_filename(phone)}"), api_id=API_ID, api_hash=API_HASH, phone=phone, device_fp=acc_info.get("device_fp"))
+                await client.connect()
+                # resolve source and target
+                from add_engine import resolve_target_for_account, target_username_hint
+                # source
+                try:
+                    src_chat = await client.app.get_chat(source)
+                    src_gid = src_chat.id
+                    src_title = src_chat.title or str(source)
+                except Exception as e:
+                    if atk_state_ref is not None:
+                        atk_state_ref["live_status_text"] = f"❌ گروه مبدا پیدا نشد: {e}"
+                    return
+                # target
+                try:
+                    tgt_gid, tgt_peer, tgt_title = await resolve_target_for_account(client, target_gid, target_username_hint())
+                except Exception as e:
+                    if atk_state_ref is not None:
+                        atk_state_ref["live_status_text"] = f"❌ گروه مقصد پیدا نشد: {e}"
+                    return
+                if src_gid == tgt_gid:
+                    if atk_state_ref is not None:
+                        atk_state_ref["live_status_text"] = "❌ مبدا و مقصد یکی‌ست"
+                    return
+                # limits
+                from config import MAX_ADD_PER_ACCOUNT, MODE_DAILY_CAP
+                import db as _db2
+                limits = _db2.get_adder_limits()
+                already = limits.get(phone, {}).get("added", 0)
+                cap = MODE_DAILY_CAP.get(add_mode, MAX_ADD_PER_ACCOUNT)
+                remaining = min(MAX_ADD_PER_ACCOUNT, cap) - already
+                if remaining <= 0:
+                    if atk_state_ref is not None:
+                        atk_state_ref["live_status_text"] = "ظرفیت این اکانت پر شده"
+                    return
+                blocked = get_blocked_ids_cached()
+                added = 0; skipped = 0; failed = 0; scanned = 0
+                if atk_state_ref is not None:
+                    atk_state_ref["live_status_text"] = f"🔍 اسکرپ از {src_title} — تا {remaining} نفر"
+                # live scrape loop
+                async for member in client.app.get_chat_members(src_gid, limit=10000):
+                    if atk_state_ref is not None and atk_state_ref.get("_stop_requested"):
+                        break
+                    if added >= remaining:
+                        break
+                    scanned += 1
+                    u = member.user
+                    if not u or getattr(u, "is_bot", False) or getattr(u, "is_deleted", False):
+                        continue
+                    uid = u.id
+                    if uid <= 10000 or uid >= 10**11:
+                        continue
+                    # 🛡️ تضمین never_add_again — مهمترین هشدار تو
+                    if uid in blocked:
+                        skipped += 1
+                        if atk_state_ref is not None:
+                            atk_state_ref["live_skipped"] = skipped
+                        continue
+                    # فقط یوزرنیم/شماره‌دار — کیفیت
+                    un = (getattr(u, "username", "") or "").strip()
+                    ph = (getattr(u, "phone_number", "") or "").strip()
+                    if not un and not ph:
+                        skipped += 1
+                        continue
+                    # global throttle
+                    try:
+                        await global_throttle(add_mode)
+                    except: pass
+                    # resolve peer
+                    try:
+                        peer = await client.app.resolve_peer(uid if not un else un.lstrip("@"))
+                    except:
+                        try: peer = await client.app.resolve_peer(uid)
+                        except: 
+                            skipped += 1
+                            continue
+                    # invite
+                    try:
+                        inv = await client.app.invoke(InviteToChannel(channel=tgt_peer, users=[peer]))
+                        if invite_did_not_join(inv, uid):
+                            skipped += 1
+                            try: blocked.add(uid)
+                            except: pass
+                            try: never_add_again(uid, "privacy")
+                            except: pass
+                            if atk_state_ref is not None:
+                                atk_state_ref["live_skipped"] = skipped
+                            continue
+                        added += 1
+                        try: blocked.add(uid)
+                        except: pass
+                        try:
+                            _db2.mark_added(tgt_gid, uid, phone)
+                        except: pass
+                        try:
+                            from add_engine import mark_added_local
+                            mark_added_local(uid)
+                        except: pass
+                        limits[phone] = {"added": already+added, "last_used": int(time.time())}
+                        try: _db2.set_adder_limit(phone, already+added)
+                        except: pass
+                        if atk_state_ref is not None:
+                            atk_state_ref["live_added"] = added
+                            atk_state_ref["live_last_user"] = (u.first_name or "") + (" @" + un if un else "")
+                            atk_state_ref["live_remaining"] = max(0, remaining-added)
+                        # human delay — مثل موازی
+                        try:
+                            await asyncio.wait_for(asyncio.sleep(human_delay(add_mode)), timeout=human_delay(add_mode)+1)
+                        except:
+                            await asyncio.sleep(human_delay(add_mode))
+                    except Exception as e:
+                        es = str(e).lower()
+                        if "privacy" in es or "not_mutual" in es:
+                            skipped += 1
+                            try: blocked.add(uid)
+                            except: pass
+                            try: never_add_again(uid, "privacy")
+                            except: pass
+                        elif "already" in es:
+                            skipped += 1
+                            try: blocked.add(uid)
+                            except: pass
+                            try: _db2.mark_added(tgt_gid, uid, phone)
+                            except: pass
+                        elif "peer_id_invalid" in es:
+                            skipped += 1
+                            try: never_add_again(uid, "invalid")
+                            except: pass
+                        elif "flood" in es or "peer_flood" in es:
+                            failed += 1
+                            if atk_state_ref is not None:
+                                atk_state_ref["live_status_text"] = f"⏱️ محدودیت تلگرام — {str(e)[:80]}"
+                            break
+                        else:
+                            failed += 1
+                        if atk_state_ref is not None:
+                            atk_state_ref["live_failed"] = failed
+                            atk_state_ref["live_skipped"] = skipped
+                    if (added+skipped+failed) % 5 == 0 and atk_state_ref is not None:
+                        atk_state_ref["live_total"] = added+skipped+failed
+            except Exception as e:
+                import traceback
+                print(f"live single error: {e}\n{traceback.format_exc()}", flush=True)
+                if atk_state_ref is not None:
+                    atk_state_ref["live_status_text"] = f"❌ {type(e).__name__}: {str(e)[:120]}"
+            finally:
+                try: await client.disconnect()
+                except: pass
+                _as.release(phone)
+                _as.mark_used(phone)
+                if atk_state_ref is not None:
+                    st = atk_state_ref.get("live_start_time")
+                    if st:
+                        atk_state_ref["live_elapsed_final"] = int(time.time()-st)
+                    atk_state_ref["add_in_progress"] = False
+                    atk_state_ref["live_remaining"] = 0
+        _schedule_coro(run_live_job())
+        return True, f"اسکرپ زنده از {source} با اکانت {phone} شروع شد — مستقیم تا ته ظرفیت ادد می‌زند (کسایی که قبلاً ادد/لفت/پرایوسی بودن هرگز نمیان)"
+    except Exception as e:
+        return False, str(e)
+
+
 def trigger_parallel_add(add_mode, add_type, phones=None):
     """Trigger parallel multi-account add from DB members to target group.
 
@@ -1418,6 +1625,18 @@ MINI_APP_HTML = """<!DOCTYPE html>
                     <button id="btn-single-start" onclick="startSingleAdd()" class="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-xs font-bold rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
                         ▶️ شروع ادد تک اکانت از دیتابیس
                     </button>
+                </div>
+
+                <div class="glass-card p-3 border border-cyan-500/30 bg-cyan-950/20">
+                    <label class="block text-xs text-cyan-300 mb-1.5">📥 اسکرپ زنده و ادد مستقیم (بدون ذخیره در دیتابیس):</label>
+                    <input type="text" id="single-live-source" dir="ltr" placeholder="https://t.me/source_group" class="w-full bg-slate-900 border border-slate-700 text-xs text-white rounded-xl px-3 py-2.5 outline-none text-left">
+                    <div class="text-[10px] text-slate-500 mt-1 leading-5">منبع: گروهی که همین الان می‌خوای ازش بکشی — مستقیم به گروه خودمون ادد میشه</div>
+                    <button onclick="startSingleLiveAdd()" id="btn-single-live" class="w-full mt-2.5 py-3 bg-gradient-to-r from-cyan-600 to-blue-600 text-white text-xs font-black rounded-xl shadow-lg hover:brightness-110 active:scale-95 transition">
+                        📥 اسکرپ زنده + ادد مستقیم (تا ته ظرفیت)
+                    </button>
+                    <div class="text-[10px] text-amber-300 mt-2 leading-5 border-t border-amber-500/20 pt-2">
+                        🛡️ <b>تضمین:</b> کسی که قبلاً ادد شده، لفت داده، یا اددش بسته‌ست <b>هرگز</b> دوباره ادد نمیشه — حتی اگه تو همین گروه دوباره پیداش کنیم. لیست سیاه دائمیه.
+                    </div>
                 </div>
             </div>
 
@@ -1999,6 +2218,26 @@ MINI_APP_HTML = """<!DOCTYPE html>
             } catch (e) {
                 alert('خطا در برقراری ارتباط با سرور: ' + e);
             }
+        }
+
+        async function startSingleLiveAdd() {
+            const account = document.getElementById('select-single-account').value;
+            const source = document.getElementById('single-live-source').value.trim();
+            const addMode = selectedSingleSpeed || 'max';
+            if (!account) { alert('اول اکانت رو انتخاب کن'); return; }
+            if (!source) { alert('لینک گروه مبدا رو وارد کن (https://t.me/...)'); return; }
+            if (!confirm(`اسکرپ زنده از \\n${source}\\nبا اکانت ${account} و ادد مستقیم تا ته ظرفیت (مود ${addMode})؟\\nکسایی که قبلاً ادد/لفت/پرایوسی بودن هرگز دوباره ادد نمی‌شن.`)) return;
+            if (tg?.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+            try {
+                const res = await fetch('/api/add/single/live', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone: account, source: source, mode: addMode })
+                });
+                const data = await res.json();
+                alert(data.message || (data.ok ? 'شروع شد' : data.error));
+                if (data.ok) loadDashboard();
+            } catch (e) { alert('خطا: '+e); }
         }
 
         async function runLiveProbe() {
@@ -2741,6 +2980,12 @@ class StandardWebAppHandler(BaseHTTPRequestHandler):
                 add_mode = post_data.get("mode", "max")
                 ok, msg = trigger_single_add(phone, add_type, add_mode)
                 body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
+            elif path == '/api/add/single/live':
+                phone = post_data.get("phone", "")
+                source = post_data.get("source", "")
+                add_mode = post_data.get("mode", "max")
+                ok, msg = trigger_single_live_add(phone, source, add_mode)
+                body = json.dumps({"ok": ok, "message": msg}).encode('utf-8')
             elif path == '/api/add/parallel':
                 add_mode = post_data.get("mode", "ultra")
                 add_type = post_data.get("add_type", "all")
@@ -2922,6 +3167,17 @@ def create_web_app(app_bot=None, atk_state=None):
             except Exception as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
 
+        async def aio_api_add_single_live(request):
+            try:
+                data = await request.json()
+                phone = data.get("phone", "")
+                source = data.get("source", "")
+                add_mode = data.get("mode", "max")
+                ok, msg = trigger_single_live_add(phone, source, add_mode)
+                return web.json_response({"ok": ok, "message": msg}, headers=NO_CACHE)
+            except Exception as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400, headers=NO_CACHE)
+
         async def aio_api_add_parallel(request):
             try:
                 data = await request.json()
@@ -3025,6 +3281,7 @@ def create_web_app(app_bot=None, atk_state=None):
         app.router.add_post('/api/scrape/group', aio_api_scrape_group)
         app.router.add_post('/api/leads/update_status', aio_api_leads_update_status)
         app.router.add_post('/api/add/single', aio_api_add_single)
+        app.router.add_post('/api/add/single/live', aio_api_add_single_live)
         app.router.add_post('/api/add/parallel', aio_api_add_parallel)
         app.router.add_post('/api/accounts/probe', aio_api_probe_accounts)
         app.router.add_post('/api/accounts/reset', aio_api_reset_limits)
