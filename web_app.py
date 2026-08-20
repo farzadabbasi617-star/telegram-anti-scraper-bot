@@ -828,7 +828,7 @@ def trigger_scrape_group(chat_target):
         return False, str(e)
 
 
-def trigger_single_add(phone, add_type, add_mode="max"):
+def trigger_single_add(phone, add_type, add_mode="safe"):
     """Trigger single account add from DB members to target group"""
     try:
         raw_users = db.get_users_by_source(limit=5000)
@@ -1656,10 +1656,10 @@ MINI_APP_HTML = """<!DOCTYPE html>
                 <div>
                     <label class="block text-xs text-slate-300 mb-1.5">سرعت ادد تک:</label>
                     <div class="grid grid-cols-4 gap-1.5">
-                        <button onclick="setSingleSpeed('max')" id="single-speed-max" class="p-2 bg-rose-600/30 border border-rose-500 text-rose-200 text-[10px] font-black rounded-xl text-center">🔥 max</button>
+                        <button onclick="setSingleSpeed('max')" id="single-speed-max" class="p-2 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold rounded-xl text-center">🔥 max</button>
                         <button onclick="setSingleSpeed('ultra')" id="single-speed-ultra" class="p-2 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold rounded-xl text-center">ultra</button>
                         <button onclick="setSingleSpeed('fast')" id="single-speed-fast" class="p-2 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold rounded-xl text-center">fast</button>
-                        <button onclick="setSingleSpeed('safe')" id="single-speed-safe" class="p-2 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-bold rounded-xl text-center">safe</button>
+                        <button onclick="setSingleSpeed('safe')" id="single-speed-safe" class="p-2 bg-rose-600/30 border border-rose-500 text-rose-200 text-[10px] font-black rounded-xl text-center">safe</button>
                     </div>
                     <div class="text-[10px] text-slate-500 mt-1">مثل موازی: max تا آخرین ظرفیت، بدون توقف اضافی</div>
                 </div>
@@ -1948,7 +1948,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
         }
 
         let selectedParallelSpeed = 'max';
-        let selectedSingleSpeed = 'max';
+        let selectedSingleSpeed = 'safe';
         let activeTab = 'dashboard';
         let currentCrmStatus = 'all';
 
@@ -2256,7 +2256,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
         async function startSingleAdd() {
             const account = document.getElementById('select-single-account').value;
             const addType = document.getElementById('select-single-type').value;
-            const addMode = selectedSingleSpeed || 'max';
+            const addMode = selectedSingleSpeed || 'safe';
 
             if (!account) {
                 alert('لطفاً یک اکانت انتخاب کنید.');
@@ -2286,7 +2286,7 @@ MINI_APP_HTML = """<!DOCTYPE html>
             const addAccount = document.getElementById('single-live-add-account').value || document.getElementById('select-single-account').value;
             const scrapeAccount = document.getElementById('single-live-scrape-account').value || '989913928426';
             const source = document.getElementById('single-live-source').value.trim();
-            const addMode = selectedSingleSpeed || 'max';
+            const addMode = selectedSingleSpeed || 'safe';
             if (!addAccount) { alert('اول اکانت ادد کننده رو انتخاب کن'); return; }
             if (!scrapeAccount) { alert('اکانت اسکرپ رو انتخاب کن'); return; }
             if (!source) { alert('لینک گروه مبدا رو وارد کن (https://t.me/...)'); return; }

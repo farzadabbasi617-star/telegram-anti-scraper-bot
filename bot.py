@@ -7770,7 +7770,7 @@ class _MsgWrapper:
 
 
 
-async def _execute_simple_add(q, target_gid, client, phone, members, source_name, add_mode="max"):
+async def _execute_simple_add(q, target_gid, client, phone, members, source_name, add_mode="safe"):
     """Execute simple add flow with all advanced features"""
     ok_b, owner = account_state.mark_busy(phone, "ادد تک")
     if not ok_b:
@@ -7788,7 +7788,7 @@ async def _execute_simple_add(q, target_gid, client, phone, members, source_name
         account_state.mark_used(phone)
 
 
-async def _execute_simple_add_inner(q, target_gid, client, phone, members, source_name, add_mode="max"):
+async def _execute_simple_add_inner(q, target_gid, client, phone, members, source_name, add_mode="safe"):
     """بدنه واقعی ادد تک — قفل اشغال در لایه بیرونی گرفته می‌شود"""
     from pyrogram.raw.functions.channels import InviteToChannel
     from pyrogram.raw.functions.contacts import AddContact
@@ -7889,6 +7889,7 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
         # 🚫 چک ضد-تکرار در حافظه: قبلاً ادد شده / لفت داده / در لیست ممنوعه → هرگز دوباره ادد نشود
         if uid in blocked:
             skipped += 1
+            await asyncio.sleep(0.8)
             continue
         
         # Check stop request
@@ -7927,6 +7928,7 @@ async def _execute_simple_add_inner(q, target_gid, client, phone, members, sourc
                 skipped += 1
                 errors_detail["peer"] += 1
                 if not first_error: first_error = f"Can't resolve {uid} (no username)"
+                await asyncio.sleep(1.5)
                 continue
             
             # 🌐 Global throttle — مثل موازی
