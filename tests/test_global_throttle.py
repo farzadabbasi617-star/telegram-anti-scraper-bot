@@ -128,7 +128,7 @@ def test_budget_still_one_request():
 
 
 def test_config_version_bumped():
-    assert config.APP_VERSION == "1.9.13"
+    assert config.APP_VERSION == "1.9.14"
     # DB_POOL_SIZE افزایش یافته — مقدار فعلی ممکن است توسط تست دیگری monkeypatch شده باشد،
     # پس سورس را چک می‌کنیم
     import pathlib

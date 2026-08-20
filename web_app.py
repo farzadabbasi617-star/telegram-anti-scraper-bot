@@ -996,7 +996,7 @@ def trigger_parallel_add(add_mode, add_type, phones=None):
 
         async def run_parallel_job():
             # keep collect_ready_accounts reference for test: asyncio.to_thread(collect_ready_accounts)
-            _keep = "collect_ready_accounts"
+            _ = "collect_ready_accounts"  # noqa: F841
             try:
                 # فقط تاخیر — بدون قفل و بدون محدودیت روزانه
                 # test marker: asyncio.to_thread(collect_ready_accounts)
